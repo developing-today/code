@@ -4,13 +4,13 @@
 // timer, units in pm-stack/systemd/, installed by install.sh) beside
 // the aggregator and the snapshot store.
 //
-// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): every quota
-// reading in this tick comes from ONE producer — the opencode fork's
-// quota subcommand, `opencode quota --json`, whose per-provider quota
-// functions live in the providers that own the credentials
-// (developing-today-forks/opencode#1718). The gatherer invokes the
-// subcommand; it never fetches a provider itself. What the tick does
-// around that single read:
+// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): quota readings
+// come from OpenCode-owned provider code. The configured listing and
+// ordinary asks use `opencode quota --json`; OpenDesign prefers the
+// server's provider-only quota endpoint when the deployed server and
+// its credential support it. The CLI result remains the compatibility
+// fallback during rollout. The gatherer never fetches a provider API
+// itself. What the tick does around those OpenCode reads:
 //
 //   1. The OpenDesign session keeper (src/opendesign-renewal.ts,
 //      Drew's 2026-11-05 provider browser-auth auto-renewal rule):
@@ -47,7 +47,10 @@
 //      pools are live are always fetched when named, the same
 //      discipline the gatherer's out-of-band asks kept before the
 //      rewire. An explicit-ask result replaces a listing result for
-//      the same provider + credential. The subcommand exits non-zero
+//      the same provider + credential. When available, the OpenDesign
+//      provider-only server answer replaces its CLI result; unavailable
+//      auth, route or credential leaves the CLI result as fallback. The
+//      subcommand exits non-zero
 //      when a requested provider produced no successful result; that
 //      is a per-provider failure, not a tick failure — stdout still
 //      carries the results, and only an unparseable/empty stdout
@@ -112,6 +115,15 @@
 //     stands). Fail-soft on the same terms: a detector failure
 //     never fails the tick, and a lost/corrupt state file simply
 //     re-baselines (no alert storm).
+//   - quota-forecast-alert-state.json beside quota-current.json —
+//     the C4.5 forecast push alerts (#13261, design §1/§8): the
+//     tick reads the C4 prediction log (quota-predictions.jsonl),
+//     evaluates the newest record per subject via
+//     src/quota-forecast-alerts.ts, and posts each NEW alertable
+//     prediction to the alerts ledger (AlertsStore.postIncident,
+//     source "quota-prediction", key = the record id). The state
+//     holds the fired record ids so repeat ticks do not re-alert.
+//     Fail-soft like the anomaly detectors.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -150,7 +162,6 @@
 //      turso.fleet-platform-rw-token).
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
@@ -177,13 +188,28 @@ import {
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { fleetPlatformUrl } from "../src/decision-events-sync.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { fetchOpenCodeProviderQuota } from "../src/opencode-provider-quota.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
 import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
 import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
+import {
+  buildResetDurationLedgerRows,
+  deriveResetDurationRecords,
+  resetDurationSubjectKey,
+  resetObservationsFor,
+} from "../src/quota-reset-duration.ts";
+import {
+  buildPoolExhaustionLedgerRows,
+  derivePoolExhaustionRecords,
+  poolExhaustionSubjectKey,
+  type PoolExhaustionCalibration,
+} from "../src/quota-pool-exhaustion.ts";
+import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
   anomalyIncidentInput,
@@ -192,12 +218,21 @@ import {
   runAnomalyTick,
   type AnomalyStateFile,
 } from "../src/quota-anomaly.ts";
+import {
+  emptyForecastAlertState,
+  evaluateForecastAlerts,
+  forecastAlertIncidentInput,
+  isForecastAlertState,
+  parseForecastAlertLog,
+} from "../src/quota-forecast-alerts.ts";
+import { sectionPoolIdsFromConfig } from "../src/aa.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
+import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = homedir();
+const HOME = requireHome("the gather-quota paths");
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
 /** Candidate checkouts for the OpenDesign keeper's managed credential
@@ -237,11 +272,22 @@ const shadowPlacementPath =
   process.env.QUOTA_SHADOW_PLACEMENT_PATH ?? join(dirname(currentPath), "quota-shadow-placement.json");
 const shadowPlacementHistoryPath =
   process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
+// #13259: the C4.3 day-type shadow records (design §5 earn-in),
+// beside quota-current.json like the other shadow products —
+// append-only JSONL, deliberately NOT the C4 prediction log:
+// shadow records are not the published forecast.
+const daytypeShadowPath =
+  process.env.QUOTA_DAYTYPE_SHADOW_PATH ?? join(dirname(currentPath), "quota-daytype-shadow.jsonl");
 // #12699: the Stage-3 anomaly detectors' state + history, beside
 // quota-current.json in the quota-watchdog shape (design D6).
 const anomalyStatePath = process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
 const anomalyHistoryPath =
   process.env.QUOTA_ANOMALY_HISTORY_PATH ?? join(dirname(currentPath), "quota-anomaly-history.jsonl");
+// #13261 (C4.5): the forecast-alert tick state, beside the anomaly
+// state — the fired prediction record ids that suppress repeat
+// ticks (record-keyed dedupe, design §8).
+const forecastAlertStatePath =
+  process.env.QUOTA_FORECAST_ALERT_STATE_PATH ?? join(dirname(currentPath), "quota-forecast-alert-state.json");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -697,6 +743,31 @@ function parseSubcommandResults(stdout: string, label: string): QuotaProviderRes
 }
 
 /**
+ * Prefer the provider-only OpenCode server surface for OpenDesign when
+ * the deployed server has it and holds the session-cookie credential.
+ * Missing auth, an older server, or an unbound credential returns null
+ * so the existing quota subcommand remains the rollout fallback.
+ */
+async function fetchServerOpenDesignQuota(): Promise<QuotaProviderResult | null> {
+  const authPath = process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local/state/opencode/service-prod.json");
+  let auth: { username?: unknown; password?: unknown };
+  try {
+    auth = JSON.parse(await readFile(authPath, "utf8")) as { username?: unknown; password?: unknown };
+  } catch {
+    return null;
+  }
+  if (typeof auth.password !== "string" || auth.password.length === 0) return null;
+  return fetchOpenCodeProviderQuota({
+    baseUrl: process.env.OPENCODE_URL ?? "http://127.0.0.1:13420",
+    auth: {
+      username: typeof auth.username === "string" && auth.username.length > 0 ? auth.username : "opencode",
+      password: auth.password,
+    },
+    providerId: "opendesign",
+  });
+}
+
+/**
  * THE tick's only quota read: the subcommand's configured listing,
  * plus the explicit ask for the route-disabled live pools
  * (EXPLICIT_ASK_PROVIDERS). Explicit results replace listing results
@@ -714,6 +785,10 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   const askStdout = await execSubcommand(subcommandArgv(EXPLICIT_ASK_PROVIDERS));
   const asked = parseSubcommandResults(askStdout, "explicit ask");
   const askMs = Date.now() - askT0;
+
+  const serverT0 = Date.now();
+  const serverOpenDesign = await fetchServerOpenDesignQuota().catch(() => null);
+  const serverMs = Date.now() - serverT0;
 
   // Per-provider group choice, the pre-rewire discipline generalized:
   // a listing group with an ok row wins (the ask is not consulted for
@@ -751,6 +826,14 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     // Both ok: the listing group stands — it is the canonical,
     // credential-keyed enumeration; the ask exists to rescue a
     // missing or errored listing group, not to override a good one.
+  }
+  // Once present, OpenCode's provider-only result outranks both CLI
+  // reads: the server uses its bound session-cookie credential itself.
+  // A missing route/auth/credential returns null above and leaves the
+  // established subcommand result as the compatibility fallback.
+  if (serverOpenDesign) {
+    byProvider.set("opendesign", { results: [serverOpenDesign], ms: serverMs });
+    console.log("quota-gatherer: opendesign quota answered by OpenCode provider API");
   }
 
   const runs: ProviderRun[] = [];
@@ -840,7 +923,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
 }
 
 const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
-const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_URL = fleetPlatformUrl();
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
@@ -1053,6 +1136,78 @@ async function runAnomalyDetectors(args: {
   } catch (err) {
     console.error(
       `quota-gatherer: anomaly detectors failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
+/**
+ * The C4.5 forecast push alerts (#13261, component of #9572; C4
+ * design §1/§8), run beside the tick after the forecast + downtime
+ * publish. All selectivity/dedupe logic is
+ * src/quota-forecast-alerts.ts (pure); this wrapper does the
+ * prediction-log read, the workhorse join, the state-file IO and
+ * the alerts-ledger posts. Fail-soft throughout like
+ * runAnomalyDetectors: any failure is logged and the tick still
+ * succeeds; a missing or corrupt state file re-baselines from
+ * empty (the live predictions re-fire once — bounded to the
+ * newest per subject by the log reader, never the whole log).
+ * No alerts store (Turso unavailable) = the state still advances
+ * and the skip is logged, the meta-keeper posture.
+ */
+async function runForecastAlerts(args: { entries: QuotaCurrentEntry[]; tickAt: string }): Promise<void> {
+  try {
+    let state = emptyForecastAlertState();
+    try {
+      const raw: unknown = JSON.parse(await readFile(forecastAlertStatePath, "utf8"));
+      if (isForecastAlertState(raw)) state = raw;
+      else console.log("quota-gatherer: forecast-alert state file unreadable as a v1 state — re-baselining");
+    } catch {
+      // No state file yet (or unreadable): re-baseline from empty.
+    }
+    // The C4 prediction log holds every tick's appended records;
+    // the reader takes the newest per (kind, subject), so a fresh
+    // or re-baselined state fires the live predictions, never the
+    // log's superseded history.
+    const logText = await readFile(predictionsPath, "utf8").catch(() => "");
+    const records = parseForecastAlertLog(logText);
+    // The workhorse pool set joins the deployed OpenCode config's
+    // workhorse route section to this tick's pool ids (aa.ts
+    // sectionPoolIdsFromConfig) — the alert module names no roster
+    // of its own. An unreadable config yields no membership: pool
+    // walls stay silent while downtime windows still fire.
+    const poolIds = [...new Set(args.entries.flatMap((e) => [e.providerId, e.serviceId]))];
+    const configText = await readFile(
+      process.env.OPENCODE_CONFIG_PATH ?? join(HOME, ".local/state/opencode/opencode-runtime.jsonc"),
+      "utf8",
+    ).catch(() => "");
+    const workhorsePools = new Set(sectionPoolIdsFromConfig(configText, poolIds).workhorse ?? []);
+    const result = evaluateForecastAlerts({ records, state, workhorsePools, now: new Date(args.tickAt) });
+    if (result.findings.length) {
+      const store = await getAlertsStore();
+      if (!store) {
+        console.log(
+          `quota-gatherer: forecast alerts: ${result.findings.length} finding(s); no alerts store — no ledger post`,
+        );
+      } else {
+        for (const f of result.findings) {
+          try {
+            await store.postIncident(forecastAlertIncidentInput(f), { ...f.detail });
+          } catch (err) {
+            console.log(
+              `quota-gatherer: forecast alerts: ledger post failed-soft for ${f.key}: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+            );
+          }
+        }
+      }
+    }
+    await writeAtomic(forecastAlertStatePath, JSON.stringify(result.state, null, 2) + "\n");
+    const unevaluable = result.evaluations.filter((e) => e.state === "unevaluable").length;
+    console.log(
+      `quota-gatherer: forecast alerts: ${result.findings.length} new finding(s), ${result.evaluations.length} evaluations (${unevaluable} unevaluable)`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: forecast alerts failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 }
@@ -1270,9 +1425,11 @@ export async function main(): Promise<number> {
   // previous forecast stands and ages, exactly as a failed tick
   // leaves the previous quota-current.json standing.
   let forecast: QuotaForecastFile | null = null;
+  let history: SnapshotRecord[] = [];
   try {
     const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
-    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    history = [...stored, ...fresh];
+    forecast = buildQuotaForecast(file, history, new Date(tickAt));
     await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
     const forecastRows = buildForecastLedgerRows(forecast, tickAt);
     await writeTursoForecastRecords(forecastRows, tickAt);
@@ -1329,6 +1486,117 @@ export async function main(): Promise<number> {
     }
   }
 
+  // C4.2 (#13258, C4 design §1/§7): the reset-duration prediction
+  // records — derived by src/quota-reset-duration.ts for each walled
+  // or near-wall pool window from the forecast product and the
+  // snapshot history's resetsAt cadence, appended to the same C4
+  // prediction log and mirrored into the Turso ledger under source
+  // "quota-prediction". Advisory only; fail-soft like the downtime
+  // block. Honesty states (no_basis, insufficient_history) publish
+  // as records, never as invented ranges.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; window?: string };
+          };
+          if (parsed.kind === "reset_duration" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
+            previous.set(resetDurationSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = deriveResetDurationRecords(forecast, resetObservationsFor(forecast, history), previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildResetDurationLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: reset-duration predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: reset-duration failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // C4.5 (#13261, component of #9572; C4 design §1/§2): the
+  // pool_exhaustion prediction records — derived by
+  // src/quota-pool-exhaustion.ts for each walled or near-wall
+  // (projected to wall before its reset) pool window, ranged by
+  // the S2 accuracy calibration in
+  // quota-exhaustion-calibration.json beside the forecast
+  // product (missing/torn file = empty calibration, so every
+  // subject honestly publishes insufficient_history until the S2
+  // live-scoring feed populates it). Appended to the same C4
+  // prediction log and mirrored into the Turso ledger under
+  // source "quota-prediction". Advisory only; fail-soft like the
+  // downtime block. The forecast push alerts below already read
+  // this log, so a predicted workhorse full-wall posts once and
+  // repeat ticks suppress via the alert-state dedupe.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; window?: string };
+          };
+          if (parsed.kind === "pool_exhaustion" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
+            previous.set(poolExhaustionSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const calibrationRaw = await readFile(
+        join(dirname(predictionsPath), "quota-exhaustion-calibration.json"),
+        "utf8",
+      ).catch(() => "{}");
+      let calibration: PoolExhaustionCalibration = new Map();
+      try {
+        const parsed = JSON.parse(calibrationRaw) as Record<
+          string,
+          {
+            window?: { count: number; lowerMin: number; upperMin: number; cell: string } | null;
+            pool?: { count: number; lowerMin: number; upperMin: number; cell: string } | null;
+          }
+        >;
+        calibration = new Map(
+          Object.entries(parsed).map(([k, v]) => [k, { window: v.window ?? null, pool: v.pool ?? null }]),
+        );
+      } catch {
+        // A torn calibration file is an empty calibration: honesty states.
+      }
+      const records = derivePoolExhaustionRecords(forecast, calibration, previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildPoolExhaustionLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: pool-exhaustion predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: pool-exhaustion failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
   // Stage-3 S3 (#12697, design D3): the shadow placement record —
   // the forecast-informed ordering logged beside the live ordering
   // as a per-decision diff record (src/quota-shadow-placement.ts),
@@ -1352,6 +1620,69 @@ export async function main(): Promise<number> {
       `quota-gatherer: shadow placement failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
+
+  // C4.3 (#13259 criterion 2, component of #9572; C4 design §5):
+  // the day-type + spike-day SHADOW records — this tick's v1
+  // forecast adjusted by the admitted day-type cells' measured
+  // ratios, plus the explicit spike-day verdict — appended to
+  // quota-daytype-shadow.jsonl beside the forecast product.
+  // SHADOW ONLY (design §5 earn-in): no live path reads them and
+  // the published forecast is never modified; they accumulate
+  // for the criterion-3 S2-harness comparison. Fail-soft like
+  // the shadow placement write; a null forecast (the forecast
+  // block above failed) derives nothing. The supersedes chain
+  // reads the file's tail for the last shadow record per
+  // subject; a missing or torn file just starts the chain over.
+  if (forecast) {
+    try {
+      const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
+      const previous = new Map<string, string>();
+      const existing = await readFile(daytypeShadowPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-2000)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; serviceId?: string; window?: string };
+          };
+          if (
+            parsed.kind === "daytype_shadow" &&
+            parsed.id &&
+            parsed.subject?.pool &&
+            parsed.subject?.serviceId &&
+            parsed.subject?.window
+          ) {
+            previous.set(
+              dayTypeShadowSubjectKey(parsed.subject.pool, parsed.subject.serviceId, parsed.subject.window),
+              parsed.id,
+            );
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = buildDayTypeShadowRecords(forecast, [...stored, ...fresh], previous, new Date(tickAt));
+      if (records.length) {
+        await mkdir(dirname(daytypeShadowPath), { recursive: true });
+        await appendFile(daytypeShadowPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+      }
+      console.log(
+        `quota-gatherer: daytype shadow ${records.filter((r) => r.state === "shadow").length} adjusted / ${records.filter((r) => r.state === "adjustment_unavailable").length} adjustment_unavailable -> ${daytypeShadowPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: daytype shadow failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // C4.5 (#13261, component of #9572; C4 design §1/§8): the
+  // forecast push alerts over this tick's prediction log (the
+  // downtime records appended above, plus the C4.1/C4.2 producers'
+  // records as they publish). Fail-soft inside runForecastAlerts;
+  // the tick's own result never depends on it.
+  await runForecastAlerts({ entries, tickAt });
 
   // Stage-3 S5 (#12699, design D6): the anomaly detectors beside
   // the tick (burn spike / schema drift / plan change). Fail-soft

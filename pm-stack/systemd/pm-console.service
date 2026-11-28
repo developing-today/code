@@ -7,7 +7,10 @@ After=network-online.target
 # contention this unit gets nine times the processor share of a default one.
 CPUWeight=900
 Type=simple
-WorkingDirectory=%h/git/code/pm-stack/console
+# The console's own copy of main, which redeploy.sh keeps: the release
+# that is current when the service starts is the code it runs until it
+# is restarted. It runs from no checkout that anything else works in.
+WorkingDirectory=%h/.local/share/pm-console/current/pm-stack/console
 ExecStart=/run/current-system/sw/bin/bun run src/server.ts
 EnvironmentFile=%h/.local/state/pm-console/.env
 # The console shells out to fleet, gh (through fleet), systemctl and journalctl.

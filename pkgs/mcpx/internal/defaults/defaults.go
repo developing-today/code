@@ -66,6 +66,7 @@ type Defaults struct {
 		DaemonConnectTimeout string `json:"daemonConnectTimeout"`
 		DaemonPollInterval   string `json:"daemonPollInterval"`
 		DaemonRestartSettle  string `json:"daemonRestartSettle"`
+		SupervisorReapRetry  string `json:"supervisorReapRetry"`
 		HTTPIdleTimeout      string `json:"httpIdleTimeout"`
 		HTTPRequestTimeout   string `json:"httpRequestTimeout"`
 		FollowPollInterval   string `json:"followPollInterval"`
@@ -286,6 +287,7 @@ type Defaults struct {
 		ExecHashMax          string `json:"execHashMax"`
 		ExecCheckInterval    string `json:"execCheckInterval"`
 		ExecDrainTimeout     string `json:"execDrainTimeout"`
+		ExecDrainGrace       string `json:"execDrainGrace"`
 		WarmTimeout          string `json:"warmTimeout"`
 		RefreshTimeout       string `json:"refreshTimeout"`
 		InlineStartTimeout   string `json:"inlineStartTimeout"`
@@ -602,6 +604,7 @@ var (
 	DaemonConnectTimeout = mustDur(builtin.Plumbing.DaemonConnectTimeout, "plumbing.daemonConnectTimeout")
 	DaemonPollInterval   = mustDur(builtin.Plumbing.DaemonPollInterval, "plumbing.daemonPollInterval")
 	DaemonRestartSettle  = mustDur(builtin.Plumbing.DaemonRestartSettle, "plumbing.daemonRestartSettle")
+	SupervisorReapRetry  = mustDur(builtin.Plumbing.SupervisorReapRetry, "plumbing.supervisorReapRetry")
 	HTTPIdleTimeout      = mustDur(builtin.Plumbing.HTTPIdleTimeout, "plumbing.httpIdleTimeout")
 	HTTPRequestTimeout   = mustDur(builtin.Plumbing.HTTPRequestTimeout, "plumbing.httpRequestTimeout")
 	FollowPollInterval   = mustDur(builtin.Plumbing.FollowPollInterval, "plumbing.followPollInterval")
@@ -903,8 +906,13 @@ var (
 	// ExecCheckInterval is how often a pool with a live child re-stats the
 	// executable behind it. ExecDrainTimeout bounds how long a child being
 	// replaced waits for calls already running on it.
-	ExecCheckInterval  = mustDur(builtin.Limits.ExecCheckInterval, "limits.execCheckInterval")
-	ExecDrainTimeout   = mustDur(builtin.Limits.ExecDrainTimeout, "limits.execDrainTimeout")
+	ExecCheckInterval = mustDur(builtin.Limits.ExecCheckInterval, "limits.execCheckInterval")
+	ExecDrainTimeout  = mustDur(builtin.Limits.ExecDrainTimeout, "limits.execDrainTimeout")
+	// ExecDrainGrace is the extra settle past ExecDrainTimeout the CLI's
+	// supervisor reap allows: a stopped daemon's detach lands only once its
+	// pools finish draining, and the stop already returned when the HTTP
+	// listener closed first.
+	ExecDrainGrace     = mustDur(builtin.Limits.ExecDrainGrace, "limits.execDrainGrace")
 	WarmTimeout        = mustDur(builtin.Limits.WarmTimeout, "limits.warmTimeout")
 	RefreshTimeout     = mustDur(builtin.Limits.RefreshTimeout, "limits.refreshTimeout")
 	InlineStartTimeout = mustDur(builtin.Limits.InlineStartTimeout, "limits.inlineStartTimeout")

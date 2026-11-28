@@ -63,13 +63,18 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
 /// The dispatch_id for a surface whose workflow declares a
 /// `dispatch_id` input (registry flag `dispatch_id_input`, set for
 /// org-run.yml and dezren39/fleet's fleet-run.yml, which surface it
-/// in the run display title via `run-name:` — issue #8371). A fresh
-/// fp_ handle per dispatch. Surfaces without the flag get None:
+/// in the run display title via `run-name:` — issue #8371). The job's
+/// placement session handle when it carries one (#13178), else a
+/// fresh fp_ handle. Surfaces without the flag get None:
 /// GitHub rejects dispatch inputs the workflow does not declare,
 /// so those keep the snapshot-exclusion fallback in correlate_run.
-fn dispatch_id_for(surface: &Value) -> Option<String> {
+pub(super) fn dispatch_id_for(surface: &Value, job: &Job) -> Option<String> {
     if surface.get("dispatch_id_input").and_then(|v| v.as_bool()) == Some(true) {
-        Some(new_handle(&rand_source::URandom))
+        Some(
+            job.session_handle
+                .clone()
+                .unwrap_or_else(|| new_handle(&rand_source::URandom)),
+        )
     } else {
         None
     }
@@ -136,6 +141,161 @@ pub struct GithubActionsAdapter {
     pub(super) force_runner: &'static str,
 }
 
+/// Laptop-tier credential secret names (developing-today/code#15651):
+/// values resolved under these names must never travel as
+/// workflow-dispatch inputs — dispatch inputs are visible in run
+/// metadata and logs, while the runner is provisioned by name
+/// inside the job instead.
+pub(super) const DISPATCH_SECRET_NAMES: &[&str] = &[
+    "desktop-commander.machine-bearer",
+    "fleet.laptop-agent-token",
+];
+
+/// Values shorter than this are never treated as embedded secrets:
+/// short strings (a port, a single word) match innocent commands by
+/// accident, and a real bearer or token is always far longer.
+const MIN_SECRET_VALUE_LEN: usize = 16;
+
+/// The #15651 leak invariant as a pure function: the first secret
+/// NAME whose value occurs in `command`, or None. Callers report
+/// the name only — never the value, never the command carrying it.
+pub(super) fn embedded_secret_name<'a>(
+    command: &str,
+    secrets: &[(&'a str, &str)],
+) -> Option<&'a str> {
+    secrets
+        .iter()
+        .filter(|(_, value)| value.len() >= MIN_SECRET_VALUE_LEN)
+        .find(|(_, value)| command.contains(value))
+        .map(|(name, _)| *name)
+}
+
+/// Refuse a dispatch whose command embeds a locally-resolvable
+/// laptop-tier credential value (developing-today/code#15651).
+/// Resolution failures are skipped, not fatal: when the broker
+/// cannot answer there is nothing to compare against, and failing
+/// open keeps the fleet dispatchable during a secrets-infra
+/// outage; a positive match always fails closed before the POST
+/// leaves the seat.
+pub(super) fn reject_secrets_in_command(
+    command: &str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> R<()> {
+    let resolved: Vec<(&str, String)> = DISPATCH_SECRET_NAMES
+        .iter()
+        .filter_map(|name| resolve(name).map(|value| (*name, value)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = resolved
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    if let Some(name) = embedded_secret_name(command, &borrowed) {
+        return die(format!(
+            "refusing dispatch: --command embeds the value of secret '{name}'; \
+             pass laptop-tier credentials by name inside the job, never as dispatch \
+             arguments (developing-today/code#15651)"
+        ));
+    }
+    Ok(())
+}
+
+/// The T3 (ssh) tier's credential does not live under a broker
+/// secret name: it is the password in the userinfo of the seat's
+/// session-proxy URL, carried by the `HTTPS_PROXY` environment
+/// variable (fleet-proxy's tunnel reads it at runtime and sends it
+/// only inside the CONNECT request — never in argv, never logged).
+/// #16368 is the T2/T3 follow-up to #15651: the T1/T2 names above
+/// are refused in dispatch commands, but a command could still
+/// smuggle the T3 credential past that check by inlining
+/// `HTTPS_PROXY=http://user:<password>@host` — the URL is dispatch
+/// metadata the moment it is POSTed. The name a refusal reports
+/// for this credential is the env var itself.
+pub(super) const T3_PROXY_ENV_NAME: &str = "HTTPS_PROXY";
+
+/// Percent-decode one URL component (the tunnel decodes the
+/// userinfo the same way before building Proxy-Authorization, so
+/// an encoded password and its decoded form are the same
+/// credential and both must match).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The credential values a proxy URL carries: its password, raw
+/// and percent-decoded. A credential-free URL (the tailscaled
+/// local CONNECT proxy an in-job provisioning step exports,
+/// `http://127.0.0.1:3130`) carries none and is not a secret —
+/// naming it in a command leaks nothing. Values under
+/// MIN_SECRET_VALUE_LEN are dropped, same floor as the named
+/// secrets: short strings match innocent commands by accident.
+pub(super) fn proxy_credential_values(proxy_url: &str) -> Vec<String> {
+    let authority = proxy_url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return Vec::new();
+    };
+    let Some((_user, password)) = userinfo.split_once(':') else {
+        return Vec::new();
+    };
+    let mut values: Vec<String> = Vec::new();
+    for candidate in [password.to_string(), percent_decode(password)] {
+        if candidate.len() >= MIN_SECRET_VALUE_LEN && !values.contains(&candidate) {
+            values.push(candidate);
+        }
+    }
+    values
+}
+
+/// The #16368 half of the leak invariant as a pure function: true
+/// when `command` embeds the proxy credential from `proxy_url`.
+pub(super) fn embedded_proxy_credential(command: &str, proxy_url: &str) -> bool {
+    proxy_credential_values(proxy_url)
+        .iter()
+        .any(|value| command.contains(value.as_str()))
+}
+
+/// Refuse a dispatch whose command embeds the seat's T3 proxy
+/// credential (developing-today/code#16368). The proxy value is
+/// read from the caller's environment / the seat's recorded
+/// tailnet proxy env, never from a broker: an unset or
+/// credential-free proxy has nothing to compare against and
+/// fails open exactly like an unresolvable named secret above;
+/// a positive match fails closed before the POST leaves the
+/// seat. The error names the env var only — never the value,
+/// never the command carrying it.
+pub(super) fn reject_proxy_credential_in_command(command: &str, proxy_url: Option<&str>) -> R<()> {
+    if let Some(url) = proxy_url {
+        if embedded_proxy_credential(command, url) {
+            return die(format!(
+                "refusing dispatch: --command embeds the T3 proxy credential carried by \
+                 {T3_PROXY_ENV_NAME}; provision the proxy env by name inside the job, \
+                 never as dispatch arguments (developing-today/code#16368)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl GithubActionsAdapter {
     /// The fleet-run workflow inputs for a job. Cache options travel
     /// in a `jobs` entry (the workflows that accept bare repo/command
@@ -181,6 +341,9 @@ impl GithubActionsAdapter {
                 if let Some(repo) = &job.previous_run_repo {
                     inputs.insert("previous_run_repo".into(), json!(repo));
                 }
+            }
+            if let Some(minutes) = job.timeout_minutes {
+                inputs.insert("timeout_minutes".into(), json!(minutes.to_string()));
             }
             if let Some(id) = dispatch_id {
                 inputs.insert("dispatch_id".into(), json!(id));
@@ -283,11 +446,29 @@ impl GithubActionsAdapter {
     }
 
     fn dispatch_workflow(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
+        // #15651 leak boundary: the command below becomes GitHub
+        // run metadata the moment it is POSTed, so a command
+        // carrying a locally-resolvable credential value dies here
+        // by secret name, before any network call.
+        let config = fleet_config::Config::load().unwrap_or_default();
+        let resolver = fleet_secrets::Resolver::default_chain(&config);
+        reject_secrets_in_command(&job.command, &|name| {
+            resolver.resolve(name).ok().map(|v| v.expose().to_string())
+        })?;
+        // #16368: the same boundary for the T3 proxy credential,
+        // which has no broker name — it rides the seat's
+        // HTTPS_PROXY env (or the recorded tailnet proxy env when
+        // the ambient value is the platform egress proxy).
+        let proxy_env = std::env::var("HTTPS_PROXY")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(fleet_config::tailnet_https_proxy);
+        reject_proxy_credential_in_command(&job.command, proxy_env.as_deref())?;
         let s = &self.surface;
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
         let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
-        let dispatch_id = dispatch_id_for(s);
+        let dispatch_id = dispatch_id_for(s, job);
         let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
         // on PR #8325, exact-id fix in issue #8371): when the

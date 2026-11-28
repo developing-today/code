@@ -26,14 +26,14 @@ Three invocation rules decide what a bare or lightly-flagged `id` does:
 
 The six global flags are defined with clap `global = true`: each one is accepted at the top level and on every subcommand, before or after the subcommand name. Every command also accepts `-h`/`--help`, and the top level accepts `-V`/`--version`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--debug` | none (switch) | off | Enable debug logging. Takes precedence over `--log-level` and over every logging environment variable. |
-| `--log-level` | `LEVEL` | none | Set the log level. The help text lists `trace`, `debug`, `info`, `warn`, `error`; the value is not a clap value-enum, so any string reaches the tracing filter. Overrides the logging environment variables, but not `--debug`. |
-| `-d`, `--data-dir` | `DIR` | current directory | Base directory for `.iroh-store`, `.iroh-key` and `.iroh-serve.lock`. Created if it does not exist. The process changes its working directory into `DIR` at startup. Conflicts with `--new`. |
-| `--new` | `NAME` (optional) | none | Create a new instance directory `.iroh/<NAME>/` under the current directory and change into it. A missing value means the empty string, which generates a random 8-hex-character name. Fails if the directory already exists. Conflicts with `--data-dir`. |
-| `--groups-log` | `FILE` | `groups.jsonl` in the data directory | The group log read and appended to by `group`, `delegate` and `revoke`. A relative path is resolved relative to the data directory. |
-| `--event-store` | `DIR` | `events` in the data directory | The event store read and appended to by `doc`, `claim` and `writer-sets`. A relative path is resolved relative to the data directory. |
+| Flag               | Argument          | Default                              | Meaning                                                                                                                                                                                                                                                    |
+| ------------------ | ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--debug`          | none (switch)     | off                                  | Enable debug logging. Takes precedence over `--log-level` and over every logging environment variable.                                                                                                                                                     |
+| `--log-level`      | `LEVEL`           | none                                 | Set the log level. The help text lists `trace`, `debug`, `info`, `warn`, `error`; the value is not a clap value-enum, so any string reaches the tracing filter. Overrides the logging environment variables, but not `--debug`.                            |
+| `-d`, `--data-dir` | `DIR`             | current directory                    | Base directory for `.iroh-store`, `.iroh-key` and `.iroh-serve.lock`. Created if it does not exist. The process changes its working directory into `DIR` at startup. Conflicts with `--new`.                                                               |
+| `--new`            | `NAME` (optional) | none                                 | Create a new instance directory `.iroh/<NAME>/` under the current directory and change into it. A missing value means the empty string, which generates a random 8-hex-character name. Fails if the directory already exists. Conflicts with `--data-dir`. |
+| `--groups-log`     | `FILE`            | `groups.jsonl` in the data directory | The group log read and appended to by `group`, `delegate` and `revoke`. A relative path is resolved relative to the data directory.                                                                                                                        |
+| `--event-store`    | `DIR`             | `events` in the data directory       | The event store read and appended to by `doc`, `claim`, `talk` and `writer-sets`. A relative path is resolved relative to the data directory.                                                                                                              |
 
 Behaviour notes:
 
@@ -72,12 +72,12 @@ After resolution, `src/main.rs` appends fixed per-module filters that cap a fixe
 
 Four further environment variables configure the log output itself. They are read by hand in `src/main.rs` and `src/structured_logging.rs`; none of them is a clap argument.
 
-| Variable | Values | Default | Meaning |
-|---|---|---|---|
-| `ID_LOG_FORMAT` | `text`, `json` | `text` | Output format. `json` emits one JSON object per line, with span and trace context when present. |
-| `ID_LOG_FILE` | path | none (stderr only) | A second destination: events are appended to this file in the same format as the console destination, without ANSI escapes. No size or retention limit is imposed; the writer follows rename-and-create external rotation and must not be used with `copytruncate`. |
-| `ID_LOG_FILE_LEVEL` | filter | the console filter | An independent filter for the file destination; it accepts anything a tracing `EnvFilter` accepts, for example `debug` or `id=trace,iroh=info`. |
-| `ID_LOG_TZ` | IANA name, `UTC`, `local`, or a fixed offset such as `+05:30` | host local timezone | Timezone for log timestamps. Unset and `local` both mean the host local zone. |
+| Variable            | Values                                                        | Default             | Meaning                                                                                                                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ID_LOG_FORMAT`     | `text`, `json`                                                | `text`              | Output format. `json` emits one JSON object per line, with span and trace context when present.                                                                                                                                                                     |
+| `ID_LOG_FILE`       | path                                                          | none (stderr only)  | A second destination: events are appended to this file in the same format as the console destination, without ANSI escapes. No size or retention limit is imposed; the writer follows rename-and-create external rotation and must not be used with `copytruncate`. |
+| `ID_LOG_FILE_LEVEL` | filter                                                        | the console filter  | An independent filter for the file destination; it accepts anything a tracing `EnvFilter` accepts, for example `debug` or `id=trace,iroh=info`.                                                                                                                     |
+| `ID_LOG_TZ`         | IANA name, `UTC`, `local`, or a fixed offset such as `+05:30` | host local timezone | Timezone for log timestamps. Unset and `local` both mean the host local zone.                                                                                                                                                                                       |
 
 Failure behaviour for these variables is warn-and-continue: an unrecognised `ID_LOG_FORMAT` value prints `warning: ID_LOG_FORMAT value not recognized; logs use text format` on stderr and logging continues in text format; an unrecognised `ID_LOG_TZ` value prints `warning: ID_LOG_TZ value not recognized; log timestamps use UTC` and timestamps fall back to UTC; a log file that cannot be opened prints a warning naming the path and the error, and logging continues to stderr only.
 
@@ -85,12 +85,12 @@ Failure behaviour for these variables is warn-and-continue: an unrecognised `ID_
 
 `main` returns an `anyhow::Result<()>`, and the exit code follows from that single fact plus clap's own error handling:
 
-| Outcome | Exit code | Output |
-|---|---|---|
-| Success | 0 | The command's normal output. |
-| `--help`, `help <command>`, `--version` | 0 | Help or version text on stdout. |
-| Handler error (any error returned by a command) | 1 | `Error: <anyhow chain>` on stderr. |
-| Clap parse error (unknown subcommand or flag, missing required argument, conflicting flags, invalid value) | 2 | `error: …` plus usage on stderr. |
+| Outcome                                                                                                    | Exit code | Output                             |
+| ---------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------- |
+| Success                                                                                                    | 0         | The command's normal output.       |
+| `--help`, `help <command>`, `--version`                                                                    | 0         | Help or version text on stdout.    |
+| Handler error (any error returned by a command)                                                            | 1         | `Error: <anyhow chain>` on stderr. |
+| Clap parse error (unknown subcommand or flag, missing required argument, conflicting flags, invalid value) | 2         | `error: …` plus usage on stderr.   |
 
 There is no per-command exit-code table and no `process::exit` call anywhere in the `id` binary or in `id-cli`: every handler error exits 1, whatever the command. Value-parser failures are clap errors and exit 2; for example `--first 0` fails with `zero is not a valid limit: use at least 1`.
 
@@ -113,17 +113,20 @@ $ echo $?
 
 The parser defines 32 top-level commands and 113 leaf commands. The reference chapters divide them as follows:
 
-| Family | Commands | Chapter |
-|---|---|---|
-| File storage and retrieval | `put`, `put-hash`, `send`, `get`, `get-hash`, `cat`, `list`, `migrate-tags` | [File commands: put, get, find and kin](cli-files.md) |
-| Search | `find`, `search`, `show`, `peek` | [File commands: put, get, find and kin](cli-files.md) |
-| Tags | `tag set`, `tag del`, `tag list`, `tag search` | [The tag family](cli-tags.md) |
-| Hosting and publications | `serve`, `publish`, `unpublish`, `publications` | [serve and publications](cli-serve.md) |
-| Worlds (playing) | `world invite`, `world join`, `world records`, `world mirror`, `world download`, and kin | [World commands: joining and playing](cli-worlds.md) |
-| Worlds (administering) | `world install`, `world compile`, `world caps`, `world doctor`, and kin | [World commands: administering and verifying](cli-worlds-admin.md) |
-| Gallery, match-audit, walk | `gallery …`, `match-audit …`, `walk …` | [Gallery, match-audit and walk](cli-gallery-walk.md) |
-| Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md) |
-| Interactive shell | `repl` (alias `shell`), bare `id` | [The interactive REPL](repl.md) |
-| Desktop shell | the separate `id-native-shell` binary | [id-native-shell](native-shell.md) |
+| Family                          | Commands                                                                                                           | Chapter                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| File storage and retrieval      | `put`, `put-hash`, `send`, `get`, `get-hash`, `cat`, `list`, `migrate-tags`                                        | [File commands: put, get, find and kin](cli-files.md)              |
+| Search                          | `find`, `search`, `show`, `peek`                                                                                   | [File commands: put, get, find and kin](cli-files.md)              |
+| Tags                            | `tag set`, `tag del`, `tag list`, `tag search`                                                                     | [The tag family](cli-tags.md)                                      |
+| Hosting and publications        | `serve`, `publish`, `unpublish`, `publications`                                                                    | [serve and publications](cli-serve.md)                             |
+| Worlds (playing)                | `world invite`, `world join`, `world records`, `world mirror`, `world download`, and kin                           | [World commands: joining and playing](cli-worlds.md)               |
+| Worlds (administering)          | `world install`, `world compile`, `world caps`, `world doctor`, and kin                                            | [World commands: administering and verifying](cli-worlds-admin.md) |
+| Gallery, match-audit, walk      | `gallery …`, `match-audit …`, `walk …`                                                                             | [Gallery, match-audit and walk](cli-gallery-walk.md)               |
+| Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `talk …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md)       |
+| Hosted bridge                   | `hosted heads`, `hosted push`, `hosted pull`                                                                       | [Groups, documents, claims and keys](cli-groups-identity.md)       |
+| Host mode                       | `host run`, `host list`, `host start`, `host stop`, `host archive`, `host restore`, `host pin`, `host wake-mode`, `host key`, `host export`, `host import`, `host drill`, `host snapshots`, `host inspect` | [Host mode and graph navigation](cli-host-nav.md)                  |
+| Graph navigation                | `nav neighbors`, `nav backlinks`, `nav threads`, `nav history`, `nav path`                                         | [Host mode and graph navigation](cli-host-nav.md)                  |
+| Interactive shell               | `repl` (alias `shell`), bare `id`                                                                                  | [The interactive REPL](repl.md)                                    |
+| Desktop shell                   | the separate `id-native-shell` binary                                                                              | [id-native-shell](native-shell.md)                                 |
 
 Cross-cutting configuration — `defaults.json`, the full environment variable list, and feature-gated builds — is covered in [Configuration and environment](configuration.md). The on-disk layout behind `--data-dir`, `--groups-log` and `--event-store` is covered in [Data stores and schemas](data-stores.md).

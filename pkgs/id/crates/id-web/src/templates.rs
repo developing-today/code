@@ -345,17 +345,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             };
 
             // Origin + upload time (#4973): origin is the node that first
-            // wrote the file (`unknown` when unrecorded); uploaded is the
-            // `created` stamp. Refs only — bytes never travel in a surface.
+            // wrote the file (`unknown` when unrecorded). A locally created
+            // file carries the full ~60-char node id here; rendering it in
+            // full leaves no flex space and the filename link — the row's
+            // only shrinkable item via min-w-0 — collapses to zero width
+            // (#15146). Show the same 12-char short form as the content
+            // hash; the full id stays in `title`. The span itself is
+            // shrinkable (min-w-0 truncate) so no metadata combination can
+            // zero the link again.
             let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let short_origin: String = origin_str.chars().take(12).collect();
             let uploaded_str = file
                 .created_at
                 .map(format_unix_timestamp)
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "unknown".to_owned());
             let origin_html = format!(
-                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs min-w-0 truncate\" title=\"{}\">origin {} \u{00b7} uploaded {}</span>",
                 html_escape(origin_str),
+                html_escape(&short_origin),
                 uploaded_str
             );
 
@@ -382,7 +390,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
-                    <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
+                    <a class=\"font-bold hover:text-primary truncate flex-auto min-w-0\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
@@ -824,7 +832,7 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <p class=\"text-muted mb-4\">Your node ID is used by peers to connect to you.</p>\n");
     let _ = write!(
         html,
-        "        <code class=\"font-mono text-base-content/40 break-all\">{}</code>\n",
+        "        <code id=\"node-id\" class=\"font-mono text-base-content/40 break-all\">{}</code>\n",
         node_id_escaped
     );
     html.push_str("        \n");
@@ -928,6 +936,14 @@ pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> Stri
         <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
       </div>
       <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Documents</h2>
+        <button data-world-documents-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <input data-world-documents-prefix class="input input-bordered input-xs font-mono" type="text" aria-label="Document name prefix" placeholder="Prefix">
+      <div data-world-documents class="space-y-1" aria-live="polite"></div>
+      <pre data-world-document class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite"></pre>
+      <p class="text-xs opacity-60">Public documents are read-only.</p>
       <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
         <code>id world mirror</code>.</p>
     </div>
@@ -1030,6 +1046,14 @@ pub fn render_program_page(
         <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
       </div>
       <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Documents</h2>
+        <button data-world-documents-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <input data-world-documents-prefix class="input input-bordered input-xs font-mono" type="text" aria-label="Document name prefix" placeholder="Prefix">
+      <div data-world-documents class="space-y-1" aria-live="polite"></div>
+      <pre data-world-document class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite"></pre>
+      <p class="text-xs opacity-60">Public documents are read-only.</p>
       <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
         <code>id world mirror</code>.</p>
     </div>
@@ -1331,7 +1355,7 @@ pub fn render_blocks(blocks: &[Block]) -> String {
     html.push_str("            <input type=\"text\" name=\"expires_at_ms\" class=\"input input-bordered input-xs\"/></label>\n");
     html.push_str("            <input type=\"hidden\" name=\"return_to\" value=\"/blocks\"/>\n");
     html.push_str(
-        "            <button type=\"submit\" class=\"btn btn-warning btn-xs\">block</button>\n",
+        "            <button type=\"submit\" class=\"btn btn-warning btn-xs\" title=\"Add block\" aria-label=\"Add block\">block</button>\n",
     );
     html.push_str("        </form>\n");
     html.push_str("    </div>\n");
@@ -1456,6 +1480,17 @@ mod tests {
         assert!(html.contains("class=\"theme-dot\""));
         assert!(html.contains("class=\"theme-label\">Sneak</span>"));
         assert!(!html.contains("btn-outline btn-primary\" data-theme"));
+    }
+
+    #[test]
+    fn test_render_blocks_add_form_button_has_accessible_label() {
+        // Palette #14990: the destructive Add-a-block submit is a short-text
+        // button like its per-row block/unblock siblings, so it carries the
+        // same title/aria-label pair for tooltip and screen-reader users.
+        let html = render_blocks(&[]);
+        assert!(html.contains(
+            "<button type=\"submit\" class=\"btn btn-warning btn-xs\" title=\"Add block\" aria-label=\"Add block\">block</button>",
+        ));
     }
 
     #[test]
@@ -1632,6 +1667,56 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
+        // The filename anchor must keep flex space and shrink below content
+        // width (#15146): with min-w-0 it is the row's only shrinkable item,
+        // so unbounded nowrap metadata (a full ~60-char origin node id)
+        // collapses the link to zero width and Playwright reports it hidden.
+        // The origin display is shortened to the 12-char short-id form and
+        // the metadata span itself is shrinkable as a backstop.
+        assert!(html.contains("truncate flex-auto min-w-0"));
+        assert!(html.contains("whitespace-nowrap text-xs min-w-0 truncate"));
+    }
+
+    #[test]
+    fn test_render_file_list_shortens_long_origin_node_id() {
+        // A locally created file carries the full node id as origin
+        // (#15146): the list shows the 12-char short form (same convention
+        // as the content hash) with the full id retained in `title`.
+        let long_origin = "78a4e309e09a24b096db41edc0fd7295f2d7fd8b9c0ffee11";
+        assert!(long_origin.len() > 12);
+        let files = vec![FileInfo {
+            name: "test.txt".to_owned(),
+            display_name: None,
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+            tags: vec![],
+            origin_node: Some(long_origin.to_owned()),
+            is_deleted: false,
+        }];
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+            sort: None,
+            origin_filter: None,
+        };
+        let html = render_file_list(&page);
+        assert!(
+            html.contains("origin 78a4e309e09a"),
+            "short origin shown, html: {html}"
+        );
+        assert!(
+            html.contains(&format!("title=\"{long_origin}\"")),
+            "full origin retained in title, html: {html}"
+        );
     }
 
     #[test]

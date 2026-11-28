@@ -93,6 +93,31 @@ class RenderTests(unittest.TestCase):
             "# secrets resolved by name at activation time: svc.api-key", unit
         )
 
+    def test_unit_start_limit_fields_render_in_their_sections(self):
+        # Oracle: systemd.unit(5) / systemd.service(5) directive
+        # placement — StartLimitIntervalSec belongs to [Unit],
+        # RestartSec to [Service] — and issue #15533: the broker-class
+        # daemons must not be able to die permanently to systemd's
+        # default start limit (5 starts per 10s, 100ms restart delay)
+        # during a boot-window failure cascade.
+        unit = deploy.render_unit(
+            "svc",
+            dict(DEFN, restartDelaySec=5, startLimitIntervalSec=0),
+            base=BASE,
+        )
+        unit_section, _, service_section = unit.partition("[Service]")
+        self.assertIn("StartLimitIntervalSec=0", unit_section)
+        self.assertIn("RestartSec=5", service_section)
+
+    def test_unit_without_start_limit_fields_keeps_manager_defaults(self):
+        # Oracle: #15533 acceptance — no behavior change for a
+        # definition that does not opt in; the rendered unit carries
+        # neither directive, so systemd's defaults apply exactly as
+        # before this field existed.
+        unit = deploy.render_unit("svc", DEFN, base=BASE)
+        self.assertNotIn("StartLimitIntervalSec", unit)
+        self.assertNotIn("RestartSec", unit)
+
     def test_unit_render_is_generation_independent(self):
         # The flip-is-a-repoint invariant: the rendered unit cannot
         # depend on which generation is current.
@@ -103,6 +128,23 @@ class RenderTests(unittest.TestCase):
             ),
         )
 
+    def test_unit_kill_signal_renders_in_service_section(self):
+        # Oracle: the relay kit's unit (pkgs/id/tests/fixtures/relay/
+        # iroh-relay.service) — the relay ignores SIGTERM and exits
+        # cleanly on SIGINT, so a registry entry that deploys the
+        # relay must be able to carry the kit unit's KillSignal.
+        # Issue #14719, slice 2: KillSignal=SIGINT is a [Service]
+        # directive, alongside RestartSec.
+        unit = deploy.render_unit("svc", dict(DEFN, killSignal="SIGINT"), base=BASE)
+        _, _, service_section = unit.partition("[Service]")
+        self.assertIn("KillSignal=SIGINT", service_section)
+        self.assertIn("Restart=on-failure", service_section)
+
+    def test_unit_without_kill_signal_carries_no_kill_signal(self):
+        # No behavior change for a definition that does not opt in.
+        unit = deploy.render_unit("svc", DEFN, base=BASE)
+        self.assertNotIn("KillSignal", unit)
+
     def test_plist_stub_points_at_profile_current_link(self):
         plist = deploy.render_plist("svc", DEFN, base=BASE)
         self.assertIn("<string>com.developing-today.deploy.svc</string>", plist)
@@ -110,6 +152,66 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<true/>", plist)  # KeepAlive for restart != "no"
         no_restart = deploy.render_plist("svc", dict(DEFN, restart="no"), base=BASE)
         self.assertIn("<false/>", no_restart)
+
+
+class StartLimitValidationTests(unittest.TestCase):
+    # Oracle: deploy.py's validation contract — the two #15533 fields
+    # are optional integers in range (0 is a real value for
+    # startLimitIntervalSec: systemd's "disable rate limiting"), and
+    # anything else is reported by field name.
+
+    def errors(self, **overrides):
+        return deploy.validate({"svc": dict(DEFN, **overrides)})
+
+    def test_valid_values_pass(self):
+        self.assertEqual(self.errors(restartDelaySec=5, startLimitIntervalSec=0), [])
+        self.assertEqual(self.errors(restartDelaySec=0), [])
+        self.assertEqual(self.errors(startLimitIntervalSec=86400), [])
+
+    def test_out_of_range_and_wrong_type_fail_by_field(self):
+        for field, bad in [
+            ("restartDelaySec", -1),
+            ("restartDelaySec", 3601),
+            ("restartDelaySec", "5"),
+            ("restartDelaySec", True),
+            ("startLimitIntervalSec", -1),
+            ("startLimitIntervalSec", 86401),
+            ("startLimitIntervalSec", "0"),
+            ("startLimitIntervalSec", False),
+        ]:
+            errors = self.errors(**{field: bad})
+            self.assertTrue(errors, f"{field}={bad!r} must be rejected")
+            self.assertIn(field, errors[0])
+
+
+class KillSignalValidationTests(unittest.TestCase):
+    # Oracle: deploy.py's validation contract — killSignal (#14719
+    # slice 2) is an optional systemd signal name ("SIG" + capitals),
+    # rendered verbatim into the unit file, so anything that is not
+    # exactly a signal name (lowercase, blank, smuggled directives,
+    # wrong type) is reported by field name.
+
+    def errors(self, **overrides):
+        return deploy.validate({"svc": dict(DEFN, **overrides)})
+
+    def test_valid_values_pass(self):
+        self.assertEqual(self.errors(killSignal="SIGINT"), [])
+        self.assertEqual(self.errors(killSignal="SIGTERM"), [])
+
+    def test_bad_values_fail_by_field(self):
+        for bad in [
+            "sigint",
+            "SIGINT\nExecStart=/bin/evil",
+            "SIGINT; rm -rf /",
+            "",
+            "TERM",
+            5,
+            True,
+            None,
+        ]:
+            errors = self.errors(killSignal=bad)
+            self.assertTrue(errors, f"killSignal={bad!r} must be rejected")
+            self.assertIn("killSignal", errors[0])
 
 
 class GenerationLogTests(unittest.TestCase):
@@ -179,7 +281,9 @@ class PlanTests(unittest.TestCase):
             self.assertIn("nix-env --profile /profiles/svc --set", text)
 
     def test_deploy_plan_refuses_other_classes(self):
-        cf = dict(DEFN, **{"class": "cloudflare"})
+        # #16239 item 1: cloudflare is now a generic activation class
+        # (it has a plan renderer); container still does not.
+        cf = dict(DEFN, **{"class": "container"})
         self.assertIsNone(deploy.plan_deploy("svc", cf, [], base=BASE))
 
     def test_rollback_plan_selects_previous_without_rebuild(self):

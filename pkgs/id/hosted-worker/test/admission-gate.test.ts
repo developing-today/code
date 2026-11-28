@@ -9,7 +9,7 @@ import {
   admissionContext,
   type AdmissionContext,
 } from "../src/admission-gate.ts";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 // Mirror of crates/id-core/tests/admission_gate.rs: the same
 // actor table and the same scenario → rejection-class table, so
@@ -46,10 +46,7 @@ interface Actor {
 }
 
 async function makeActor(signerId: string): Promise<Actor> {
-  const pair = (await crypto.subtle.generateKey("Ed25519", true, [
-    "sign",
-    "verify",
-  ])) as CryptoKeyPair;
+  const pair = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
   const publicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   return { signerId, pair, publicRaw };
 }
@@ -176,10 +173,7 @@ test("tampered payload is refused at the payload stage", async () => {
     payload: encoder.encode("forged payload"),
     digestOverride: await sha256(payload),
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(envelope, context("alice", "tenant-a"))),
-    "payload",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(envelope, context("alice", "tenant-a"))), "payload");
 });
 
 test("forged and unsigned envelopes are refused as bad signatures", async () => {
@@ -190,10 +184,7 @@ test("forged and unsigned envelopes are refused as bad signatures", async () => 
     payload,
     signWith: bob.pair.privateKey,
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(forged, context("alice", "tenant-a"))),
-    "bad_signature",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(forged, context("alice", "tenant-a"))), "bad_signature");
 
   // Invariant 1: no unsigned-local exception.
   const unsigned = await buildEnvelope({
@@ -203,10 +194,7 @@ test("forged and unsigned envelopes are refused as bad signatures", async () => 
     payload,
     signatureOverride: new Uint8Array(64),
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(unsigned, context("alice", "tenant-a"))),
-    "bad_signature",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(unsigned, context("alice", "tenant-a"))), "bad_signature");
 });
 
 test("unknown signer and wrong principal fail signer binding", async () => {
@@ -216,10 +204,7 @@ test("unknown signer and wrong principal fail signer binding", async () => {
     domain: DOMAIN,
     payload,
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(unknown, context("mallory", "tenant-a"))),
-    "signer_binding",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(unknown, context("mallory", "tenant-a"))), "signer_binding");
 
   const alices = await buildEnvelope({
     actor: alice,
@@ -227,10 +212,7 @@ test("unknown signer and wrong principal fail signer binding", async () => {
     domain: DOMAIN,
     payload,
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(alices, context("bob", "tenant-a"))),
-    "signer_binding",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(alices, context("bob", "tenant-a"))), "signer_binding");
 });
 
 test("wrong tenant scope is unauthorized", async () => {
@@ -240,10 +222,7 @@ test("wrong tenant scope is unauthorized", async () => {
     domain: DOMAIN,
     payload,
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(envelope, context("alice", "tenant-b"))),
-    "unauthorized",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(envelope, context("alice", "tenant-b"))), "unauthorized");
 });
 
 test("oversized payload and unadmitted domain are policy refusals", async () => {
@@ -254,10 +233,7 @@ test("oversized payload and unadmitted domain are policy refusals", async () => 
     payload: encoder.encode("123456789"),
   });
   const smallGate = gate({ admittedDomains: new Set([DOMAIN]), maxPayloadBytes: 8 });
-  assert.equal(
-    await rejectionClass(smallGate.admitCanonical(oversized, context("alice", "tenant-a"))),
-    "policy",
-  );
+  assert.equal(await rejectionClass(smallGate.admitCanonical(oversized, context("alice", "tenant-a"))), "policy");
 
   const otherDomain = await buildEnvelope({
     actor: alice,
@@ -265,17 +241,12 @@ test("oversized payload and unadmitted domain are policy refusals", async () => 
     domain: OTHER_DOMAIN,
     payload,
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(otherDomain, context("alice", "tenant-a"))),
-    "policy",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(otherDomain, context("alice", "tenant-a"))), "policy");
 });
 
 test("garbage bytes are malformed; the blake3 profile is unsupported in this build", async () => {
   assert.equal(
-    await rejectionClass(
-      gate().admitCanonical(new Uint8Array(24).fill(0xff), context("alice", "tenant-a")),
-    ),
+    await rejectionClass(gate().admitCanonical(new Uint8Array(24).fill(0xff), context("alice", "tenant-a"))),
     "malformed",
   );
 
@@ -287,22 +258,17 @@ test("garbage bytes are malformed; the blake3 profile is unsupported in this bui
     profile: "raw-blake3-256",
     digestOverride: new Uint8Array(32),
   });
-  assert.equal(
-    await rejectionClass(gate().admitCanonical(blake3, context("alice", "tenant-a"))),
-    "unsupported",
-  );
+  assert.equal(await rejectionClass(gate().admitCanonical(blake3, context("alice", "tenant-a"))), "unsupported");
 });
 
 test("context fields are validated", () => {
   assert.throws(
     () => admissionContext("", "tenant-a", "admission:write"),
-    (error: unknown) =>
-      error instanceof AdmissionRejection && error.rejectionClass === "malformed",
+    (error: unknown) => error instanceof AdmissionRejection && error.rejectionClass === "malformed",
   );
   assert.throws(
     () => admissionContext("alice", "tenant a", "admission:write"),
-    (error: unknown) =>
-      error instanceof AdmissionRejection && error.rejectionClass === "malformed",
+    (error: unknown) => error instanceof AdmissionRejection && error.rejectionClass === "malformed",
   );
   assert.ok(admissionContext("alice", "tenant-a", "x".repeat(255)));
 });

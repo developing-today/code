@@ -620,6 +620,22 @@ impl Admission {
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), AdmissionError> {
+    write_json_with_parent_sync(path, value, |dir| {
+        std::fs::File::open(dir)?.sync_all()
+    })
+}
+
+/// [`write_json`] with the parent-directory sync step supplied by the
+/// caller, so a test can inject the post-rename sync failure that must be
+/// reported as [`AdmissionError::Storage`] instead of acknowledged as
+/// durable. The sync runs after `persist`: without it, a crash can lose
+/// the rename itself, so `set_config`/`approve` would report an operator
+/// decision durable that [`Admission::load`] never sees on restart.
+fn write_json_with_parent_sync(
+    path: &Path,
+    value: &impl Serialize,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), AdmissionError> {
     let dir = path
         .parent()
         .ok_or_else(|| AdmissionError::Storage(format!("{} has no parent", path.display())))?;
@@ -630,23 +646,55 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), AdmissionError>
     std::io::Write::write_all(&mut staged, &bytes).map_err(|e| storage(path, &e))?;
     staged.as_file().sync_all().map_err(|e| storage(path, &e))?;
     staged.persist(path).map_err(|e| storage(path, &e.error))?;
+    sync_parent(dir).map_err(|e| {
+        AdmissionError::Storage(format!(
+            "{}: {e} (after rename; the write at {} is not durable)",
+            dir.display(),
+            path.display()
+        ))
+    })?;
     Ok(())
 }
 
 fn append_line(path: &Path, entry: &TransparencyEntry) -> Result<(), AdmissionError> {
+    append_line_with_parent_sync(path, entry, |dir| std::fs::File::open(dir)?.sync_all())
+}
+
+/// [`append_line`] with the parent-directory sync step supplied by the
+/// caller. Appends to an existing file are durable once the file data is
+/// synced, but a freshly created transparency log is a new directory
+/// entry: without a parent sync after creation, the same crash window
+/// that [`write_json_with_parent_sync`] closes would lose the whole log,
+/// so the creation path syncs the parent and propagates a failure.
+fn append_line_with_parent_sync(
+    path: &Path,
+    entry: &TransparencyEntry,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), AdmissionError> {
     let dir = path
         .parent()
         .ok_or_else(|| AdmissionError::Storage(format!("{} has no parent", path.display())))?;
     std::fs::create_dir_all(dir).map_err(|e| storage(dir, &e))?;
     let mut line = serde_json::to_vec(entry).map_err(|e| AdmissionError::Storage(e.to_string()))?;
     line.push(b'\n');
+    let created = !path.exists();
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| storage(path, &e))?;
     std::io::Write::write_all(&mut file, &line).map_err(|e| storage(path, &e))?;
-    file.sync_all().map_err(|e| storage(path, &e))
+    file.sync_all().map_err(|e| storage(path, &e))?;
+    if created {
+        sync_parent(dir).map_err(|e| {
+            AdmissionError::Storage(format!(
+                "{}: {e} (after create; the new file at {} is not durable)",
+                dir.display(),
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn storage(path: &Path, error: &std::io::Error) -> AdmissionError {
@@ -816,7 +864,71 @@ mod tests {
         let page = admission.list().page(1, 1);
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].sequence, 2);
-        assert!(admission.list().page(3, 10).is_empty());
-        assert!(admission.list().page(u64::MAX, 10).is_empty());
+        assert_eq!(admission.list().page(3, 10), []);
+        assert_eq!(admission.list().page(u64::MAX, 10), []);
+    }
+
+    // Oracle (#16251): the parent-directory sync is what makes a rename
+    // durable, so it must run after the rename has landed, and its
+    // failure must surface as an error instead of a durable ack.
+    #[test]
+    fn write_json_syncs_the_parent_directory_after_the_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("approved.json");
+        let value = BTreeMap::from([("hash".to_owned(), 1_u32)]);
+        write_json_with_parent_sync(&path, &value, |dir| {
+            assert_eq!(dir, root.path());
+            assert!(path.exists(), "sync ran before the rename landed");
+            Ok(())
+        })
+        .unwrap();
+        assert!(path.exists());
+
+        let error = write_json_with_parent_sync(&path, &value, |_| {
+            Err(std::io::Error::other("injected directory sync failure"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&error, AdmissionError::Storage(message) if message.contains("not durable")),
+            "sync failure must propagate as a storage error, got {error:?}"
+        );
+    }
+
+    // Oracle (#16251): creating the transparency log is a new directory
+    // entry and needs the same post-create parent sync; appending to an
+    // existing log does not (the file-data sync already covers it).
+    #[test]
+    fn append_line_syncs_the_parent_only_when_it_creates_the_log() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("transparency.jsonl");
+        let mut admission = Admission::default();
+        let entry = admission
+            .remove(identity('a'), ReasonClass::Spam, 1, None, None)
+            .unwrap();
+
+        let syncs = std::cell::Cell::new(0_u32);
+        append_line_with_parent_sync(&path, &entry, |_| {
+            syncs.set(syncs.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(syncs.get(), 1, "creation must sync the parent directory");
+
+        append_line_with_parent_sync(&path, &entry, |_| {
+            syncs.set(syncs.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(syncs.get(), 1, "append to an existing log must not re-sync");
+
+        let fresh = root.path().join("other.jsonl");
+        let error = append_line_with_parent_sync(&fresh, &entry, |_| {
+            Err(std::io::Error::other("injected directory sync failure"))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&error, AdmissionError::Storage(message) if message.contains("not durable")),
+            "creation sync failure must propagate, got {error:?}"
+        );
     }
 }

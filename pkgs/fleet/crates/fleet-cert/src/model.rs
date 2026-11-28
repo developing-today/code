@@ -111,6 +111,14 @@ pub struct LeafIssueRequest {
     pub name: String,
     pub common_name: Option<String>,
     pub dns_names: Vec<String>,
+    /// IP address SANs (the broker profiles require a tailnet IP).
+    pub ip_addresses: Vec<std::net::IpAddr>,
+    /// A PKCS#10 CSR (PEM or DER) carrying a key generated on the
+    /// subject's host. When set, the leaf certifies that key and no
+    /// private key is generated or written; the CSR's own subject,
+    /// SANs and extensions are ignored in favour of the request and
+    /// the profile. The `broker-*` profiles require it.
+    pub csr: Option<PathBuf>,
     /// Subject key algorithm; `None` = the profile's key algorithm.
     pub key_algorithm: Option<AlgorithmId>,
     /// Which issuer key signs: (algorithm, partition). `None` =
@@ -176,6 +184,10 @@ pub enum BundleType {
     RootSet,
     IssuerSet,
     Leaf,
+    /// A §3.5 trust-store install bundle: the program roots,
+    /// repackaged for distribution to trust consumers (BT-2,
+    /// #14400). Carries no key material, ever.
+    Trust,
 }
 
 impl BundleType {
@@ -184,6 +196,7 @@ impl BundleType {
             BundleType::RootSet => "root-set",
             BundleType::IssuerSet => "issuer-set",
             BundleType::Leaf => "leaf",
+            BundleType::Trust => "trust",
         }
     }
 }
@@ -240,6 +253,77 @@ pub struct ParentRef {
     pub anchor_fingerprints: Vec<String>,
 }
 
+/// Which role a `fleet cert revoke` verb targets (§6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RevokeTarget {
+    /// A leaf delivery: its `leaf` certificate is revoked.
+    Leaf,
+    /// An issuer set: every CA certificate in it is revoked.
+    Issuer,
+    /// A root set: every CA certificate in it (cross-certificates
+    /// included) is revoked.
+    Root,
+}
+
+impl RevokeTarget {
+    pub fn parse(input: &str) -> crate::Result<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "leaf" => Ok(RevokeTarget::Leaf),
+            "issuer" => Ok(RevokeTarget::Issuer),
+            "root" => Ok(RevokeTarget::Root),
+            other => Err(crate::CertError::usage(format!(
+                "unknown revoke target '{other}' (leaf | issuer | root)"
+            ))),
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RevokeTarget::Leaf => "leaf",
+            RevokeTarget::Issuer => "issuer",
+            RevokeTarget::Root => "root",
+        }
+    }
+}
+
+/// One revocation record (§6.1/§8: `revocations/` in the bundle
+/// manifest). Records carry no secret: the subject certificate is
+/// identified by its SHA-256 fingerprint, and the time the
+/// revocation takes effect is explicit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevocationRecord {
+    pub schema: String,
+    /// What was revoked (`leaf` | `issuer` | `root`).
+    pub target: String,
+    /// Ready for reason-code use with CRLs (§14 follow-up).
+    pub reason: String,
+    pub revoked_at: Rfc3339,
+    /// Label of the certificate in the bundle (`leaf`, `issuer`, ...).
+    pub cert_role: String,
+    pub subject_dn: String,
+    pub serial_hex: String,
+    pub fingerprint_sha256: String,
+    pub algorithm: AlgorithmId,
+    pub partition: String,
+    /// Bundle-relative path of the revocation record itself.
+    pub path: String,
+}
+
+/// The record-file schema id inside `revocations/`.
+pub const REVOCATION_SCHEMA: &str = "fleet-cert-revocation/v1";
+
+/// Reason codes accepted by `fleet cert revoke` (RFC 5280 §5.3.1
+/// subset; `unspecified` is the default).
+pub const REVOCATION_REASONS: &[&str] = &[
+    "unspecified",
+    "key-compromise",
+    "ca-compromise",
+    "affiliation-changed",
+    "superseded",
+    "cessation-of-operation",
+    "privilege-withdrawn",
+];
+
 /// The canonical bundle manifest (§7.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleManifest {
@@ -253,17 +337,174 @@ pub struct BundleManifest {
     pub country: String,
     pub purpose: Option<String>,
     pub generation: u32,
+    /// Certificate revision within one key generation (§5.2 renew):
+    /// a renewal reissues on the same keys and moves this to r2, r3,
+    /// .. while `generation` stays put, so a renewed bundle never
+    /// reads as a key rotation. 1 (and absent from the JSON) for a
+    /// bundle that renews nothing.
+    #[serde(default = "first_revision", skip_serializing_if = "is_first_revision")]
+    pub revision: u32,
+    /// The bundle id this bundle renews (the §5.2 predecessor trace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor: Option<String>,
     pub created_at: Rfc3339,
     /// fleet-cert crate version that created the bundle.
     pub engine_version: String,
     pub parent: Option<ParentRef>,
-    /// `bundle-private` | `external-store` (§7.1: the manifest
-    /// records the custody class, never a secret value).
+    /// `bundle-private` | `external-store` | `host-local` (§7.1: the
+    /// manifest records the custody class, never a secret value;
+    /// `host-local` is a CSR-issued leaf whose key never left the
+    /// subject's host).
     pub key_location: String,
     pub cross_signing: Option<String>,
     pub certificates: Vec<CertRecord>,
+    #[serde(default)]
+    pub revocations: Vec<RevocationRecord>,
     pub files: Vec<FileRecord>,
     pub warnings: Vec<String>,
+}
+
+fn first_revision() -> u32 {
+    1
+}
+
+fn is_first_revision(revision: &u32) -> bool {
+    *revision == 1
+}
+
+/// `cert issuer renew` (§5.2): reissue every certificate of an
+/// issuer set on the keys it already has. Renewal is key reuse, so
+/// the request carries the explicit opt-in the spec requires; the
+/// issuer keys are never regenerated, and only the root keys sign.
+#[derive(Debug, Clone)]
+pub struct IssuerRenewRequest {
+    /// The issuer set being renewed (its manifest, public
+    /// certificates and, for bundle-private custody, its keys).
+    pub issuer_bundle: PathBuf,
+    /// The root set the issuer set chains to.
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 opt-in: renewal reissues on the same keys, which
+    /// policy allows only when asked for in so many words.
+    pub allow_key_reuse: bool,
+}
+
+/// `cert root renew` (§5.2): reissue every certificate of a root set
+/// (the self-signed roots and the root-level cross-certificates) on
+/// the keys it already has.
+#[derive(Debug, Clone)]
+pub struct RootRenewRequest {
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 key-reuse opt-in; renewal refuses without it.
+    pub allow_key_reuse: bool,
+}
+
+/// `cert root rotate` (§5.2): a new root set with new keys, in the
+/// next key generation, with the predecessor's algorithms, partition,
+/// organization and cross-signing mode.
+#[derive(Debug, Clone)]
+pub struct RootRotateRequest {
+    pub root_bundle: PathBuf,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §24.1(1) opt-in, needed again for a set with legacy roots.
+    pub allow_legacy_root_strength: bool,
+    /// Where the new keys go: `None` = the new bundle's own
+    /// `private/keys`; `Some(dir)` = that external store directory.
+    pub private_store: Option<PathBuf>,
+}
+
+/// `cert issuer rotate` (§5.2): a new key per slot of an issuer set,
+/// in the next key generation, under the same root set.
+#[derive(Debug, Clone)]
+pub struct IssuerRotateRequest {
+    /// The issuer set whose keys are replaced.
+    pub issuer_bundle: PathBuf,
+    /// The root set the issuer set chains to.
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §24.1(1) opt-in, needed again for a set with legacy slots.
+    pub allow_legacy_root_strength: bool,
+    /// Where the new keys go: `None` = the new bundle's own
+    /// `private/keys`; `Some(dir)` = that external store directory.
+    pub private_store: Option<PathBuf>,
+    /// When `root_bundle` is a rotation of the issuer set's root set:
+    /// that predecessor root set, whose roots then also certify each
+    /// new issuer key directly, so relying parties that still trust
+    /// only the old roots validate the new leaves (the overlap).
+    pub overlap_root_bundle: Option<PathBuf>,
+    /// REQUIRED with `overlap_root_bundle`: the signer source for the
+    /// predecessor root keys (§24.3).
+    pub overlap_root_signer: Option<SignerSource>,
+}
+
+/// `cert leaf renew` (§5.2): reissue a leaf on the key it already
+/// has. The profile, subject and SANs come from the leaf bundle; the
+/// issuer key comes only from the explicit signer source (§24.3).
+#[derive(Debug, Clone)]
+pub struct LeafRenewRequest {
+    /// The leaf bundle being renewed.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set holding the issuer key that signed the leaf
+    /// (the original set or a renewal of it).
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 key-reuse opt-in, as for issuer renew.
+    pub allow_key_reuse: bool,
+}
+
+/// `cert leaf rotate` (§5.2): a new key for a leaf, in the next key
+/// generation, with the same profile, subject, names and issuer slot
+/// (algorithm and partition). The issuer set may be the original, a
+/// renewal or a rotation of it.
+#[derive(Debug, Clone)]
+pub struct LeafRotateRequest {
+    /// The leaf bundle whose key is replaced.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set that signs the new leaf.
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// A CSR carrying the new key generated on the subject's host;
+    /// required for leaves issued from a CSR (the broker profiles).
+    pub csr: Option<PathBuf>,
+    /// Where a generated key goes, as for leaf issue.
+    pub private_store: Option<PathBuf>,
+}
+
+/// `cert publish plan` (§4.4): read-only publication rendering.
+/// Never touches live endpoints; `host` is the proposed
+/// distribution host (§4.1) and `dns_target` the optional operator
+/// IP that makes the DNS record executable.
+#[derive(Debug, Clone)]
+pub struct PublishPlanRequest {
+    pub bundle: PathBuf,
+    pub host: String,
+    pub dns_target: Option<String>,
+}
+
+/// `cert publish verify` (§4.4/§24.7): read-only mirror check of a
+/// local published directory against the bundle manifest.
+#[derive(Debug, Clone)]
+pub struct PublishVerifyRequest {
+    pub bundle: PathBuf,
+    pub published_dir: PathBuf,
+    pub host: Option<String>,
 }
 
 #[cfg(test)]

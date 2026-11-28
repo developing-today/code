@@ -7,7 +7,10 @@
 // VAPID). The key pair is made here on first use and kept in this
 // service's own store; nobody ever handles it.
 import type { Store } from "./store.ts";
+import { timed, unread } from "./timed.ts";
 
+/** How long a push service has to answer one message. */
+const PUSH_SEND_MS = 15_000;
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
 
@@ -141,10 +144,55 @@ export async function encrypt(sub: Subscription, plaintext: Uint8Array): Promise
   return concat(header, sealed);
 }
 
+/** RFC 8030 section 7.2: a push service takes a message of 4096 bytes
+ * and may refuse a longer one. */
+export const PUSH_LIMIT = 4096;
+/** What sealing adds to the words (see `encrypt`): the salt, the record
+ * size, the length of the key and the key, then one delimiter and the tag. */
+const SEALED_AROUND = 16 + 4 + 1 + 65 + 1 + 16;
+
+/** The message as it is sent: whole when it fits in one push. When it
+ * does not, the body is cut to the longest start that fits, in whole
+ * characters and marked as cut, with the buttons kept; buttons that
+ * could not fit beside any words at all are left off. */
+function fitted(message: { body: string; actions?: unknown[] } & Record<string, unknown>): Uint8Array {
+  const room = PUSH_LIMIT - SEALED_AROUND;
+  // The short way round for nearly every message: what follows gives
+  // the same answer for one that fits.
+  const whole = enc.encode(JSON.stringify(message));
+  if (whole.length <= room) return whole;
+  const points = Array.from(message.body);
+  const cut = (m: Record<string, unknown>, n: number) =>
+    enc.encode(JSON.stringify({ ...m, body: n < points.length ? `${points.slice(0, n).join("")}…` : message.body }));
+  const { actions: _buttons, ...bare } = message;
+  const kept = cut(message, 0).length <= room ? message : bare;
+  let fits = 0;
+  let over = points.length;
+  while (fits < over) {
+    const mid = Math.ceil((fits + over) / 2);
+    if (cut(kept, mid).length <= room) fits = mid;
+    else over = mid - 1;
+  }
+  return cut(kept, fits);
+}
+
 type Poster = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
 ) => Promise<{ status: number }>;
+
+/** The one-census shape (#14084 S2, §3.5) as the console status
+ * carries it. The aggregator serves it live from the registry; the
+ * console's live loader wires in with S4's registry read path, so
+ * until then the console reports the slot as unavailable rather than
+ * a zero census — a missing reader is not an empty registry. */
+export interface PushRegistryCensus {
+  available: boolean;
+  asOf?: string;
+  endpoints?: { total: number; byTransportClient: { transport: string; client: string; count: number }[] };
+  lastSuccessfulSendAt?: string | null;
+  needsUser?: { open: number; totalBlockedBy: number };
+}
 
 export class Push {
   private state: PushFile | null = null;
@@ -157,6 +205,8 @@ export class Push {
     private subject: string | (() => string),
     private post: Poster = (url, init) => fetch(url, init as RequestInit),
     private now: () => number = Date.now,
+    /** S4 wires the registry-backed census loader; until then null. */
+    private registryCensus: (() => Promise<PushRegistryCensus | null>) | null = null,
   ) {}
 
   private async load(): Promise<PushFile> {
@@ -192,6 +242,7 @@ export class Push {
       key: s.vapid?.publicKey ?? "",
       devices: s.subscriptions.length,
       known: await Promise.all(s.subscriptions.map((x) => endpointMark(x.endpoint))),
+      registry: (await this.registryCensus?.()) ?? { available: false },
       classes: Object.fromEntries(CLASSES.map((c) => [c, !s.off.includes(c)])),
       last: s.last ?? null,
     };
@@ -253,10 +304,13 @@ export class Push {
   /** Send one notification to every subscribed device, unless its class
    * is switched off. A subscription the push service says is gone is
    * forgotten. Returns how many devices took it. */
-  async send(cls: Class | "test", message: { title: string; body: string; url: string; tag?: string }) {
+  async send(
+    cls: Class | "test",
+    message: { title: string; body: string; url: string; tag?: string; actions?: unknown[] },
+  ) {
     const s = await this.load();
     if (cls !== "test" && s.off.includes(cls)) return { sent: 0, gone: 0, failed: 0 };
-    const payload = enc.encode(JSON.stringify({ ...message, class: cls }));
+    const payload = fitted({ ...message, class: cls });
     let sent = 0;
     let failed = 0;
     const gone: string[] = [];
@@ -265,18 +319,19 @@ export class Push {
     for (const sub of s.subscriptions) {
       const host = new URL(sub.endpoint).hostname;
       try {
-        const res = await this.post(sub.endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: await this.vapid(sub.endpoint),
-            "Content-Encoding": "aes128gcm",
-            "Content-Type": "application/octet-stream",
-            TTL: "86400",
-            Urgency: "high",
-          },
-          body: await encrypt(sub, payload),
-          signal: AbortSignal.timeout(15_000),
-        });
+        const headers = {
+          Authorization: await this.vapid(sub.endpoint),
+          "Content-Encoding": "aes128gcm",
+          "Content-Type": "application/octet-stream",
+          TTL: "86400",
+          Urgency: "high",
+        };
+        const body = await encrypt(sub, payload);
+        // Only the status is read, so the deadline is the answer's.
+        const res = await timed(PUSH_SEND_MS, (signal) =>
+          this.post(sub.endpoint, { method: "POST", headers, body, signal }),
+        );
+        unread(res);
         if (res.status === 404 || res.status === 410) gone.push(sub.endpoint);
         else if (res.status >= 200 && res.status < 300) sent++;
         else {

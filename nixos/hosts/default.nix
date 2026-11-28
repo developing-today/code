@@ -61,6 +61,15 @@ in
     ];
     modules = [
       {
+        # Stamp the running system with the flake revision it was built
+        # from so `nixos-version --json` reports configurationRevision
+        # (absent by default on NixOS 26.11) and the drift census's
+        # laptop plane can observe a converged match (#15926).
+        # agent-rebuild builds from github:developing-today/code/main#amd,
+        # so self.rev is exactly the commit the census compares against.
+        system.configurationRevision = inputs.self.rev or inputs.self.dirtyRev or null;
+      }
+      {
         services.id-mail = {
           transport = "worker";
           workerUrl = "https://mail.security.cab";
@@ -69,7 +78,12 @@ in
       {
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
-        services.pm-stack.enable = true;
+        services.pm-stack = {
+          enable = true;
+          projectorSocketActivation = true;
+          aggregatorSocketActivation = true;
+          dispatchSocketActivation = true;
+        };
       }
       {
         # Lab cluster Cloudflare Tunnel (code#6455): connector +
@@ -87,7 +101,10 @@ in
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
         # Pad as oci-containers, ready-for-agent as a user service —
         # the last hand-run servers, now flake-declared.
-        services.pm-apps.enable = true;
+        services.pm-apps = {
+          enable = true;
+          readyForAgentSocketActivation = true;
+        };
         # Power guard (code#1687): confirm critical battery readings
         # before UPower can hybrid-sleep the machine.
         services.power-guard.enable = true;
@@ -144,6 +161,9 @@ in
         # beside the sandbox seat's watermark puller that the cutover
         # decision waits on.
         services.archer-slack-collector.enable = true;
+        # Alignment request responder (code#6651): consume the collector
+        # event store and respond only in the written #alignment scope.
+        services.alignment-handler.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
@@ -170,12 +190,34 @@ in
         };
       }
       {
+        # Stable deploy entrypoints (code#14187): the OpenChamber and
+        # mcpx user units exec fixed state-home paths instead of
+        # store paths, so a deploy app can repoint a service's
+        # entrypoint and restart it without writing Home Manager's
+        # unit files. The contract lives in
+        # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+        # the coordinated consumer is dezren39/darwin-nix#1393.
+        home-manager.users.user = {
+          imports = [ ../home/stable-entrypoints.nix ];
+          services.stable-entrypoints.enable = true;
+        };
+      }
+      {
         # Laptop repo keeper (code#1723): hourly sweep keeping every
         # repo primary on this machine committed, pulled, pushed and
         # on its default branch.
         home-manager.users.user = {
           imports = [ ../home/laptop-repo-keeper.nix ];
           services.laptop-repo-keeper.enable = true;
+        };
+      }
+      {
+        # Queue coverage reconciliation (code#7016, #14929): report
+        # uncovered issues and ready PRs hourly; the first runs are
+        # observe-only until the import mode file is explicitly set.
+        home-manager.users.user = {
+          imports = [ ../home/queue-coverage-reconcile.nix ];
+          services.queue-coverage-reconcile.enable = true;
         };
       }
       {

@@ -19,7 +19,7 @@ use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use id::chain::{self, ChainExt, sign};
-use id::event_store::{EventStore, FILE_NAME, Ingest, Refusal, Storage};
+use id::event_store::{EventStore, FILE_NAME, Ingest, Storage};
 use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SigningKey};
 use redb::{Database, DatabaseError, StorageBackend, StorageError, TableDefinition};
@@ -271,7 +271,7 @@ impl Storage for SimDir {
                 .cloned()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
         };
-        handle.sync_data()
+        handle.sync_data().map_err(io::Error::from)
     }
 
     fn sync_dir(&self) -> io::Result<()> {
@@ -420,8 +420,9 @@ fn creation_in_place_control_fails_at_some_crash_point() {
 }
 
 /// The deliveries the ingest sweep makes after creation: a wait that a later event releases, an
-/// after hash on another author's event, a fork, an event refused as frozen, two repeats, and the
-/// waiting events that stay held to the end: a fork between two held events, and a parked event.
+/// after hash on another author's event, a fork, an event kept as voided evidence above the fork
+/// point, two repeats, and the waiting events that stay held to the end: a fork between two held
+/// events, and a parked event.
 fn workload() -> Vec<Vec<u8>> {
     let author = SigningKey::from_bytes(&[21; 32]);
     let other = SigningKey::from_bytes(&[22; 32]);
@@ -440,6 +441,7 @@ fn workload() -> Vec<Vec<u8>> {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     };
     let a0 = sign(&author, 0, None, None, ext("message", Vec::new())).unwrap();
     let a1 = sign(&author, 1, Some(a0.id), None, ext("message", Vec::new())).unwrap();
@@ -611,8 +613,8 @@ fn clean_ingest_run_has_every_outcome_and_survives_its_reopen() {
         "a2 forks"
     );
     assert!(
-        matches!(outcomes[5], Ingest::Refused(Refusal::Frozen)),
-        "a3 is refused after the fork"
+        matches!(outcomes[5], Ingest::Voided { .. }),
+        "a3 is kept as voided evidence after the fork"
     );
     assert!(
         matches!(outcomes[6], Ingest::Duplicate { .. }),

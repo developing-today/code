@@ -4,7 +4,7 @@
 set -u
 FLEET=/tmp/ae-fleet-bin/fleet
 LOG=/tmp/ae-proof.log
-: > "$LOG"
+: >"$LOG"
 say() { echo "== $*" | tee -a "$LOG"; }
 
 # --- Session A: start -> handoff -> exec -> egress -> reconnect -> close
@@ -24,7 +24,7 @@ say "A: run 3 (reconnect: fresh seat process, portable ref)"
 $FLEET actions exec run "dezren39/fleet#$RUN_A" -- 'echo reconnected-ok' 2>&1 | tee -a "$LOG"
 say "A: close"
 $FLEET actions exec close "$HANDLE_A" 2>&1 | tee -a "$LOG"
-echo "HANDLE_A=$HANDLE_A RUN_A=$RUN_A" > /tmp/ae-proof-A.env
+echo "HANDLE_A=$HANDLE_A RUN_A=$RUN_A" >/tmp/ae-proof-A.env
 
 # --- Session B: renewal within the cap
 say "B: start (lease 60, max 300, detach)"
@@ -39,7 +39,7 @@ sleep 70
 say "B: run after original lease would have died"
 $FLEET actions exec run "$HANDLE_B" -- 'echo still-alive-after-renewal' 2>&1 | tee -a "$LOG"
 $FLEET actions exec close "$HANDLE_B" 2>&1 | tee -a "$LOG"
-echo "HANDLE_B=$HANDLE_B" > /tmp/ae-proof-B.env
+echo "HANDLE_B=$HANDLE_B" >/tmp/ae-proof-B.env
 
 # --- Session C: expiry at the cap, unrenewed
 say "C: start (lease 45, max 45, detach)"
@@ -53,7 +53,7 @@ $FLEET actions exec run "$HANDLE_C" -- 'echo should-not-run' 2>&1 | tee -a "$LOG
 say "C: run exit=$?"
 say "C: watch (must report expired and exit)"
 timeout 30 $FLEET actions exec watch "$HANDLE_C" 2>&1 | tee -a "$LOG"
-echo "HANDLE_C=$HANDLE_C" > /tmp/ae-proof-C.env
+echo "HANDLE_C=$HANDLE_C" >/tmp/ae-proof-C.env
 
 # --- Session D: emergency extension past the max
 say "D: start (lease 60, max 90, detach)"
@@ -70,5 +70,5 @@ $FLEET actions exec renew "$HANDLE_D" --timeout 600 2>&1 | tee -a "$LOG"
 say "D: run"
 $FLEET actions exec run "$HANDLE_D" -- 'echo extended-session-works' 2>&1 | tee -a "$LOG"
 $FLEET actions exec close "$HANDLE_D" 2>&1 | tee -a "$LOG"
-echo "HANDLE_D=$HANDLE_D" > /tmp/ae-proof-D.env
+echo "HANDLE_D=$HANDLE_D" >/tmp/ae-proof-D.env
 say "battery done"

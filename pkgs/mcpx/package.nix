@@ -27,7 +27,10 @@
   makeBinaryWrapper,
   installShellFiles,
   tini,
-  doCheck ? true,
+  # Packages included by other applications or system profiles should not
+  # repeat this expensive Go/e2e suite. CI and this repo's standalone
+  # mcpx package output enable it explicitly.
+  doCheck ? false,
   # The OCI image runs exactly this binary plus its explicitly selected
   # JavaScript runtime; it must not inherit the workstation wrapper's full
   # runtime PATH (Deno, Node and git).
@@ -102,7 +105,7 @@ buildMcpxGoModule {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-WixeikMvYYYvvOssmUiVqlglEprQjP2p1pMXpkOLTME=";
+  vendorHash = "sha256-0fIC3yhTHstMOfBxEmTIWLspERpZxF3VNo7f7d2NSYI=";
 
   subPackages = [ "cmd/mcpx" ];
 
@@ -196,23 +199,35 @@ buildMcpxGoModule {
         # main, which is where the fix lands.
         "internal/conformance"
       ];
-      # The Linux-only takeover/handoff tests (#418): they exercise
-      # /proc and systemd-mainpid mechanics that do not exist on
-      # darwin, so the darwin check run skips them by name.
+      # The Linux-only legacy-handoff tests (#418, shrunk by #15397
+      # per #9963 criterion 4): every entry left here drives the
+      # legacy handover machinery directly — pool/client Detach and
+      # fd-passing of stdio pipes, registry handoff, detached-child
+      # pipe adoption, and the daemon's in-process handover of its
+      # listener, connections and pools — which exercises /proc and
+      # systemd-mainpid mechanics that do not exist on darwin, so the
+      # darwin check run skips them by name.
+      #
+      # The end-to-end takeover/upgrade tests are NOT here any more:
+      # since #15398 restored supervised stdio as the default, the
+      # children in those tests (internal/e2e, default config) are
+      # adopted by attach on a takeover, so they no longer need the
+      # legacy mechanics for their stdio children and run on darwin.
+      #
+      # Two e2e tests remain below as a non-legacy exception, blocked
+      # on the darwin product defects in #15407 (supervisor socket
+      # path over darwin's 104-byte limit for scoped instances;
+      # changed server's supervised child not retired on takeover) —
+      # verified failing on aarch64-darwin by the #15397 run
+      # 45769411977. Remove them when #15407 lands.
       darwinSkip = "^(${
         lib.concatStringsSep "|" [
-          "TestACallInFlightAtATakeoverIsAnsweredAndItsConnectionMovesOn"
-          "TestAnIdleKeepAliveConnectionSurvivesATakeover"
-          "TestClientHandoffCommitsOnlyWhenActivated"
           "TestClientLeaseSurvivesDaemonTakeover"
+          "TestTakeoverRestartsAChangedServerAndKeepsTheRest"
+          "TestClientHandoffCommitsOnlyWhenActivated"
           "TestDetachedChildKeepsItsPipesAndAdoptionResumesThem"
           "TestDetachRefusesWhileACallIsInFlight"
           "TestHandoffDoesNotSplitAFrameAcrossTheTwoProcesses"
-          "TestKeepAliveCallersLoseNoCallsAcrossARealTakeover"
-          "TestTakeoverKeepsTheChildAndTheListener"
-          "TestTakeoverLosesNoCallsWhileAClientKeepsCalling"
-          "TestTakeoverRestartsAChangedServerAndKeepsTheRest"
-          "TestUpgradeKeepsTheChildAndHandsMainPIDToTheSuccessor"
           "TestACallInFlightAtTheHandoverIsAnsweredByTheOldDaemon"
           "TestAClientLeaseSurvivesADaemonTakeover"
           "TestAnIdleConnectionSurvivesATakeoverInProcess"

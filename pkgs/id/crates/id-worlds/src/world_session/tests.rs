@@ -26,6 +26,7 @@ mod tests {
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
         outbound: mpsc::Sender<String>,
+        authenticated_caller_account: Option<String>,
     }
 
     impl SessionIo for ChannelIo {
@@ -34,6 +35,26 @@ mod tests {
         }
         async fn send(&mut self, frame: String) -> bool {
             self.outbound.send(frame).await.is_ok()
+        }
+
+        fn authenticated_caller_account(&self) -> Option<&str> {
+            self.authenticated_caller_account.as_deref()
+        }
+    }
+
+    struct StalledSendIo {
+        inbound: std::collections::VecDeque<Inbound>,
+        send_calls: usize,
+    }
+
+    impl SessionIo for StalledSendIo {
+        async fn recv(&mut self) -> Inbound {
+            self.inbound.pop_front().unwrap_or(Inbound::Closed)
+        }
+
+        async fn send(&mut self, _frame: String) -> bool {
+            self.send_calls += 1;
+            std::future::pending().await
         }
     }
 
@@ -49,10 +70,22 @@ mod tests {
         }
 
         fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
+            Self::connect_hub_with_account(hub, config, None)
+        }
+
+        fn connect_hub_with_account(
+            hub: WorldHub,
+            config: SessionConfig,
+            authenticated_caller_account: Option<String>,
+        ) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
             let task = tokio::spawn(async move {
-                let mut io = ChannelIo { inbound, outbound };
+                let mut io = ChannelIo {
+                    inbound,
+                    outbound,
+                    authenticated_caller_account,
+                };
                 run_session_with(&hub, &mut io, config).await;
             });
             Self {
@@ -130,6 +163,162 @@ mod tests {
     struct NoProgram;
 
     impl crate::world::WorldProgram for NoProgram {}
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_input_update_without_becoming_durable() {
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut instance = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        instance.set_charge_key("lobby".to_owned());
+        instance.set_burn_budget(Arc::clone(&budget));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(instance),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world.clone(), None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        let mut peer = peer;
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "31",
+        }))
+        .await;
+        // Oracle synchronization: a view can already have charged this
+        // account. Wait for the input's committed event, not any admission.
+        assert_eq!(next_reply(&mut peer).await["type"], "event");
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("acct-ada")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("authenticated account receives the guest fuel charge");
+
+        let event = world
+            .events_after(capability.clone(), 0)
+            .await
+            .unwrap()
+            .events
+            .remove(0);
+        let persisted = serde_json::to_value(event).unwrap();
+        assert!(persisted.get("caller_account").is_none());
+        assert!(persisted.get("authenticated_caller_account").is_none());
+        let first = budget.snapshot();
+        let ada_calls = first.accounts["acct-ada"].admitted;
+        assert!(ada_calls > 0);
+        assert!(first.accounts["acct-ada"].settled_fuel > 0);
+        peer.close().await;
+
+        // A capability-only session on the same world charges the world
+        // bucket and does not inherit the previous connection's account.
+        let (_, capability) = world.issue("Grace", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(
+            WorldService::new(world.clone(), None),
+            SessionConfig::default(),
+        );
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "32",
+        }))
+        .await;
+        assert_eq!(next_reply(&mut peer).await["type"], "event");
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("lobby")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capability-only input charges the world bucket");
+        world.events_after(capability, 1).await.unwrap();
+        let second = budget.snapshot();
+        assert_eq!(second.accounts["acct-ada"].admitted, ada_calls);
+        assert!(second.accounts["lobby"].admitted > 0);
+        peer.close().await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_view_charge() {
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut instance = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        instance.set_charge_key("lobby".to_owned());
+        instance.set_burn_budget(Arc::clone(&budget));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(instance),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let account_admissions_before = budget
+            .snapshot()
+            .accounts
+            .get("acct-ada")
+            .map_or(0, |account| account.admitted);
+        let mut peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world, None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("acct-ada")
+                .is_none_or(|account| account.admitted <= account_admissions_before)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("authenticated account receives the session view fuel charge");
+
+        let snapshot = budget.snapshot();
+        assert!(snapshot.accounts["acct-ada"].admitted > account_admissions_before);
+        assert!(snapshot.accounts["acct-ada"].settled_fuel > 0);
+        peer.close().await;
+    }
 
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).
@@ -300,6 +489,108 @@ mod tests {
         assert_eq!(ack["ok"], true);
         assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
         peer.close().await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_form_result_without_becoming_durable() {
+        // Oracle: the real sandbox's burn-budget deltas for an accepted joined
+        // form result belong to the transport account, never the world bucket.
+        // The host fixture supplies form UI; all updates/records run real Wasm.
+        struct ChargedFormProgram {
+            form: FormSessionProgram,
+            guest: crate::sandbox::WorldInstance,
+        }
+        impl crate::world::WorldProgram for ChargedFormProgram {
+            fn replace_caller_account(&mut self, account: Option<&str>) -> Option<String> {
+                crate::world::WorldProgram::replace_caller_account(&mut self.guest, account)
+            }
+            fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+                crate::world::WorldProgram::update(&mut self.guest, event)?;
+                crate::world::WorldProgram::update(&mut self.form, event)
+            }
+            fn records(&mut self) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::records(&mut self.guest)
+            }
+            fn wants(&mut self) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::wants(&mut self.form)
+            }
+            fn view(&mut self, viewer: &Participant) -> anyhow::Result<Option<String>> {
+                crate::world::WorldProgram::view(&mut self.form, viewer)
+            }
+        }
+
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut guest = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        guest.set_charge_key("lobby".to_owned());
+        guest.set_burn_budget(Arc::clone(&budget));
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(ChargedFormProgram {
+                form: FormSessionProgram {
+                    token: Arc::new(std::sync::Mutex::new(None)),
+                    results: Arc::clone(&results),
+                },
+                guest,
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world.clone(), Some("admin".to_owned()))),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        peer.say(serde_json::json!({
+            "type": "join", "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["surface"]["kind"], "form");
+        let before = budget.snapshot();
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": view["surface"]["presentation_token"],
+            "action": "submit",
+            "values": {"name": "Ada"},
+            // Client-supplied identity must not override the transport account.
+            "caller_account": "acct-forged",
+        }))
+        .await;
+        let ack = next_reply(&mut peer).await;
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
+        let after = budget.snapshot();
+        let ada_before = before.accounts.get("acct-ada");
+        assert!(after.accounts["acct-ada"].admitted > ada_before.map_or(0, |a| a.admitted));
+        assert!(after.accounts["acct-ada"].settled_fuel > ada_before.map_or(0, |a| a.settled_fuel));
+        assert_eq!(
+            after.accounts["lobby"].admitted,
+            before.accounts["lobby"].admitted
+        );
+        assert_eq!(
+            after.accounts["lobby"].settled_fuel,
+            before.accounts["lobby"].settled_fuel
+        );
+        assert!(!after.accounts.contains_key("acct-forged"));
+        peer.close().await;
+        let (events, _) = admin_history(WorldService::new(world, Some("admin".to_owned()))).await;
+        let durable = serde_json::to_string(&events).unwrap();
+        assert!(!durable.contains("acct-ada"));
+        assert!(!durable.contains("acct-forged"));
     }
 
     #[tokio::test]
@@ -1509,6 +1800,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                idle_timeout: Duration::from_mins(10),
                 documents_store: None,
             },
         );
@@ -1517,6 +1809,126 @@ mod tests {
         assert!(frame["message"].as_str().unwrap().contains("timed out"));
         assert!(peer.next().await.is_none());
         peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_outbound_send_closes_the_session_after_its_deadline() {
+        let hub = WorldHub::single(service(None));
+        let mut io = StalledSendIo {
+            inbound: std::collections::VecDeque::from([Inbound::Text("not json".to_owned())]),
+            send_calls: 0,
+        };
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_mins(10),
+            documents_store: None,
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_session_with_send_deadline(&hub, &mut io, config, Duration::from_millis(10)),
+        )
+        .await
+        .expect("a stalled transport must not keep a session alive");
+        assert_eq!(
+            io.send_calls, 1,
+            "the session attempts its refusal frame once"
+        );
+    }
+
+    /// Oracle for #15976: a joined session that goes silent is reaped
+    /// when the idle deadline passes — the session task ends, the hub
+    /// presence (lease) count drops to zero, and the freed permit lets
+    /// a new session join a hub whose ceiling is one.
+    #[tokio::test]
+    async fn idle_joined_session_releases_its_permit_and_presence() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_sessions: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(500),
+            documents_store: None,
+        };
+        let mut silent = Peer::connect_hub(hub.clone(), config);
+        silent
+            .say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(silent.next().await.unwrap()["type"], "snapshot");
+        // Presence is recorded just after the snapshot is sent; poll
+        // briefly, well inside the idle window.
+        let mut presence = 0;
+        for _ in 0..50 {
+            presence = hub
+                .list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence);
+            if presence == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(presence, 1, "the joined session holds its lease");
+
+        // The peer now goes silent with its transport open. The idle
+        // deadline must end the session on its own.
+        let Peer {
+            to_server: _to_server,
+            from_server: _from_server,
+            task,
+        } = silent;
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("a silent joined session must be reaped at the idle deadline")
+            .unwrap();
+        assert_eq!(
+            hub.list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence),
+            0,
+            "the reaped session releases its presence"
+        );
+
+        // The freed permit admits a new join under the ceiling of one.
+        let mut next = Peer::connect_hub(hub, SessionConfig::default());
+        next.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(next.next().await.unwrap()["type"], "snapshot");
+        next.close().await;
+    }
+
+    /// Oracle for #15976, other side: a session that keeps sending
+    /// frames more often than the idle deadline is never reaped.
+    #[tokio::test]
+    async fn active_session_survives_past_the_idle_deadline() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(150),
+            documents_store: None,
+        };
+        let mut peer = Peer::connect_hub(hub, config);
+        peer.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        // Chat every 50 ms for ~450 ms: three idle windows pass while
+        // the session stays active.
+        for n in 0..9 {
+            peer.say(serde_json::json!({"type":"chat","text": format!("ping {n}")}))
+                .await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        peer.say(serde_json::json!({"type":"chat","text": "still here"}))
+            .await;
+        let event = next_of_type(&mut peer, "event").await;
+        assert_eq!(event["event"]["kind"]["kind"], "chat");
+        peer.close().await;
     }
 
     #[tokio::test]
@@ -2235,7 +2647,7 @@ mod tests {
             .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
             .collect();
         let (page, next_after) = document_names_page(&names).unwrap();
-        assert!(!page.is_empty());
+        assert_ne!(page, [] as [String; 0]);
         assert!(page.len() < names.len());
         assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
         let used: usize = page.iter().map(|name| name.len() + 1).sum();
@@ -2529,6 +2941,168 @@ mod tests {
             0,
             "nothing was opened or created by outsiders"
         );
+    }
+
+    /// Oracle (#1067 F12.10 world-count activation slice): a session
+    /// acting for an account at its per-account world limit is refused
+    /// with the hub's existing `TooManyWorlds` message — on both the
+    /// `create_world` frame and the lease path — while another
+    /// account may still create, and a session with no account skips
+    /// the quota exactly as before.
+    #[tokio::test]
+    async fn session_world_creation_enforces_the_caller_account_quota() {
+        use crate::world_hub::ResolveError;
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_worlds_per_account: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        assert!(hub.create_as("w1", Some("acct-a")).await.unwrap());
+        let refused = ResolveError::TooManyWorlds.message();
+
+        // The explicit create-world frame counts against the caller.
+        let mut full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        full.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w2"}))
+            .await;
+        assert_eq!(full.next().await.unwrap()["message"], refused);
+        full.close().await;
+
+        // So does the lease path: an admin invite that would create a
+        // new world for the full account is refused the same way.
+        let mut lease_full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        lease_full
+            .say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"x","world":"w3"}))
+            .await;
+        assert_eq!(lease_full.next().await.unwrap()["message"], refused);
+        lease_full.close().await;
+
+        // Another account is unaffected, and no-account sessions skip
+        // the quota exactly as the pre-quota paths did.
+        let mut other = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-b".to_owned()),
+        );
+        other
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w2"}))
+            .await;
+        assert_eq!(other.next().await.unwrap()["type"], "world_created");
+        other.close().await;
+
+        let mut anon = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        anon.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w-anon"}))
+            .await;
+        assert_eq!(anon.next().await.unwrap()["type"], "world_created");
+        anon.close().await;
+    }
+
+    /// Oracle (#1067 F12.10 storage-boundary slice): a session
+    /// acting for an account at its per-account storage limit is
+    /// refused with the hub's `StorageQuota` message — on both the
+    /// `create_world` frame and the lease path — while another
+    /// account may still create, and a session with no account skips
+    /// the quota exactly as before.
+    #[tokio::test]
+    async fn session_world_creation_surfaces_the_caller_storage_quota() {
+        use crate::world_hub::{ResolveError, WorldOpener};
+        use std::collections::HashMap;
+
+        struct SizedOpener {
+            inner: Arc<crate::world_hub::testing::MemoryOpener>,
+            sizes: HashMap<String, u64>,
+        }
+        impl WorldOpener for SizedOpener {
+            fn open<'a>(&'a self, name: &'a str, create: bool) -> crate::world_hub::OpenFuture<'a> {
+                self.inner.open(name, create)
+            }
+            fn exists(&self, name: &str) -> bool {
+                self.inner.exists(name)
+            }
+            fn list(&self) -> Vec<String> {
+                self.inner.list()
+            }
+            fn durable(&self) -> bool {
+                self.inner.durable()
+            }
+            fn stored_bytes(&self, name: &str) -> Option<u64> {
+                self.sizes.get(name).copied()
+            }
+        }
+
+        let opener = Arc::new(SizedOpener {
+            inner: crate::world_hub::testing::MemoryOpener::new(false),
+            sizes: HashMap::from([
+                ("w60".to_owned(), 60),
+                ("w50".to_owned(), 50),
+                ("w51".to_owned(), 50),
+            ]),
+        });
+        let dyn_opener: Arc<dyn WorldOpener> = opener;
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits {
+                max_storage_bytes_per_account: 100,
+                ..crate::world_hub::HubLimits::default()
+            },
+        );
+        hub.lease_as(Some("w60"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap();
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+        let refused = ResolveError::StorageQuota.message();
+
+        // The explicit create-world frame counts the measured bytes
+        // against the caller and is refused whole at the limit.
+        let mut full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        full.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w50"}))
+            .await;
+        assert_eq!(full.next().await.unwrap()["message"], refused);
+        full.close().await;
+
+        // So does the lease path: an admin invite that would create a
+        // new world for the full account is refused the same way.
+        let mut lease_full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        lease_full
+            .say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"x","world":"w51"}))
+            .await;
+        assert_eq!(lease_full.next().await.unwrap()["message"], refused);
+        lease_full.close().await;
+
+        // Another account is unaffected, and no-account sessions skip
+        // the quota exactly as the pre-quota paths did.
+        let mut other = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-b".to_owned()),
+        );
+        other
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w51"}))
+            .await;
+        assert_eq!(other.next().await.unwrap()["type"], "world_created");
+        other.close().await;
+
+        let mut anon = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        anon.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w-anon"}))
+            .await;
+        assert_eq!(anon.next().await.unwrap()["type"], "world_created");
+        anon.close().await;
     }
 
     #[tokio::test]
@@ -4549,6 +5123,133 @@ mod tests {
                 .expect("the binary patch applies to its base");
 
             // Parity: the binary-patched client holds exactly a
+            // full-frame client's screen.
+            let mut fresh = Peer::connect(svc, SessionConfig::default());
+            fresh
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                }))
+                .await;
+            assert_eq!(fresh.next().await.unwrap()["type"], "snapshot");
+            let full = next_view(&mut fresh).await;
+            assert_eq!(applied, screen_of(&full));
+        }
+
+        /// A 120x50 screen of varied rows; step 2 rewrites the last
+        /// three rows, a sparse redraw big enough for DEFLATE to win.
+        struct BigScreen(Arc<AtomicU64>);
+
+        impl crate::world::WorldProgram for BigScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+                let step = self.0.load(Ordering::Relaxed);
+                let mut rows = Vec::new();
+                for row in 0..50 {
+                    let mut line = String::with_capacity(120);
+                    for col in 0..120 {
+                        let byte = if step >= 2 && row >= 47 {
+                            b'#'
+                        } else {
+                            ALPHABET[(row * 7 + col * 13) % ALPHABET.len()]
+                        };
+                        line.push(byte as char);
+                    }
+                    rows.push(line);
+                }
+                Ok(Some(format!(
+                    "{{\"kind\":\"screen\",\"version\":1,\"width\":120,\"height\":50,\"rows\":{}}}",
+                    serde_json::to_string(&rows).unwrap()
+                )))
+            }
+        }
+
+        #[tokio::test]
+        async fn compressed_resume_patch_arrives_as_a_version_two_binary_frame() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(BigScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            // Establish a retained baseline on a byte transport that
+            // offered compression, at the full 120x50 viewport.
+            let mut first = BytePeer::connect(svc.clone());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "screen_compress": true,
+                }))
+                .await;
+            assert_eq!(first.next_text().await["type"], "snapshot");
+            let opening: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("the first frame is a full text view, got {other:?}"),
+            };
+            assert!(opening["patch"].is_null(), "the first frame is a full view");
+            first
+                .say(serde_json::json!({"type": "resize", "width": 120, "height": 50}))
+                .await;
+            let resized: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("a resize resets to a full text view, got {other:?}"),
+            };
+            assert!(resized["patch"].is_null(), "a resize resets to a full view");
+            let mut applied = screen_of(&resized);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+
+            step.store(2, Ordering::Relaxed);
+            first.close().await;
+            let mut resumed = BytePeer::connect(svc.clone());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "screen_compress": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next_text().await["type"], "snapshot");
+            let bytes = match resumed.next_view_frame().await {
+                SentFrame::Bytes(bytes) => bytes,
+                other => panic!("a negotiated catch-up patch is binary, got {other:?}"),
+            };
+            let frame = id_core::screen_codec::decode_view_patch(&bytes)
+                .expect("the binary frame is a versioned view patch");
+            assert_eq!(frame.base_view_revision, Some(base_revision));
+            // The session sent the compressed form, not the plain
+            // version-1 encoding of the same frame.
+            assert_eq!(
+                bytes.len(),
+                id_core::screen_codec::encode_view_patch_compressed(&frame)
+                    .unwrap()
+                    .len(),
+                "the session sends exactly the compressed encoding"
+            );
+            assert!(
+                bytes.len()
+                    < id_core::screen_codec::encode_view_patch(&frame)
+                        .unwrap()
+                        .len(),
+                "the compressed frame is smaller than its version-1 form"
+            );
+            applied = frame
+                .patch
+                .apply(&applied)
+                .expect("the binary patch applies to its base");
+
+            // Parity: the compressed-patched client holds exactly a
             // full-frame client's screen.
             let mut fresh = Peer::connect(svc, SessionConfig::default());
             fresh

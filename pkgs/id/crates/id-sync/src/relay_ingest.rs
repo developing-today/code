@@ -31,6 +31,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use id_core::boundary_surfaces::FrameworkOutcome;
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::Connection,
@@ -59,6 +60,14 @@ pub trait ChainedSink: Send + Sync {
     fn deliver(&self, forwarded: &RelayedMessage);
 }
 
+/// Application boundary check for a relay transit. The host supplies the
+/// shared evaluator adapter; this crate only invokes it before accepting a
+/// message into relay state or forwarding it.
+pub trait RelayBoundaryGate: Send + Sync {
+    /// Check inbound relay transit for the origin subject.
+    fn check_relay(&self, subject: &str) -> FrameworkOutcome;
+}
+
 /// Sends `msg` to the node at `target` over the chained-relay ALPN,
 /// and says whether it is done. Mirrors
 /// [`deliver`](crate::envelope_net::deliver) for friend envelopes.
@@ -85,6 +94,7 @@ pub async fn forward_message(
 pub struct ChainedRelayProtocol<F, S> {
     gate: Arc<Mutex<RelayGate<F>>>,
     sink: S,
+    boundary_gate: Option<Arc<dyn RelayBoundaryGate>>,
 }
 
 impl<F, S> ChainedRelayProtocol<F, S> {
@@ -95,7 +105,16 @@ impl<F, S> ChainedRelayProtocol<F, S> {
         Self {
             gate: Arc::new(Mutex::new(gate)),
             sink,
+            boundary_gate: None,
         }
+    }
+
+    /// Install the serving app's shared boundary evaluator adapter for
+    /// inbound relay transit.
+    #[must_use]
+    pub fn with_boundary_gate(mut self, gate: Arc<dyn RelayBoundaryGate>) -> Self {
+        self.boundary_gate = Some(gate);
+        self
     }
 
     fn lock_gate(&self) -> std::sync::MutexGuard<'_, RelayGate<F>> {
@@ -122,21 +141,24 @@ where
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let gate = Arc::clone(&self.gate);
         let sink = self.sink.clone();
+        let boundary_gate = self.boundary_gate.clone();
         answer_frames(&conn, move |body| {
             let gate = Arc::clone(&gate);
             let sink = sink.clone();
-            async move { receive(&gate, &sink, &body) }
+            let boundary_gate = boundary_gate.clone();
+            async move { receive_with_boundary_gate(&gate, boundary_gate.as_deref(), &sink, &body) }
         })
         .await
     }
 }
 
-/// One inbound frame: decode strictly, decide through the gate,
-/// deliver only on a forward. Never panics on malformed input —
-/// every failure is a [`Reply::Refused`] (or [`Reply::Duplicate`])
-/// the sender can act on.
-fn receive<F: MembershipFrontier, S: ChainedSink>(
+/// One inbound frame: decode strictly, consult the optional shared
+/// boundary gate before the relay state machine, then deliver only on
+/// a forward. Never panics on malformed input — every failure is a
+/// [`Reply::Refused`] (or [`Reply::Duplicate`]) the sender can act on.
+fn receive_with_boundary_gate<F: MembershipFrontier, S: ChainedSink>(
     gate: &Mutex<RelayGate<F>>,
+    boundary_gate: Option<&dyn RelayBoundaryGate>,
     sink: &S,
     body: &[u8],
 ) -> Reply {
@@ -148,6 +170,14 @@ fn receive<F: MembershipFrontier, S: ChainedSink>(
             };
         }
     };
+    if let Some(boundary_gate) = boundary_gate {
+        let outcome = boundary_gate.check_relay(&msg.envelope.origin);
+        if !outcome.is_allow() {
+            return Reply::Refused {
+                message: format!("relay boundary refused ({})", outcome.name()),
+            };
+        }
+    }
     let received_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
@@ -192,6 +222,17 @@ mod tests {
     use crate::chained_message::{ChainedContent, ChainedEnvelope};
     use crate::hex::hex_encode;
     use crate::relay_gate::AllowlistFrontier;
+
+    struct DenyRelayBoundary;
+
+    impl RelayBoundaryGate for DenyRelayBoundary {
+        fn check_relay(&self, _: &str) -> FrameworkOutcome {
+            FrameworkOutcome::Deny {
+                placement: Vec::new(),
+                assurance: Vec::new(),
+            }
+        }
+    }
 
     use id_core::membership::AuthId;
     use id_core::waiting::{AuthorKey, WaitingLimits};
@@ -284,6 +325,23 @@ mod tests {
         ChainedRelayProtocol::new(RelayGate::new(&key(relay_seed), frontier), sink)
     }
 
+    #[test]
+    fn boundary_denial_stops_relay_before_forwarding_or_state_change() {
+        // Oracle: a denied RelayTransit outcome must refuse before the
+        // relay gate records a forwarded message or the sink receives it.
+        let mut frontier = AllowlistFrontier::new();
+        frontier.allow("group-1", &key_id(1));
+        let gate = Mutex::new(RelayGate::new(&key(7), frontier));
+        let sink = CollectSink::default();
+        let msg = RelayedMessage::new(envelope(1, 0));
+        let body = serde_json::to_vec(&msg).unwrap();
+
+        let reply = receive_with_boundary_gate(&gate, Some(&DenyRelayBoundary), &sink, &body);
+        assert!(matches!(reply, Reply::Refused { .. }));
+        assert_eq!(gate.lock().unwrap().forwarded(), 0);
+        assert_eq!(sink.received(), [] as [RelayedMessage; 0]);
+    }
+
     #[tokio::test]
     async fn bridge_then_leaf_exchange_over_live_connections() {
         // Acceptance: origin -> bridge -> leaf over real connections.
@@ -367,7 +425,7 @@ mod tests {
             matches!(outcome, Outcome::Refused(_)),
             "forged message must be refused at ingest, got {outcome:?}"
         );
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(bridge_protocol.forwarded(), 0);
     }
 
@@ -398,7 +456,7 @@ mod tests {
             }
             other => panic!("non-member origin must be refused at ingest, got {other:?}"),
         }
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(protocol.forwarded(), 0);
     }
 
@@ -470,6 +528,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -637,7 +696,7 @@ mod tests {
             }
             other => panic!("removed member must be refused at ingest, got {other:?}"),
         }
-        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_sink.received(), [] as [RelayedMessage; 0]);
         assert_eq!(bridge_protocol.forwarded(), 0);
 
         let member = RelayedMessage::new(graph_envelope(1, &group, 0));
@@ -648,6 +707,38 @@ mod tests {
         );
         assert_eq!(bridge_sink.received().len(), 1);
         assert_eq!(bridge_protocol.forwarded(), 1);
+    }
+
+    #[tokio::test]
+    async fn chained_relay_alpn_refuses_non_member_and_delivers_member_with_graph_frontier() {
+        // Serve acceptance: over the registered chained-relay ALPN,
+        // graph-backed authorization refuses a non-member at ingest
+        // while a current member's message reaches the sink.
+        let (create_op, group) = graph_group();
+        let (_dir, store) = graph_store(std::slice::from_ref(&create_op));
+        let origin = endpoint().await;
+        let relay = endpoint().await;
+        let relay_sink = CollectSink::default();
+        let relay_protocol = graph_protocol(7, store, relay_sink.clone());
+        let _router = Router::builder(relay.clone())
+            .accept(CHAINED_RELAY_ALPN, relay_protocol.clone())
+            .spawn();
+
+        let unauthorized = RelayedMessage::new(graph_envelope(3, &group, 0));
+        assert!(matches!(
+            forward_message(&origin, loopback_addr(&relay), &unauthorized).await,
+            Outcome::Refused(_)
+        ));
+        assert_eq!(relay_sink.received(), [] as [RelayedMessage; 0]);
+        assert_eq!(relay_protocol.forwarded(), 0);
+
+        let member = RelayedMessage::new(graph_envelope(1, &group, 0));
+        assert!(matches!(
+            forward_message(&origin, loopback_addr(&relay), &member).await,
+            Outcome::Delivered
+        ));
+        assert_eq!(relay_sink.received().len(), 1);
+        assert_eq!(relay_protocol.forwarded(), 1);
     }
 
     #[tokio::test]

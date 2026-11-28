@@ -1,0 +1,14 @@
+[Unit]
+Description=Standing decision-set refresh — mirror the pending-questions ledger into the standing open-questions set hourly (pm-stack, #13983)
+After=network-online.target pm-aggregator.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+WorkingDirectory=%h/git/code/pm-stack/aggregator
+# Runs from the laptop's code checkout; the store lives in the
+# stable state directory, never the checkout (same rule as the
+# digest and quota units). The ledger is the pending-decisions
+# goal's artifact; the refresh is read-only on it.
+Environment=PM_AGG_PENDING_QUESTIONS_FILE=%h/workspace/goals/pending-decisions-hourly-questions-for-drew/hidden_files/pending-questions.json
+ExecStart=/run/current-system/sw/bin/bun run %h/git/code/pm-stack/aggregator/scripts/refresh-standing-decision-sets.ts

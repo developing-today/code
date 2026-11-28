@@ -8,11 +8,18 @@ import {
   FORECAST_POOLS,
   SERVICE_ID_RENAME_ALIASES,
   buildForecastAccuracyLedger,
+  deriveRealizedDowntimeWindows,
+  deriveResetDurationOutcomes,
   errorDistribution,
   forecastAccuracySeriesKey,
   indexPercentRecords,
   pointsForWindow,
+  renderBacktestReport,
+  scoreDowntimePair,
+  scoreDowntimeWindows,
+  scoreResetDurationPredictions,
   segmentPeriods,
+  summarizeDowntimeScoring,
   type ForecastAccuracyLedger,
 } from "./quota-forecast-accuracy.ts";
 import type { SnapshotRecord } from "./model.ts";
@@ -245,5 +252,195 @@ describe("error distribution (oracle: the quantile definitions)", () => {
   });
   test("empty is null, not zero", () => {
     expect(errorDistribution([])).toBeNull();
+  });
+});
+
+describe("downtime_window scoring (oracle: C4 design §3 over fixture prediction/realized pairs)", () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const pred = (id: string, earliestMs: number, latestMs: number, state = "predicted") => ({
+    id,
+    state,
+    prediction: { earliest: iso(earliestMs), latest: iso(latestMs) },
+  });
+  const honesty = (id: string, state = "insufficient_history") => ({ id, state, prediction: null });
+
+  test("hit: exact window scores zero start/end error and overlap 1", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 4 * H, T0 + 8 * H)],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(1);
+    expect(scoring.falseWindows).toBe(0);
+    expect(scoring.misses).toBe(0);
+    const fact = scoring.facts[0];
+    expect(fact?.outcome).toBe("hit");
+    expect(fact?.startErrorMin).toBe(0);
+    expect(fact?.endErrorMin).toBe(0);
+    expect(fact?.overlapIoU).toBe(1);
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBe(1);
+    expect(baseline.recall).toBe(1);
+    expect(baseline.meanOverlapIoU).toBe(1);
+  });
+
+  test("partial overlap: signed start/end errors and intersection-over-union", () => {
+    // Predicted [T0+2h, T0+6h], realized [T0+4h, T0+8h]:
+    // start error −120m, end error −120m, intersection 2h over union 6h.
+    const pair = scoreDowntimePair({
+      predictedEarliest: iso(T0 + 2 * H),
+      predictedLatest: iso(T0 + 6 * H),
+      realizedStart: iso(T0 + 4 * H),
+      realizedEnd: iso(T0 + 8 * H),
+    });
+    expect(pair.startErrorMin).toBe(-120);
+    expect(pair.endErrorMin).toBe(-120);
+    expect(pair.overlapIoU).toBeCloseTo(2 / 6, 3);
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 2 * H, T0 + 6 * H)],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(1);
+    expect(scoring.facts[0]?.overlapIoU).toBeCloseTo(2 / 6, 3);
+  });
+
+  test("false window: a predicted window that never occurs", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 4 * H, T0 + 8 * H)],
+      realized: [],
+    });
+    expect(scoring.hits).toBe(0);
+    expect(scoring.falseWindows).toBe(1);
+    expect(scoring.misses).toBe(0);
+    expect(scoring.facts[0]?.outcome).toBe("false_window");
+    expect(scoring.facts[0]?.realizedStart).toBeNull();
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBe(0);
+    expect(baseline.recall).toBeNull();
+  });
+
+  test("miss: a realized complete-downtime with no prediction", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(0);
+    expect(scoring.falseWindows).toBe(0);
+    expect(scoring.misses).toBe(1);
+    expect(scoring.facts[0]?.outcome).toBe("miss");
+    expect(scoring.facts[0]?.predictedEarliest).toBeNull();
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBeNull();
+    expect(baseline.recall).toBe(0);
+  });
+
+  test("honesty states are published, never scored (oracle: design §3 no_basis precedent)", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [honesty("h1"), honesty("h2", "no_basis")],
+      realized: [],
+    });
+    expect(scoring.predictionsScored).toBe(0);
+    expect(scoring.predictionsUnscored).toBe(2);
+    expect(scoring.facts).toHaveLength(0);
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.scoreable).toBe(false);
+    expect(baseline.unscoreableReasons.join(" ")).toContain("honesty state");
+  });
+
+  test("realized join: maximal intervals where every provider is down (oracle: §7 intersection)", () => {
+    // Provider A down [0h,10h]; provider B down [2h,4h] and [6h,8h]:
+    // realized complete-downtime is [2h,4h] and [6h,8h].
+    const windows = deriveRealizedDowntimeWindows([
+      [{ start: T0, end: T0 + 10 * H }],
+      [
+        { start: T0 + 2 * H, end: T0 + 4 * H },
+        { start: T0 + 6 * H, end: T0 + 8 * H },
+      ],
+    ]);
+    expect(windows).toEqual([
+      { start: T0 + 2 * H, end: T0 + 4 * H },
+      { start: T0 + 6 * H, end: T0 + 8 * H },
+    ]);
+  });
+
+  test("realized join: no common overlap, or any provider never down, yields no windows", () => {
+    expect(
+      deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], [{ start: T0 + 4 * H, end: T0 + 6 * H }]]),
+    ).toEqual([]);
+    expect(deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], []])).toEqual([]);
+    expect(deriveRealizedDowntimeWindows([])).toEqual([]);
+  });
+});
+
+describe("reset_duration scoring (oracle: C4 design §3 inclusive range coverage + width)", () => {
+  const prediction = (id: string, pool: string, earliest: number, latest: number, state = "predicted") => ({
+    id,
+    subject: { pool, window: "5-hour" },
+    issued_at: iso(T0),
+    basis: { name: "reset_cadence" },
+    methodology_version: "c4-meth:4",
+    state,
+    prediction: state === "predicted" ? { earliest: iso(earliest), latest: iso(latest) } : null,
+  });
+  test("inclusive hit, miss, width, per-pool grouping, and published ledger rows", () => {
+    const predictions = [
+      prediction("hit", "claude", T0 + H, T0 + 3 * H),
+      prediction("miss-low", "claude", T0 + 4 * H, T0 + 5 * H),
+      prediction("other-pool", "openai", T0 + H, T0 + 3 * H),
+    ];
+    const { ledger } = buildForecastAccuracyLedger([], {
+      asOfMs: T0 + 8 * H,
+      resetDurationPredictions: predictions,
+      resetDurationOutcomes: [
+        { pool: "claude", window: "5-hour", realizedAt: iso(T0 + H) },
+        { pool: "openai", window: "5-hour", realizedAt: iso(T0 + 2 * H) },
+      ],
+    });
+    expect(ledger.resetDuration?.facts.map((f) => [f.id, f.covered])).toEqual([
+      ["hit", true],
+      ["miss-low", false],
+      ["other-pool", true],
+    ]);
+    expect(ledger.resetDuration?.baselines).toHaveLength(2);
+    expect(ledger.resetDuration?.baselines[0]).toMatchObject({
+      pool: "claude",
+      predictionsScored: 2,
+      covered: 1,
+      coverage: 0.5,
+      meanWidthMs: H * 1.5,
+      targetBand: "~80%",
+    });
+    expect(renderBacktestReport(ledger)).toContain("Reset-duration range accuracy (C4.2)");
+    expect(renderBacktestReport(ledger)).toContain("50.0%");
+  });
+
+  test("honesty states and predictions without a realized reopening remain unscored", () => {
+    const { baselines, facts } = scoreResetDurationPredictions({
+      predictions: [prediction("no-basis", "claude", T0, T0 + H, "no_basis"), prediction("open", "claude", T0, T0 + H)],
+      outcomes: [],
+      asOfMs: T0 + 10 * H,
+    });
+    expect(facts).toHaveLength(0);
+    expect(baselines[0]).toMatchObject({
+      predictionsScored: 0,
+      predictionsUnscored: 2,
+      coverage: null,
+      meanWidthMs: null,
+    });
+  });
+
+  test("snapshot reset transitions estimate reopening at the bracket midpoint", () => {
+    const outcomes = deriveResetDurationOutcomes(
+      new Map([
+        [
+          "claude:5-hour",
+          [
+            { ts: iso(T0), resetsAt: iso(T0 + 5 * H) },
+            { ts: iso(T0 + 2 * H), resetsAt: iso(T0 + 5 * H) },
+            { ts: iso(T0 + 6 * H), resetsAt: iso(T0 + 10 * H) },
+          ],
+        ],
+      ]),
+    );
+    expect(outcomes).toEqual([{ pool: "claude", window: "5-hour", realizedAt: iso(T0 + 4 * H) }]);
   });
 });

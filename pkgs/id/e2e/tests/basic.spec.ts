@@ -175,8 +175,13 @@ test.describe("Navigation", () => {
     // Go back to file list
     await page.goto("/files");
 
-    // File should appear in the list
-    await expect(page.locator(`text=${fileName}`)).toBeVisible();
+    // File should appear as a visible primary row with a visible link.
+    // Regression (#15146): the row anchor collapsed to zero width when
+    // crowded metadata left no flex space (truncate implies min-width 0).
+    const row = page.locator(`.file-item[data-name="${fileName}"]`);
+    await expect(row).toHaveAttribute("data-kind", "primary");
+    await expect(row).toBeVisible();
+    await expect(row.locator("a")).toBeVisible();
   });
 });
 

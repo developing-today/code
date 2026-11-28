@@ -1,180 +1,180 @@
 [
- {
-  "evidence": "Converts three web-gen rust-toolchain files to .toml (6 files, +6/-3); closes #11350, closed with Dependabot parse error addressed.",
-  "gap": null,
-  "issue": 11350,
-  "pr": 12394,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Extracts AppError/ErrorTemplate into start-axum-error with compat re-export (5 files, +110/-78); closes #8967, closed, matches scope.",
-  "gap": null,
-  "issue": 8967,
-  "pr": 12395,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Moderation/hide/true-delete/GC transition spec + reciprocal links (3 files, +26/-1); closes #9130, closed, design-doc scope matches.",
-  "gap": null,
-  "issue": 9130,
-  "pr": 12397,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Journal event envelope, correction example, traceability for JRN-01 IDs (1 file, +51); closes #9463, closed.",
-  "gap": null,
-  "issue": 9463,
-  "pr": 12398,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Per-embed classification design doc (1 file, +137); closes #9096, closed; body states decisions and follow-ups.",
-  "gap": null,
-  "issue": 9096,
-  "pr": 12399,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "One-time enrollment handoff (12 files, +837/-11): Worker, enroll script, prompt, docs. No Closes ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12400,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Preserves identity generation floor after backup purge, rejects replay (1 file, +37/-1) with regression test; closes #9024, closed.",
-  "gap": null,
-  "issue": 9024,
-  "pr": 12401,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Explicit User-Agent in create-url.py + feedback note (2 files, +2); follow-up fix to #12400, no close ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12407,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Per-embed classification record parsing/composition in atlas-core (2 files, +465) with tests; no issue ref, judged on intent against #9096 design.",
-  "gap": null,
-  "issue": null,
-  "pr": 12408,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Classifies 'Could not resolve to a node' as permission refusal in gh.rs (1 file, +99/-4); closes #12154, closed, completing remaining half.",
-  "gap": null,
-  "issue": 12154,
-  "pr": 12409,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Isolates named Muse tailnet identities in bootstrap.sh (2 files, +76/-3) with probe + docs; no close ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12410,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Docs-only Iroh/Tailscale direct-path clarification (2 files, +6/-4); no close ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12411,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Console as gate for whole public hostname (11 files, +569/-85); body refs #12360 only (not closing); security intent implemented in server/config/tests.",
-  "gap": null,
-  "issue": 12360,
-  "pr": 12412,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Idle-connection effect probes, three exemptions removed (4 files, +186/-9); related to #8469, not closing; keeps http.streamBufferInit exempt while #8469 is closed: suspect-closure.",
-  "gap": {
-   "title": "Suspect closure: #8469 closed with http.streamBufferInit exemption remaining",
-   "why": "PR explicitly keeps http.streamBufferInit in exemptions; #8469 closed. Lane 2 pointer."
+  {
+    "evidence": "Converts three web-gen rust-toolchain files to .toml (6 files, +6/-3); closes #11350, closed with Dependabot parse error addressed.",
+    "gap": null,
+    "issue": 11350,
+    "pr": 12394,
+    "verdict": "audit:complete"
   },
-  "issue": 8469,
-  "pr": 12413,
-  "verdict": "audit:partial"
- },
- {
-  "evidence": "Affected-id-crate selector script + fixture tests (2 files, +275); no close ref; judged on intent with tests per body.",
-  "gap": null,
-  "issue": null,
-  "pr": 12418,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Daily R2 bundle systemd timer + multi-repo bundler (16 files, +300/-33) with tests; no close ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12419,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Restored-key markers via write_durable with temp cleanup + error context (1 file, +67/-2) + three tests; Fixes #12420, closed.",
-  "gap": null,
-  "issue": 12420,
-  "pr": 12421,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Fixes sign.sh double keystore password read (1 file, +5/-1); refs #12412 only; matches described apksigner EOF failure.",
-  "gap": null,
-  "issue": 12412,
-  "pr": 12422,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Console-served Android APK route for signed-in owner (7 files, +93/-19) with tests; refs #12360 only; judged on intent.",
-  "gap": null,
-  "issue": 12360,
-  "pr": 12423,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Console-gate-aware link + PWA shortcut behind PM_AGG_CONSOLE_HOST (5 files, +79/-1) with nav/a11y/curation tests; Closes #12416, closed.",
-  "gap": null,
-  "issue": 12416,
-  "pr": 12424,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Docs-only results-first plan Done/Progress rows (1 file, +28/-26); no close ref; judged on intent.",
-  "gap": null,
-  "issue": null,
-  "pr": 12425,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Queue-compatible any-* default lane for standalone agent names (5 files, +86/-6), fixing 'unknown lane_id shed' failure in #12236. Does not close; #12236 open with follow-ups tracked there.",
-  "gap": null,
-  "issue": 12236,
-  "pr": 12429,
-  "verdict": "audit:partial"
- },
- {
-  "evidence": "Prefix-ordering marker to console.log for stable check (1 file, +10/-1); fixes amd-build blocker in #12428, closed.",
-  "gap": null,
-  "issue": 12428,
-  "pr": 12451,
-  "verdict": "audit:complete"
- },
- {
-  "evidence": "Large console app overhaul (23 files, +4794/-396) with work/push/notify tests; refs #12360 only; judged on intent.",
-  "gap": null,
-  "issue": 12360,
-  "pr": 12452,
-  "verdict": "audit:no-issue"
- },
- {
-  "evidence": "Prompt visibility + board-sync reply detection fixes + five review findings (5 files, +40/-40); refs #12452 only; judged on intent with tests.",
-  "gap": null,
-  "issue": 12452,
-  "pr": 12454,
-  "verdict": "audit:no-issue"
- }
+  {
+    "evidence": "Extracts AppError/ErrorTemplate into start-axum-error with compat re-export (5 files, +110/-78); closes #8967, closed, matches scope.",
+    "gap": null,
+    "issue": 8967,
+    "pr": 12395,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Moderation/hide/true-delete/GC transition spec + reciprocal links (3 files, +26/-1); closes #9130, closed, design-doc scope matches.",
+    "gap": null,
+    "issue": 9130,
+    "pr": 12397,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Journal event envelope, correction example, traceability for JRN-01 IDs (1 file, +51); closes #9463, closed.",
+    "gap": null,
+    "issue": 9463,
+    "pr": 12398,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Per-embed classification design doc (1 file, +137); closes #9096, closed; body states decisions and follow-ups.",
+    "gap": null,
+    "issue": 9096,
+    "pr": 12399,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "One-time enrollment handoff (12 files, +837/-11): Worker, enroll script, prompt, docs. No Closes ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12400,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Preserves identity generation floor after backup purge, rejects replay (1 file, +37/-1) with regression test; closes #9024, closed.",
+    "gap": null,
+    "issue": 9024,
+    "pr": 12401,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Explicit User-Agent in create-url.py + feedback note (2 files, +2); follow-up fix to #12400, no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12407,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Per-embed classification record parsing/composition in atlas-core (2 files, +465) with tests; no issue ref, judged on intent against #9096 design.",
+    "gap": null,
+    "issue": null,
+    "pr": 12408,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Classifies 'Could not resolve to a node' as permission refusal in gh.rs (1 file, +99/-4); closes #12154, closed, completing remaining half.",
+    "gap": null,
+    "issue": 12154,
+    "pr": 12409,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Isolates named Muse tailnet identities in bootstrap.sh (2 files, +76/-3) with probe + docs; no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12410,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Docs-only Iroh/Tailscale direct-path clarification (2 files, +6/-4); no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12411,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console as gate for whole public hostname (11 files, +569/-85); body refs #12360 only (not closing); security intent implemented in server/config/tests.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12412,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Idle-connection effect probes, three exemptions removed (4 files, +186/-9); related to #8469, not closing; keeps http.streamBufferInit exempt while #8469 is closed: suspect-closure.",
+    "gap": {
+      "title": "Suspect closure: #8469 closed with http.streamBufferInit exemption remaining",
+      "why": "PR explicitly keeps http.streamBufferInit in exemptions; #8469 closed. Lane 2 pointer."
+    },
+    "issue": 8469,
+    "pr": 12413,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Affected-id-crate selector script + fixture tests (2 files, +275); no close ref; judged on intent with tests per body.",
+    "gap": null,
+    "issue": null,
+    "pr": 12418,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Daily R2 bundle systemd timer + multi-repo bundler (16 files, +300/-33) with tests; no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12419,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Restored-key markers via write_durable with temp cleanup + error context (1 file, +67/-2) + three tests; Fixes #12420, closed.",
+    "gap": null,
+    "issue": 12420,
+    "pr": 12421,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixes sign.sh double keystore password read (1 file, +5/-1); refs #12412 only; matches described apksigner EOF failure.",
+    "gap": null,
+    "issue": 12412,
+    "pr": 12422,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console-served Android APK route for signed-in owner (7 files, +93/-19) with tests; refs #12360 only; judged on intent.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12423,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console-gate-aware link + PWA shortcut behind PM_AGG_CONSOLE_HOST (5 files, +79/-1) with nav/a11y/curation tests; Closes #12416, closed.",
+    "gap": null,
+    "issue": 12416,
+    "pr": 12424,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only results-first plan Done/Progress rows (1 file, +28/-26); no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12425,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Queue-compatible any-* default lane for standalone agent names (5 files, +86/-6), fixing 'unknown lane_id shed' failure in #12236. Does not close; #12236 open with follow-ups tracked there.",
+    "gap": null,
+    "issue": 12236,
+    "pr": 12429,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Prefix-ordering marker to console.log for stable check (1 file, +10/-1); fixes amd-build blocker in #12428, closed.",
+    "gap": null,
+    "issue": 12428,
+    "pr": 12451,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Large console app overhaul (23 files, +4794/-396) with work/push/notify tests; refs #12360 only; judged on intent.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12452,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Prompt visibility + board-sync reply detection fixes + five review findings (5 files, +40/-40); refs #12452 only; judged on intent with tests.",
+    "gap": null,
+    "issue": 12452,
+    "pr": 12454,
+    "verdict": "audit:no-issue"
+  }
 ]

@@ -12,6 +12,7 @@
 // (design §4.1: "a bearer token the service can validate without a
 // callback to the caller").
 
+import { base64UrlToBytes } from "../../../hosted-primitives/src/encoding.ts";
 import { FailClosed } from "./errors.ts";
 
 export interface Jwk {
@@ -77,17 +78,8 @@ async function getJwks(jwksUri: string, fetcher: JwksFetcher, now: number): Prom
   return jwks;
 }
 
-function b64urlToBytes(text: string): Uint8Array {
-  const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 function b64urlToJson(text: string): Record<string, unknown> {
-  const bytes = b64urlToBytes(text);
+  const bytes = base64UrlToBytes(text);
   const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new FailClosed(401, "malformed_token", "token segment is not a JSON object");
@@ -116,7 +108,7 @@ export function parseJwt(token: string): ParsedJwt {
     return {
       header: b64urlToJson(parts[0]),
       payload: b64urlToJson(parts[1]),
-      signature: b64urlToBytes(parts[2]),
+      signature: base64UrlToBytes(parts[2]),
       signingInput: `${parts[0]}.${parts[1]}`,
     };
   } catch (e) {

@@ -16,6 +16,8 @@
 //! keys are malformed for this purpose (#5460): a misspelled `[domains]`
 //! table or `idle_exit_secs` key is a parse error, not a silent default.
 
+pub mod ctx;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -102,12 +104,21 @@ pub struct SearchConfig {
     pub url: Option<String>,
 }
 
-/// `[gh]` — the gh domain's credential-cache view (code#10742).
-/// All optional: with no section the client tries the localhost
-/// daemon at the default port, then the laptop daemon (the proxy's
-/// reach target) at the same port. Both are preferences between
-/// working routes, never a disable: an unreachable daemon falls
-/// back to in-process resolution with a visible note.
+/// `[gh]` — the gh domain's credential-cache view (code#10742)
+/// and its token rotation (code#10311 ask (a)).
+///
+/// Cache: all optional. With no section the client tries the
+/// localhost daemon at the default port, then the laptop daemon
+/// (the proxy's reach target) at the same port. Both are
+/// preferences between working routes, never a disable: an
+/// unreachable daemon falls back to in-process resolution with a
+/// visible note.
+///
+/// Rotation: `order` and `owners` persist what used to be env-only,
+/// so the rotation survives shells and machines. The env
+/// variables (`FLEET_GH_ORDER` and `FLEET_GH_<SLUG>_OWNERS`)
+/// stay per-process overrides and beat the file, the same
+/// env-beats-file direction as `[gh] cache_*`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GhConfig {
@@ -120,6 +131,49 @@ pub struct GhConfig {
     /// rule. On the laptop itself localhost IS the laptop, so the
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
+    /// The persistent rotation order: entries in the `FLEET_GH_ORDER`
+    /// grammar (`personal`, built-in `app:<owner>`,
+    /// `devtoday:<owner>`, `backup:<owner>`, or configured
+    /// `<slug>:<owner>`), given as a TOML array. When set it
+    /// replaces the whole rotation exactly, exactly as the env
+    /// variable does — so enumerating the entries here also
+    /// *selects* the enabled set (an App left out is not tried).
+    /// `FLEET_GH_ORDER` beats it per process. Absent means the
+    /// compiled-in rotation.
+    pub order: Option<Vec<String>>,
+    /// Per-App owner lists, keyed by App slug (`app`, `devtoday`,
+    /// `backup`): `[gh.owners] app = [...]`. An entry replaces
+    /// that App's compiled-in owners; `FLEET_GH_<SLUG>_OWNERS`
+    /// beats it per process. A key naming no known App is a loud
+    /// load error (#5460: a typo'd slug must not silently fall
+    /// back to the compiled-in owners).
+    #[serde(default)]
+    pub owners: BTreeMap<String, Vec<String>>,
+    /// Additional GitHub Apps, declared without a fleet binary
+    /// change (code#10311 ask (b)). Existing built-in Apps remain
+    /// available; configured entries extend them by slug.
+    #[serde(default)]
+    pub apps: Vec<GhAppConfig>,
+}
+
+/// A GitHub App credential source declared in `[[gh.apps]]`.
+/// Exactly one of `app_id` and `app_id_secret` must be set. The
+/// private key is always resolved by name through fleet-secrets;
+/// key material is never stored in this config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhAppConfig {
+    /// Stable rotation slug, used by `FLEET_GH_ORDER` and cache requests.
+    pub slug: String,
+    /// Public GitHub App ID, when not resolved from fleet-secrets.
+    pub app_id: Option<u64>,
+    /// Secret name containing the GitHub App ID.
+    pub app_id_secret: Option<String>,
+    /// Secret name containing the App's private key.
+    pub key_secret: String,
+    /// Default owners whose installations may be used.
+    #[serde(default)]
+    pub owners: Vec<String>,
 }
 /// `[bridge]` — the message bridge's fleet mailboxes (`fleet
 /// bridge`). Everything is optional: the URL defaults to
@@ -142,11 +196,141 @@ pub struct BridgeConfig {
     /// Secret name of the fleet (agent) token; default
     /// [`DEFAULT_BRIDGE_FLEET_TOKEN_NAME`].
     pub fleet_token_name: Option<String>,
+    /// Secret name of this agent's class/name notes token (#14370).
+    /// Default: the name the agent profile recorded at enrolment,
+    /// else `bridge.<agent>-token` derived from the agent name.
+    pub notes_token_name: Option<String>,
 }
 
 pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
 pub const DEFAULT_BRIDGE_OWNER_TOKEN_NAME: &str = "message-bridge.access-token";
 pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
+
+/// Pass-1 tool endpoint sections (design mill #10389, pass 1 #10390):
+/// `[opencode]`, `[openchamber]`, `[id]` and `[mcpx]`. All optional:
+/// with no section fleet falls through to the tool's standard local
+/// endpoint. Resolution order for every tool is flag → this setting →
+/// env (`FLEET_<TOOL>_ENDPOINT`) → standard local endpoint (see
+/// [`resolve_tool_endpoint`]). The per-service standards live in
+/// [`Pass1Tool::standard_local_endpoint`] (confirmed values from the
+/// pass-1 design record; [`resolve_pass1_tool_endpoint`] runs the full
+/// chain for one tool).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolEndpointConfig {
+    /// Explicit endpoint (`host[:port]`, socket path or base URL);
+    /// overrides the standard local endpoint for this tool.
+    pub endpoint: Option<String>,
+}
+
+/// Env var holding an explicit OpenCode endpoint (between the
+/// `[opencode]` setting and the standard local endpoint).
+pub const OPENCODE_ENDPOINT_ENV: &str = "FLEET_OPENCODE_ENDPOINT";
+/// Env var holding an explicit OpenChamber endpoint.
+pub const OPENCHAMBER_ENDPOINT_ENV: &str = "FLEET_OPENCHAMBER_ENDPOINT";
+/// Env var holding an explicit ID-tool endpoint.
+pub const FLEET_ID_ENDPOINT_ENV: &str = "FLEET_ID_ENDPOINT";
+/// Env var holding an explicit mcpx endpoint.
+pub const MCPX_ENDPOINT_ENV: &str = "FLEET_MCPX_ENDPOINT";
+
+/// Confirmed standard-local OpenCode endpoint (design mill #10389,
+/// pass 1 #10390): the existing fleet session-probe fallback, adopted
+/// by the pass-1 design record
+/// (`doc/2026-11-24_design_id10390_fleet-subcommands-pass1.md` §4) as
+/// OpenCode's standard-local target. Evidence in code:
+/// `pkgs/fleet/crates/fleet/src/session_state.rs`
+/// (`resolve_opencode_base_url` falls back to this value).
+pub const OPENCODE_STANDARD_LOCAL_ENDPOINT: &str = "http://127.0.0.1:13420";
+
+/// Pass-1 tool identity for standard-local endpoint lookup (#10390).
+/// The standard-local target is adapter-owned, never guessed by the
+/// generic resolver: OpenCode has a confirmed HTTP standard above;
+/// OpenChamber, ID and mcpx have none — fleet delegates to the
+/// installed native CLI / the tool's own socket and endpoint
+/// resolution (design record §4 table; open question §8.1 for a
+/// future OpenChamber standalone base).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pass1Tool {
+    /// OpenCode: standard-local HTTP endpoint confirmed.
+    OpenCode,
+    /// OpenChamber: no fleet-owned standard; use the installed CLI.
+    OpenChamber,
+    /// ID tool: no single global HTTP endpoint; explicit node/world
+    /// addressing through the installed CLI.
+    Id,
+    /// mcpx: no fleet-guessed endpoint; the daemon client owns local
+    /// socket and remote `ssh://` resolution.
+    Mcpx,
+}
+
+impl Pass1Tool {
+    /// Env var holding an explicit endpoint for this tool (between the
+    /// `[tool]` setting and the standard local endpoint).
+    pub fn endpoint_env(self) -> &'static str {
+        match self {
+            Pass1Tool::OpenCode => OPENCODE_ENDPOINT_ENV,
+            Pass1Tool::OpenChamber => OPENCHAMBER_ENDPOINT_ENV,
+            Pass1Tool::Id => FLEET_ID_ENDPOINT_ENV,
+            Pass1Tool::Mcpx => MCPX_ENDPOINT_ENV,
+        }
+    }
+
+    /// Confirmed standard-local target for this tool, or `None` where
+    /// the design record establishes no fleet-owned standard. `None`
+    /// is a deliberate delegation marker, not a gap: callers must not
+    /// substitute a guessed port or another service's endpoint.
+    pub fn standard_local_endpoint(self) -> Option<&'static str> {
+        match self {
+            Pass1Tool::OpenCode => Some(OPENCODE_STANDARD_LOCAL_ENDPOINT),
+            Pass1Tool::OpenChamber | Pass1Tool::Id | Pass1Tool::Mcpx => None,
+        }
+    }
+}
+
+/// Resolve one pass-1 tool endpoint end to end through the #10390
+/// chain: flag → `[tool]` setting → `FLEET_<TOOL>_ENDPOINT` env →
+/// the tool's confirmed standard-local target. Blank levels count as
+/// unset (see [`resolve_tool_endpoint`]). Returns `None` where the
+/// tool has no fleet-owned standard and nothing explicit was given —
+/// the caller then delegates to the native CLI instead of dialling a
+/// guessed endpoint.
+pub fn resolve_pass1_tool_endpoint(
+    tool: Pass1Tool,
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+) -> Option<String> {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    tool.standard_local_endpoint().map(str::to_string)
+}
+
+/// Resolve one pass-1 tool endpoint in flag → setting → env → standard
+/// order (#10390). Blank levels (empty or whitespace-only) count as
+/// unset; the first non-blank wins, else `standard`. Values pass
+/// through byte-for-byte (no trimming of the winner). Pure function
+/// so the precedence is unit-testable; callers read the env var
+/// themselves.
+pub fn resolve_tool_endpoint(
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+    standard: &str,
+) -> String {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    standard.to_string()
+}
 
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
@@ -358,7 +542,7 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-j
 
 /// The Turso jobs store the dispatch-test domain records jobs in.
 pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
-    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-dispatch-jobs";
 
 /// The default Actions-capacity threshold for dispatch-test scope
 /// selection: a scope is eligible below this many active jobs.
@@ -394,6 +578,14 @@ pub struct Config {
     /// (fleet mailboxes): URL, this host's agent name and groups,
     /// and the secret names its tokens resolve under.
     pub bridge: BridgeConfig,
+    /// `[opencode]` — pass-1 endpoint view for OpenCode (#10390).
+    pub opencode: ToolEndpointConfig,
+    /// `[openchamber]` — pass-1 endpoint view for OpenChamber (#10390).
+    pub openchamber: ToolEndpointConfig,
+    /// `[id]` — pass-1 endpoint view for the ID tool (#10390).
+    pub id: ToolEndpointConfig,
+    /// `[mcpx]` — pass-1 endpoint view for mcpx (#10390).
+    pub mcpx: ToolEndpointConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -466,6 +658,40 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+    /// Bitwarden Secrets Manager project id that secret writes
+    /// (`fleet-secrets`' store path, used by `fleet bridge exchange`)
+    /// create into (#14370). The `FLEET_BWS_PROJECT_ID` environment
+    /// variable overrides it. Reads never need it.
+    pub bws_project_id: Option<String>,
+    /// The secret-name prefix this instance works inside (#10358, D2
+    /// to D5): `get alpha` reads `<prefix>.alpha`. The
+    /// `FLEET_SECRETS_PREFIX` environment variable overrides it; an
+    /// empty value counts as unset. A namespace view, not access
+    /// control.
+    pub prefix: Option<String>,
+    /// Which secret store this instance reads from (#10358 D8, S3):
+    /// `bitwarden` or `1password`. Unset is `auto`: the historical
+    /// chain exactly. `FLEET_SECRETS_STORE` overrides it, and a
+    /// per-call `--store` flag overrides both; an empty value counts
+    /// as unset. Any other value is a load-time parse error.
+    pub store: Option<String>,
+    /// The vault inside the selected store (#10358 D8, S3): a
+    /// Bitwarden project id for `bitwarden`, a vault name for
+    /// `1password`. `FLEET_SECRETS_VAULT` overrides it, and a
+    /// per-call `--vault` flag overrides both; an empty value counts
+    /// as unset. Setting a vault with no store is a load-time parse
+    /// error.
+    pub vault: Option<String>,
+    /// 1Password vault the client-side [`OpSource`](fleet_secrets::OpSource)
+    /// reads through (`op read op://<vault>/<name>/<field>`, #14151).
+    /// Env `FLEET_OP_VAULT` beats this file value when both are set.
+    /// The generalized `[secrets] store`/`vault` (#10358) covers the
+    /// same ground; this alias stays so the #14151 packet's
+    /// documented spelling keeps working.
+    pub op_vault: Option<String>,
+    /// 1Password item field holding the value (`credential` when
+    /// unset). Env `FLEET_OP_FIELD` beats this file value.
+    pub op_field: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -533,6 +759,19 @@ pub struct DispatchTestConfig {
     /// fork network.
     #[serde(default)]
     pub scopes: Vec<String>,
+}
+
+/// Whether a `[secrets] prefix` value is usable: a valid secret name
+/// (the rule of fleet-secrets' `validate_name`) that does not end with
+/// the `.` separator.
+fn valid_secrets_prefix(prefix: &str) -> bool {
+    !(prefix.is_empty()
+        || prefix == "."
+        || prefix == ".."
+        || prefix.ends_with('.')
+        || prefix.chars().any(|c| {
+            c == '/' || c == '?' || c == '#' || c == '%' || c.is_whitespace() || c.is_control()
+        }))
 }
 
 #[derive(Debug)]
@@ -905,6 +1144,8 @@ impl Config {
             (&self.proxy.cf_access_file, "[proxy] cf_access_file"),
             (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
             (&self.secrets.token_file, "[secrets] token_file"),
+            (&self.secrets.op_vault, "[secrets] op_vault"),
+            (&self.secrets.op_field, "[secrets] op_field"),
             (&self.dispatch.url, "[dispatch] url"),
             (&self.dispatch.token_name, "[dispatch] token_name"),
             (&self.gh.cache_local, "[gh] cache_local"),
@@ -913,6 +1154,8 @@ impl Config {
             (&self.bridge.agent, "[bridge] agent"),
             (&self.bridge.owner_token_name, "[bridge] owner_token_name"),
             (&self.bridge.fleet_token_name, "[bridge] fleet_token_name"),
+            (&self.bridge.notes_token_name, "[bridge] notes_token_name"),
+            (&self.secrets.bws_project_id, "[secrets] bws_project_id"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -922,6 +1165,141 @@ impl Config {
                     ),
                 });
             }
+        }
+        // [gh] rotation (code#10311 ask (a)): an order entry or
+        // an owner entry that is empty or blank is the #6405
+        // misspelling class — a templated config rendering a
+        // variable that came out empty. Reject at load, naming
+        // the field; omitting the field (or the key) keeps the
+        // compiled-in default. An empty owner LIST (`app = []`)
+        // is allowed: it disables that App's legs.
+        if let Some(order) = &self.gh.order {
+            for entry in order {
+                if entry.trim().is_empty() {
+                    return Err(ConfigError::Parse {
+                        path: path.to_path_buf(),
+                        message: "[gh] order must not contain an empty or blank entry; omit the field for the default"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        for (slug, owners) in &self.gh.owners {
+            if !matches!(slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[gh.owners] {slug:?} is not a known rotation App; known slugs: app, devtoday, backup"
+                    ),
+                });
+            }
+            for owner in owners {
+                if owner.trim().is_empty() {
+                    return Err(ConfigError::Parse {
+                        path: path.to_path_buf(),
+                        message: format!(
+                            "[gh.owners] {slug:?} must not contain an empty or blank owner; use an empty list to disable that App"
+                        ),
+                    });
+                }
+            }
+        }
+        // [[gh.apps]] (#10311 ask (b)): these records are a
+        // credential-source schema, so reject ambiguous ID sources,
+        // built-in slug collisions and blank secret/owner fields at
+        // config load rather than silently shadowing a rotation leg.
+        let mut gh_app_slugs = std::collections::BTreeSet::new();
+        for (index, app) in self.gh.apps.iter().enumerate() {
+            let row = index + 1;
+            let slug_valid = !app.slug.is_empty()
+                && app
+                    .slug
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !slug_valid || matches!(app.slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} has an invalid or reserved slug; use lowercase letters, digits and hyphens, excluding app, devtoday and backup"
+                    ),
+                });
+            }
+            if !gh_app_slugs.insert(app.slug.as_str()) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!("[[gh.apps]] row {row} duplicates an App slug"),
+                });
+            }
+            if app.app_id.is_some() == app.app_id_secret.is_some() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} must set exactly one of app_id or app_id_secret"
+                    ),
+                });
+            }
+            if app.key_secret.trim().is_empty()
+                || app
+                    .app_id_secret
+                    .as_deref()
+                    .is_some_and(|name| name.trim().is_empty())
+                || app.owners.iter().any(|owner| owner.trim().is_empty())
+            {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} secret names and owners must not be empty or blank"
+                    ),
+                });
+            }
+        }
+        // [secrets] prefix (#10358 D9): an empty value counts as
+        // unset, so it is not a blank-field error; a set prefix must be
+        // a usable secret name and may not end with the separator. The
+        // refused characters mirror fleet-secrets' validate_name (that
+        // crate depends on this one, not the other way round).
+        if let Some(prefix) = self.secrets.prefix.as_deref() {
+            if !prefix.trim().is_empty() && !valid_secrets_prefix(prefix) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: "[secrets] prefix must be a valid secret name (no '/', '?', '#', '%', whitespace or control characters, not '.' or '..') and may not end with '.'".to_string(),
+                });
+            }
+        }
+        // [secrets] store / vault (#10358 D8, S3): empty values count
+        // as unset, like the prefix. A set store must name a known
+        // store, and a vault is meaningless without one — both are
+        // load-time parse errors, never silent defaults (design
+        // record §5).
+        let store_set = self
+            .secrets
+            .store
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if store_set {
+            let store = self.secrets.store.as_deref().unwrap_or_default().trim();
+            if store != "bitwarden" && store != "1password" {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[secrets] store must be \"bitwarden\" or \"1password\", not {store:?}"
+                    ),
+                });
+            }
+        }
+        let vault_set = self
+            .secrets
+            .vault
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if vault_set && !store_set {
+            return Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: "[secrets] vault is set but [secrets] store is not: a vault only \
+                          means something inside a store; set store = \"bitwarden\" or \
+                          store = \"1password\" alongside it"
+                    .to_string(),
+            });
         }
         // [host] (#6770, design #5687 §1): the manifest's loud
         // rules run at load like every other section's, plus one
@@ -1055,7 +1433,7 @@ impl Config {
         &self,
         env_contents: Option<&str>,
         env_location: Option<&str>,
-        file_path: &std::path::Path,
+        _file_path: &std::path::Path,
     ) -> Result<Option<ResolvedHost>, ConfigError> {
         if let Some(text) = env_contents {
             let label = PathBuf::from("$FLEET_HOST_CONFIG");
@@ -1074,14 +1452,9 @@ impl Config {
                 HostSource::EnvContents,
             ));
         }
-        if let Some(location) = env_location {
-            let location = location.trim();
-            if location.is_empty() {
-                // An all-whitespace value is the empty case of the
-                // #5473 rule wearing spaces; treat it as unset and
-                // fall through to the file.
-                return self.resolve_host_from(None, None, file_path);
-            }
+        // An all-whitespace value is the empty case of the #5473 rule
+        // wearing spaces; treat it as unset and fall through to the file.
+        if let Some(location) = env_location.map(str::trim).filter(|v| !v.is_empty()) {
             if self.host.location.as_deref() == Some(location) && self.host.is_present() {
                 return Ok(Self::resolved_from_manifest(
                     self.host.clone(),
@@ -1585,12 +1958,119 @@ impl Config {
         }
     }
 
+    /// The persistent gh rotation order (code#10311 ask (a)):
+    /// `FLEET_GH_ORDER` beats `[gh] order` beats the compiled-in
+    /// rotation (`None` for the last leg). The file form is a TOML
+    /// array in the same grammar as the env comma list; it is
+    /// joined here so the gh module parses one grammar once. An
+    /// empty env value or an empty/all-blank file list counts as
+    /// unset and falls through, exactly as an empty parsed order
+    /// falls through to the default rotation in `gh.rs`.
+    pub fn gh_rotation_order(&self) -> Option<String> {
+        Self::gh_rotation_order_from(
+            std::env::var("FLEET_GH_ORDER").ok().as_deref(),
+            self.gh.order.as_ref(),
+        )
+    }
+
+    /// `gh_rotation_order`, pure over its two sources so the
+    /// precedence is pinnable in tests without env mutation
+    /// races: a non-blank env value wins outright; otherwise the
+    /// file list (blank entries dropped — the loader already
+    /// rejects them) joins in file order; empty everywhere means
+    /// the compiled-in rotation (`None`).
+    fn gh_rotation_order_from(env: Option<&str>, file: Option<&Vec<String>>) -> Option<String> {
+        if let Some(raw) = env {
+            if !raw.trim().is_empty() {
+                return Some(raw.to_string());
+            }
+        }
+        file.and_then(|order| {
+            let kept: Vec<String> = order
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(","))
+        })
+    }
+
+    /// The per-App owner override for one rotation App slug
+    /// (code#10311 ask (a)): `FLEET_GH_APP_OWNERS` /
+    /// `FLEET_GH_DEVTODAY_OWNERS` / `FLEET_GH_BACKUP_OWNERS` beat
+    /// `[gh.owners] app` / `devtoday` / `backup` beat the
+    /// compiled-in defaults. `None` means no override (the
+    /// compiled-in owners rule); `Some(vec![])` disables that
+    /// App's legs. Slugs are the gh module's rotation slugs;
+    /// this crate maps only the three documented env names and
+    /// reads the file table by key, so an unknown slug resolves
+    /// from the file alone (the caller decides what it means).
+    pub fn gh_owners_for(&self, slug: &str) -> Option<Vec<String>> {
+        let env_name = match slug {
+            "app" => Some("FLEET_GH_APP_OWNERS"),
+            "devtoday" => Some("FLEET_GH_DEVTODAY_OWNERS"),
+            "backup" => Some("FLEET_GH_BACKUP_OWNERS"),
+            _ => None,
+        };
+        let env = env_name.and_then(|name| std::env::var(name).ok());
+        Self::gh_owners_for_from(env.as_deref(), self.gh.owners.get(slug))
+    }
+
+    /// `gh_owners_for`, pure over its two sources so tests pin the
+    /// precedence without env mutation races: env set wins
+    /// (splitting the comma list, so even an all-blank value is a
+    /// `Some(vec![])` disable, matching the pre-config behavior);
+    /// env unset falls through to the file entry; both absent is
+    /// `None` (the compiled-in owners rule).
+    fn gh_owners_for_from(env: Option<&str>, file: Option<&Vec<String>>) -> Option<Vec<String>> {
+        if let Some(raw) = env {
+            return Some(
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            );
+        }
+        file.map(|owners| {
+            owners
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
             Some(p) => resolve_under_home(p),
             None => resolve_under_home(DEFAULT_SECRETS_TOKEN_FILE),
         }
+    }
+
+    /// The 1Password vault for the client-side op source (#14151),
+    /// if the operator named one in `[secrets]`. Env
+    /// `FLEET_OP_VAULT` beats this value; see
+    /// `fleet_secrets::OpSource::from_config`.
+    pub fn secrets_op_vault(&self) -> Option<String> {
+        self.secrets
+            .op_vault
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+
+    /// The 1Password item field for the client-side op source
+    /// (#14151), if the operator named one in `[secrets]`. Env
+    /// `FLEET_OP_FIELD` beats this value.
+    pub fn secrets_op_field(&self) -> Option<String> {
+        self.secrets
+            .op_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
     }
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
@@ -1674,10 +2154,161 @@ mod tests {
     }
 
     #[test]
+    fn gh_configured_apps_parse_and_validate_sources() {
+        // Oracle: a configured App has a stable slug, exactly one
+        // App-ID source, a secret name for its private key and
+        // default owners; duplicate/reserved slugs and ambiguous
+        // IDs are rejected at config load.
+        let (_dir, path) = write_temp(
+            "[[gh.apps]]\nslug = \"backup-next\"\napp_id_secret = \"github.backup-next.id\"\nkey_secret = \"github.backup-next.key\"\nowners = [\"developing-today\", \"layercloud\"]\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.gh.apps.len(), 1);
+        assert_eq!(cfg.gh.apps[0].slug, "backup-next");
+        assert_eq!(cfg.gh.apps[0].app_id, None);
+        assert_eq!(
+            cfg.gh.apps[0].app_id_secret.as_deref(),
+            Some("github.backup-next.id")
+        );
+        assert_eq!(cfg.gh.apps[0].key_secret, "github.backup-next.key");
+        assert_eq!(cfg.gh.apps[0].owners, ["developing-today", "layercloud"]);
+
+        for (contents, expected) in [
+            (
+                "[[gh.apps]]\nslug = \"app\"\napp_id = 1\nkey_secret = \"key\"\n",
+                "invalid or reserved slug",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id = 1\napp_id_secret = \"id\"\nkey_secret = \"key\"\n",
+                "exactly one of app_id or app_id_secret",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id_secret = \"id\"\nkey_secret = \"key\"\n\n[[gh.apps]]\nslug = \"extra\"\napp_id = 2\nkey_secret = \"key2\"\n",
+                "duplicates an App slug",
+            ),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(expected), "{message}");
+                }
+                other => panic!("expected Parse error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn missing_file_is_defaults() {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn tool_endpoint_resolution_is_flag_then_setting_then_env_then_standard() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(None, None, None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(None, None, Some("http://env:1"), std),
+            "http://env:1"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(None, Some("http://file:2"), Some("http://env:1"), std),
+            "http://file:2"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(
+                Some("http://flag:3"),
+                Some("http://file:2"),
+                Some("http://env:1"),
+                std
+            ),
+            "http://flag:3"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_blank_levels_count_as_unset() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(Some("  "), Some(""), None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(Some("  "), Some("http://file:2"), None, std),
+            "http://file:2"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_sections_default_to_unset_and_parse() {
+        let cfg = Config::default();
+        assert!(cfg.opencode.endpoint.is_none());
+        assert!(cfg.openchamber.endpoint.is_none());
+        assert!(cfg.id.endpoint.is_none());
+        assert!(cfg.mcpx.endpoint.is_none());
+        let (_dir, path) = write_temp("[opencode]\nendpoint = \"http://127.0.0.1:4096\"\n");
+        let cfg = Config::load_from(path.as_path()).unwrap();
+        assert_eq!(
+            cfg.opencode.endpoint.as_deref(),
+            Some("http://127.0.0.1:4096")
+        );
+        assert!(cfg.mcpx.endpoint.is_none());
+    }
+
+    #[test]
+    fn standard_endpoints_match_pass1_design_record() {
+        // Oracle: doc/2026-11-24_design_id10390_fleet-subcommands-pass1.md
+        // §4 table. OpenCode's standard is the existing session-probe
+        // fallback (pkgs/fleet/crates/fleet/src/session_state.rs); the
+        // other three tools have no fleet-owned standard URL — they
+        // delegate to the native CLI / the tool's own resolution, so a
+        // guessed port or a reused credential must never appear here.
+        assert_eq!(
+            Pass1Tool::OpenCode.standard_local_endpoint(),
+            Some(OPENCODE_STANDARD_LOCAL_ENDPOINT)
+        );
+        assert_eq!(OPENCODE_STANDARD_LOCAL_ENDPOINT, "http://127.0.0.1:13420");
+        assert_eq!(Pass1Tool::OpenChamber.standard_local_endpoint(), None);
+        assert_eq!(Pass1Tool::Id.standard_local_endpoint(), None);
+        assert_eq!(Pass1Tool::Mcpx.standard_local_endpoint(), None);
+    }
+
+    #[test]
+    fn standard_endpoints_resolve_through_precedence() {
+        // The confirmed standards resolve through the same flag →
+        // setting → env → standard chain: nothing set falls through to
+        // the standard, and every explicit level still wins in order.
+        let cfg = Config::default();
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::OpenCode, None, None, None),
+            Some(OPENCODE_STANDARD_LOCAL_ENDPOINT.to_string())
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(
+                Pass1Tool::OpenCode,
+                None,
+                cfg.opencode.endpoint.as_deref(),
+                Some("http://env:13420"),
+            ),
+            Some("http://env:13420".to_string())
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(
+                Pass1Tool::OpenCode,
+                Some("http://flag:13420"),
+                Some("http://file:13420"),
+                Some("http://env:13420"),
+            ),
+            Some("http://flag:13420".to_string())
+        );
+        // No fleet-owned standard and nothing explicit: no guessed
+        // endpoint — the caller delegates to the native CLI.
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::Mcpx, None, None, None),
+            None
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::Id, None, None, Some("http://env:1"),),
+            Some("http://env:1".to_string())
+        );
     }
 
     #[test]
@@ -1778,6 +2409,94 @@ mod tests {
             match Config::load_from(&path) {
                 Err(ConfigError::Parse { message, .. }) => {
                     assert!(message.contains("[gh]"), "{message}");
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gh_rotation_order_parses_and_sets_precedence() {
+        // Oracle: code#10311 ask (a) — `[gh] order` persists the
+        // FLEET_GH_ORDER grammar; env beats the file; empty
+        // everywhere means the compiled-in rotation (None).
+        let (_dir, path) = write_temp("[gh]\norder = [\"app:dezren39\", \"personal\"]\n");
+        let cfg = Config::load_from(&path).unwrap();
+        // Env is empirically unset in this test (no mutation here,
+        // so no race): the file value rules.
+        assert_eq!(
+            Config::gh_rotation_order_from(None, cfg.gh.order.as_ref()).as_deref(),
+            Some("app:dezren39,personal")
+        );
+        // Env wins outright when non-blank.
+        assert_eq!(
+            Config::gh_rotation_order_from(
+                Some("devtoday:developing-today"),
+                cfg.gh.order.as_ref()
+            )
+            .as_deref(),
+            Some("devtoday:developing-today")
+        );
+        // A blank env value falls through to the file.
+        assert_eq!(
+            Config::gh_rotation_order_from(Some("   "), cfg.gh.order.as_ref()).as_deref(),
+            Some("app:dezren39,personal")
+        );
+        // Empty everywhere is the compiled-in rotation.
+        assert_eq!(Config::gh_rotation_order_from(None, None), None);
+        assert_eq!(
+            Config::gh_rotation_order_from(Some(""), Some(&vec![])),
+            None
+        );
+    }
+
+    #[test]
+    fn gh_owners_parses_and_sets_precedence() {
+        // Oracle: code#10311 ask (a) — `[gh.owners]` persists the
+        // per-App owner lists; env set wins (even to an empty
+        // disable); env unset falls through to the file; both
+        // absent is None (compiled-in owners).
+        let (_dir, path) = write_temp("[gh.owners]\napp = [\"dezren39\"]\ndevtoday = []\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("app")),
+            Some(vec!["dezren39".to_string()])
+        );
+        // An empty file list disables that App's legs.
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("devtoday")),
+            Some(vec![])
+        );
+        // No file entry is no override.
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("backup")),
+            None
+        );
+        // Env set wins, even to an empty disable.
+        assert_eq!(
+            Config::gh_owners_for_from(Some("a,b"), cfg.gh.owners.get("app")),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            Config::gh_owners_for_from(Some(""), cfg.gh.owners.get("app")),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn gh_rotation_config_rejects_typos_loudly() {
+        // Oracle: the #5460/#6405 loud-error rules — a blank
+        // order entry, a blank owner entry, and an unknown owner
+        // slug are all misspelling-class load errors.
+        for (contents, fragment) in [
+            ("[gh]\norder = [\"\"]\n", "[gh] order"),
+            ("[gh.owners]\napp = [\"dezren39\", \"  \"]\n", "[gh.owners]"),
+            ("[gh.owners]\nwarp = [\"x\"]\n", "[gh.owners]"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(fragment), "{message}");
                 }
                 other => panic!("expected Parse error for {contents:?}, got {other:?}"),
             }
@@ -2494,6 +3213,10 @@ socket = "rel/s.sock"
             ),
             ("[secrets]\ntoken_file = \"\"\n", "[secrets] token_file"),
             ("[secrets]\ntoken_file = \"  \"\n", "[secrets] token_file"),
+            ("[secrets]\nop_vault = \"\"\n", "[secrets] op_vault"),
+            ("[secrets]\nop_vault = \"  \"\n", "[secrets] op_vault"),
+            ("[secrets]\nop_field = \"\"\n", "[secrets] op_field"),
+            ("[secrets]\nop_field = \"  \"\n", "[secrets] op_field"),
             ("[dispatch]\nurl = \"\"\n", "[dispatch] url"),
             ("[dispatch]\nurl = \"  \"\n", "[dispatch] url"),
             ("[dispatch]\ntoken_name = \"\"\n", "[dispatch] token_name"),
@@ -2530,6 +3253,79 @@ socket = "rel/s.sock"
         assert_eq!(cfg.dispatch_url(), None);
         assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
     }
+    #[test]
+    fn secrets_prefix_parses_and_bad_prefixes_are_refused() {
+        // #10358 S1: the prefix key parses as written.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("42"));
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"team.42\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some("team.42"));
+        // An empty value counts as unset (D9), not a blank-field error.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nprefix = \"\"\n");
+        assert_eq!(cfg.secrets.prefix.as_deref(), Some(""));
+        // An empty table and an old-shape table both still load.
+        let (_d, _p, cfg) = cfg_from("[secrets]\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        let (_d, _p, cfg) = cfg_from("[secrets]\ntoken_file = \"/run/token\"\n");
+        assert_eq!(cfg.secrets.prefix, None);
+        // A prefix ending in the separator, or holding a refused
+        // character, is a loud parse error naming the field.
+        for bad in ["42.", ".", "..", "a/b", "a b", "a%2f", "a?b", "a#b"] {
+            let (_dir, path) = write_temp(&format!("[secrets]\nprefix = {bad:?}\n"));
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => assert!(
+                    message.contains("[secrets] prefix"),
+                    "error should name the field for {bad:?}: {message}"
+                ),
+                other => panic!("expected Parse error for prefix {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn secrets_store_and_vault_parse_and_bad_shapes_are_refused() {
+        // #10358 S3 (D8): store and vault parse as written.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"bitwarden\"\nvault = \"proj-1\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some("bitwarden"));
+        assert_eq!(cfg.secrets.vault.as_deref(), Some("proj-1"));
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"1password\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some("1password"));
+        assert_eq!(cfg.secrets.vault, None);
+        // Empty values count as unset (D9), not errors.
+        let (_d, _p, cfg) = cfg_from("[secrets]\nstore = \"\"\nvault = \"\"\n");
+        assert_eq!(cfg.secrets.store.as_deref(), Some(""));
+        // A vault without a store is a parse error naming the vault.
+        let (_dir, path) = write_temp("[secrets]\nvault = \"proj-1\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("[secrets] vault"), "got: {message}")
+            }
+            other => panic!("expected Parse error for vault without store, got {other:?}"),
+        }
+        // An unknown store is a parse error naming the store.
+        let (_dir, path) = write_temp("[secrets]\nstore = \"vaultwarden\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("[secrets] store"), "got: {message}")
+            }
+            other => panic!("expected Parse error for unknown store, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secrets_op_vault_and_field_parse() {
+        // #14151: the op backend selection is visible in fleet.toml.
+        let (_dir, path) = write_temp("[secrets]\nop_vault = \"Dev\"\nop_field = \"password\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.secrets_op_vault().as_deref(), Some("Dev"));
+        assert_eq!(cfg.secrets_op_field().as_deref(), Some("password"));
+        // Omitted keeps the op source off.
+        let (_dir2, path2) = write_temp("");
+        let cfg2 = Config::load_from(&path2).unwrap();
+        assert_eq!(cfg2.secrets_op_vault(), None);
+        assert_eq!(cfg2.secrets_op_field(), None);
+    }
+
     // ---- [host] manifest + location resolution (#6770, #5687) ----
 
     fn cfg_from(contents: &str) -> (tempfile_dir::Dir, PathBuf, Config) {
@@ -2666,6 +3462,18 @@ socket = "rel/s.sock"
             cfg.resolve_host_from(None, Some("lab-99"), &path).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn host_whitespace_env_location_falls_through_to_file() {
+        let (_d, path, cfg) =
+            cfg_from("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n");
+        let resolved = cfg
+            .resolve_host_from(None, Some(" \t "), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.location, "sandbox");
+        assert_eq!(resolved.source, HostSource::File);
     }
 
     #[test]

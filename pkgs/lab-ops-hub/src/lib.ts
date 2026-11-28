@@ -5,6 +5,19 @@ import { HTML5_ENTITIES, MAX_HTML5_ENTITY_KEY_LENGTH } from "./html5-entities.ts
 // Kept free of Worker bindings so they can be unit-tested with plain
 // Node (test/lib.test.ts).
 
+// --- Worker version answer (#15793) ----------------------------------------
+// The edge Worker checks ask every in-service Worker which commit it
+// was deployed from: `GET /version` answering {ok, service, version},
+// where `version` is the VERSION var the deploy paths stamp per deploy
+// (deploy.mjs --var, cf-worker-versions-release.yml). The edge probe
+// reads the `version` field (commitOf in
+// pm-stack/console/edge/src/worker-checks.ts). An unstamped deploy
+// answers "unknown", which the probe records honestly.
+
+export function versionAnswer(version: string | undefined): { ok: true; service: string; version: string } {
+  return { ok: true, service: "lab-ops-hub", version: version && version.length > 0 ? version : "unknown" };
+}
+
 // --- Crawl URL validation ---------------------------------------------------
 // The crawler fetches a caller-supplied URL from inside the Worker's /
 // container's network position, so it must refuse anything that is not a

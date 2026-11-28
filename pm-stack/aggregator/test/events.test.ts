@@ -7,8 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
+  EVENT_CHAIN_GENESIS,
   EVENT_RETENTION_MAX,
   eventHash,
   EventsStore,
@@ -350,15 +351,28 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync
 import { verifyEventChain } from "../src/events.ts";
 
 describe("events audit v2 (#3322 slice A)", () => {
+  // Build a legacy v2 store file by hand (#14958: record() now
+  // persists the v3 segmented layout, so a v2 file is a fixture —
+  // which is exactly what these tests pin: how the store treats a
+  // v2 file it is handed).
   async function writeV2WithIngestedAt(ingestedAt: string) {
-    const { file, store } = tmpStore();
-    await store.record({ ...base, at: new Date(Date.now() - 60_000).toISOString() });
-    const stored = JSON.parse(readFileSync(file, "utf8")) as { version: 2; events: AuditEvent[] };
-    const event = { ...stored.events[0]!, ingestedAt };
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-v2-ingested-"));
+    const file = join(dir, "events.json");
+    const event: AuditEvent = {
+      ...base,
+      at: new Date(Date.now() - 60_000).toISOString(),
+      version: 2,
+      id: "evt_ingested_at_fixture",
+      ingestedAt,
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "test-fixture" },
+      prevHash: EVENT_CHAIN_GENESIS,
+      hash: "",
+    };
     event.hash = eventHash(event.prevHash, event);
-    const raw = JSON.stringify({ ...stored, events: [event] }, null, 2);
+    const raw = JSON.stringify({ version: 2, events: [event] }, null, 2);
     writeFileSync(file, raw);
-    return { file, dir: dirname(file), raw };
+    return { file, dir, raw };
   }
 
   test.each([
@@ -423,6 +437,20 @@ describe("events audit v2 (#3322 slice A)", () => {
     ).rejects.toThrow("asserted");
   });
 
+  test("an over-limit source.link is refused before anything is persisted (#16069)", async () => {
+    const { store } = tmpStore();
+    // Oracle: the 500-char schema maximum is accepted; 501 is
+    // refused, and the refusal journals nothing.
+    const boundary = `https://example.invalid/${"x".repeat(500 - "https://example.invalid/".length)}`;
+    expect(boundary).toHaveLength(500);
+    const ok = await store.record({ ...base, source: { identity: "dashboard", link: boundary } });
+    expect(ok.source.link).toBe(boundary);
+    await expect(store.record({ ...base, source: { identity: "dashboard", link: `${boundary}x` } })).rejects.toThrow(
+      "source.link",
+    );
+    expect(await store.list()).toHaveLength(1);
+  });
+
   test("v1 store files remain readable and migrate with deterministic ids", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-events-v1-"));
     const file = join(dir, "events.json");
@@ -435,20 +463,28 @@ describe("events audit v2 (#3322 slice A)", () => {
     expect(first[0]?.attribution.confidence).toBe("unknown");
     const second = await new EventsStore(file).list();
     expect(second[0]?.id).toBe(first[0]?.id); // deterministic migration id
-    // The next append persists the file as v2.
+    // The next append persists the store in the current format
+    // (#14958: the v3 segmented manifest at the same path).
     const store = new EventsStore(file);
     await store.record({ ...base, summary: "after migration" });
     const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number };
-    expect(onDisk.version).toBe(2);
+    expect(onDisk.version).toBe(3);
   });
 
   test("a silently edited stored record fails the integrity check", async () => {
     const { file, store } = tmpStore();
     await store.record({ ...base });
     await store.record({ ...base, summary: "second" });
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { summary: string }[] };
-    onDisk.events[0]!.summary = "tampered";
-    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    // #14958: the records live in the segment files now; tamper
+    // with the stored record where it actually lies.
+    const segPath = join(store.segmentsDir, readdirSync(store.segmentsDir)[0]!);
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
+    const first = JSON.parse(lines[0]!) as { summary: string };
+    first.summary = "tampered";
+    lines[0] = JSON.stringify(first);
+    writeFileSync(segPath, `${lines.join("\n")}\n`);
     const reloaded = new EventsStore(file);
     const health = await reloaded.health();
     expect(health.integrity.ok).toBe(false);
@@ -533,15 +569,21 @@ describe("events audit v2 (#3322 slice A)", () => {
     const { file, store } = tmpStore();
     await store.record({ ...base });
     await store.record({ ...base, summary: "second" });
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { summary: string }[] };
-    onDisk.events[0]!.summary = "tampered";
-    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    // #14958: tamper with the stored record in its segment file.
+    const segPath = join(store.segmentsDir, readdirSync(store.segmentsDir)[0]!);
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
+    const first = JSON.parse(lines[0]!) as { summary: string };
+    first.summary = "tampered";
+    lines[0] = JSON.stringify(first);
+    writeFileSync(segPath, `${lines.join("\n")}\n`);
     const reloaded = new EventsStore(file);
     expect((await reloaded.health()).integrity.ok).toBe(false);
     await expect(reloaded.record({ ...base, summary: "routine append" })).rejects.toThrow("integrity violation");
     // The on-disk evidence is untouched and a fresh process still
     // sees the violation; the refused append waits in the outbox.
-    expect(readFileSync(file, "utf8")).toContain("tampered");
+    expect(readFileSync(segPath, "utf8")).toContain("tampered");
     const fresh = new EventsStore(file);
     expect((await fresh.health()).integrity.ok).toBe(false);
     expect(existsSync(reloaded.outboxFile)).toBe(true);
@@ -554,12 +596,22 @@ describe("events audit v2 (#3322 slice A)", () => {
     // verification. Migration is gated on the file version now.
     const dir = mkdtempSync(join(tmpdir(), "agg-events-damaged-v2-"));
     const file = join(dir, "events.json");
-    const store = new EventsStore(file);
-    await store.record({ ...base });
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number; events: Record<string, unknown>[] };
-    expect(onDisk.version).toBe(2);
-    delete onDisk.events[0]!.hash;
-    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    // #14958: a v2 file is a hand-built fixture now (record()
+    // persists the v3 segmented layout); the contract is
+    // unchanged — a v2 record missing its hash is damaged, never
+    // migrated as v1.
+    const damaged: Record<string, unknown> = {
+      ...base,
+      at: new Date().toISOString(),
+      version: 2,
+      id: "evt_damaged_fixture",
+      ingestedAt: new Date().toISOString(),
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "test-fixture" },
+      prevHash: EVENT_CHAIN_GENESIS,
+      // no hash field at all
+    };
+    writeFileSync(file, JSON.stringify({ version: 2, events: [damaged] }, null, 2));
     const reloaded = new EventsStore(file);
     expect(await reloaded.list()).toEqual([]);
     expect(readdirSync(dir).some((name) => name.includes(".corrupt-"))).toBe(true);
@@ -569,11 +621,27 @@ describe("events audit v2 (#3322 slice A)", () => {
     // Pruning ran before verification, so altering a record AND
     // backdating it past the 30-day cutoff removed it before its
     // hash was ever checked and health reported a healthy stream.
-    const { file, store } = tmpStore();
-    await store.record({ ...base });
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { at: string }[] };
-    onDisk.events[0]!.at = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
-    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const { file } = tmpStore();
+    // #14958: hand-built legacy v2 fixture — the record's hash is
+    // stamped over its original `at`, then the file is written
+    // with `at` backdated past the retention cutoff and the hash
+    // left stale: exactly the edit-plus-backdate tamper this test
+    // pins (verification must run before pruning).
+    const at = new Date().toISOString();
+    const rec: AuditEvent = {
+      ...base,
+      at,
+      version: 2,
+      id: "evt_backdated_fixture",
+      ingestedAt: at,
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "test-fixture" },
+      prevHash: EVENT_CHAIN_GENESIS,
+      hash: "",
+    };
+    rec.hash = eventHash(rec.prevHash, rec);
+    const backdated = { ...rec, at: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString() };
+    writeFileSync(file, JSON.stringify({ version: 2, events: [backdated] }, null, 2));
     const reloaded = new EventsStore(file);
     expect((await reloaded.health()).integrity.ok).toBe(false);
   });
@@ -584,13 +652,21 @@ describe("events audit v2 (#3322 slice A)", () => {
     // summary with hash:"" reported healthy integrity.
     const dir = mkdtempSync(join(tmpdir(), "agg-events-empty-hash-"));
     const file = join(dir, "events.json");
-    const store = new EventsStore(file);
-    await store.record({ ...base });
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number; events: Record<string, unknown>[] };
-    expect(onDisk.version).toBe(2);
-    onDisk.events[0]!.hash = "";
-    onDisk.events[0]!.summary = "tampered";
-    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    // #14958: hand-built legacy v2 fixture (record() persists the
+    // v3 segmented layout now); the contract is unchanged.
+    const rec = {
+      ...base,
+      at: new Date().toISOString(),
+      summary: "tampered",
+      version: 2,
+      id: "evt_empty_hash_fixture",
+      ingestedAt: new Date().toISOString(),
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "test-fixture" },
+      prevHash: EVENT_CHAIN_GENESIS,
+      hash: "",
+    };
+    writeFileSync(file, JSON.stringify({ version: 2, events: [rec] }, null, 2));
     const reloaded = new EventsStore(file);
     expect(await reloaded.list()).toEqual([]);
     expect(readdirSync(dir).some((name) => name.includes(".corrupt-"))).toBe(true);

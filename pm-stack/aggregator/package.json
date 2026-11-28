@@ -11,6 +11,7 @@
     "report:generate": "bun run scripts/generate-report.ts",
     "backtest:quota-forecast": "bun run scripts/quota-forecast-backtest.ts",
     "measure:daytype-sufficiency": "bun run scripts/quota-daytype-sufficiency.ts",
+    "shadow:daytype-adjustments": "bun run scripts/quota-daytype-shadow.ts",
     "replay:quota-anomaly": "bun run scripts/quota-anomaly-replay.ts",
     "contract:check": "bun run scripts/check-contract-corpus.ts",
     "provenance:check": "bun run scripts/check-provenance-matrix.ts",
@@ -28,6 +29,7 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@libsql/client": "0.18.0",
     "web-push": "^3.6.7"
   }
 }

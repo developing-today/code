@@ -12,24 +12,28 @@
 // FixtureQueueStore is the in-memory implementation for tests and
 // local development; the production implementation is a libSQL
 // store over the existing fleet-queue Turso DB (#6741) behind this
-// same interface — no second queue, no schema fork. Its methods are
-// synchronous by design: in this runtime a synchronous
-// check-and-set cannot interleave, which is the same guarantee the
-// production store gets from one conditional UPDATE statement.
+// same interface — no second queue, no schema fork. The boundary
+// is asynchronous (#14592): a remote Turso DB answers over Hrana,
+// which no synchronous interface can serve, and the hosted runtime
+// cannot block on I/O. Atomicity never came from synchronicity —
+// it is the one conditional UPDATE, atomic at the DB under async
+// execution exactly as it was under sync execution.
 //
 // Row shapes are the native wire rows (turso_queue TASK_COLS /
 // LEDGER_COLS / events): JSON columns (payload, progress, result,
 // ready_condition, blocked_deps, ledger platform fields stay text)
 // travel as parsed values, everything else as stored scalars.
 
-import type { Json, JsonObject } from "./queue-validate.ts";
+import { isObj, type Json, type JsonObject } from "./queue-validate.ts";
 
 export interface TaskRow {
   id: number;
   queue: string;
+  manual_only: boolean;
   title: string | null;
   body: string | null;
   payload: Json;
+  metadata: Json;
   dedupe_key: string | null;
   priority: number | null;
   status: string;
@@ -131,43 +135,81 @@ export const NO_DEP_PROBE: QueueDepProbe = {
   probeCi: () => ({ tag: "failed", evidence: "no github probe configured on this broker" }),
 };
 
+export interface HealthSnapshot {
+  /** Per (queue, status) task counts — the GROUP BY core of verbHealth. */
+  statusCounts: Array<{ queue: string; status: string; count: number }>;
+  /** Queued rows at the attempt cap, per queue. */
+  atCapQueued: Array<{ queue: string; count: number }>;
+  /** Oldest queued created_at per queue (null when none). */
+  oldestQueuedAt: Array<{ queue: string; oldest: string | null }>;
+  /** Blocked rows carrying a dep payload, per queue. */
+  depBlocked: Array<{ queue: string; count: number }>;
+  /** Parked rows with a not_before set — the caller validates
+   *  malformed entries (bounded: parked subset only). */
+  parkedNotBefore: Array<{ queue: string; not_before: string }>;
+  /** Terminal events in the 7d window, per task queue (join). */
+  terminal7: Array<{ queue: string; count: number }>;
+  /** Terminal events in the 24h window, per task queue (join). */
+  terminal24: Array<{ queue: string; count: number }>;
+}
+
 export interface QueueStore {
   /** Insert a task row; returns the stored row (id assigned). */
-  insertTask(row: Omit<TaskRow, "id">): TaskRow;
-  getTask(id: number): TaskRow | null;
+  insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow>;
+  getTask(id: number): Promise<TaskRow | null>;
   /** Rows in one queue with this dedupe key, id ASC (enqueue dedupe). */
-  tasksByDedupe(queue: string, dedupeKey: string): TaskRow[];
-  /** Every task row, id ASC (claim scans, health, identity checks). */
-  allTasks(): TaskRow[];
+  tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]>;
+  /** Every task row, id ASC (claim scans, list verbs). Prefer a
+   *  bounded reader below on large D1 tables: full loads exceed the
+   *  50 MB D1 response cap on production-shaped data (#14987). */
+  allTasks(): Promise<TaskRow[]>;
+  /** Bounded enqueue-dedupe scan (#14987 CF-2b): live-status rows
+   *  whose payload kind matches, id ASC — the same rows
+   *  liveIdentityHolder examined via allTasks, without the full
+   *  table load. */
+  liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]>;
+  /** Bounded lease-expiry scan (#14987 CF-2b): claimed rows whose
+   *  lease lapsed before nowIso, id ASC. */
+  claimedExpired(nowIso: string): Promise<TaskRow[]>;
+  /** Bounded health aggregates (#14987 CF-2b): GROUP BY counts and
+   *  joins only — never full task/event loads, never per-task
+   *  getTask. queueFilter null means all queues. */
+  healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot>;
   /**
    * THE conditional update: apply `set` to task `id` only if every
    * `guard` field still equals its expected value; returns whether
    * a row was updated. This is the claim atomicity primitive.
    */
-  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): boolean;
+  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean>;
   /** Unconditional field update (post-claim fixups, lifecycle verbs). */
-  updateTask(id: number, set: Partial<TaskRow>): void;
+  updateTask(id: number, set: Partial<TaskRow>): Promise<void>;
 
-  getLedger(taskId: number): LedgerRow | null;
-  insertLedger(row: Omit<LedgerRow, "id">): LedgerRow;
-  updateLedger(taskId: number, set: Partial<LedgerRow>): void;
+  getLedger(taskId: number): Promise<LedgerRow | null>;
+  insertLedger(row: Omit<LedgerRow, "id">): Promise<LedgerRow>;
+  updateLedger(taskId: number, set: Partial<LedgerRow>): Promise<void>;
 
-  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): void;
-  deleteLease(taskId: number): void;
-  deleteExpiredLeases(nowIso: string): void;
+  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): Promise<void>;
+  deleteLease(taskId: number): Promise<void>;
+  deleteExpiredLeases(nowIso: string): Promise<void>;
 
-  getLane(laneId: string): LaneRow | null;
-  insertLane(row: LaneRow): void;
+  getLane(laneId: string): Promise<LaneRow | null>;
+  insertLane(row: LaneRow): Promise<void>;
 
   /** workers upsert (touch_worker): status working/idle + heartbeat. */
-  touchWorker(workerId: string, working: boolean, nowIso: string): void;
+  touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void>;
   /** checkpoints upsert keyed (worker_id, key). */
-  upsertCheckpoint(workerId: string, key: string, value: Json): void;
+  upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void>;
 
-  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow;
-  allEvents(): EventRow[];
-  eventsForTask(taskId: number): EventRow[];
-  deleteEventsBefore(cutoffIso: string): number;
+  appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow>;
+  allEvents(): Promise<EventRow[]>;
+  eventsForTask(taskId: number): Promise<EventRow[]>;
+  deleteEventsBefore(cutoffIso: string): Promise<number>;
 
   /**
    * The GitHub mirror's labels for an issue (#12744 enrichment):
@@ -175,10 +217,10 @@ export interface QueueStore {
    * Throws on lookup failure — the caller turns that into a
    * warning, never a gate.
    */
-  mirrorLabels(repo: string, issueNumber: number): string[] | null;
+  mirrorLabels(repo: string, issueNumber: number): Promise<string[] | null>;
 
   /** What the health verb reports about this backend. */
-  describe(): { backend: string; projectSource: string; netloc: string | null };
+  describe(): Promise<{ backend: string; projectSource: string; netloc: string | null }>;
 }
 
 function clone<T>(v: T): T {
@@ -225,26 +267,94 @@ export class FixtureQueueStore implements QueueStore {
 
   // --- QueueStore ---
 
-  insertTask(row: Omit<TaskRow, "id">): TaskRow {
+  async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
     const stored: TaskRow = { ...clone(row), id: this.nextTaskId++ };
     this.tasks.set(stored.id, stored);
     return clone(stored);
   }
 
-  getTask(id: number): TaskRow | null {
+  async getTask(id: number): Promise<TaskRow | null> {
     const t = this.tasks.get(id);
     return t ? clone(t) : null;
   }
 
-  tasksByDedupe(queue: string, dedupeKey: string): TaskRow[] {
-    return this.allTasks().filter((t) => t.queue === queue && t.dedupe_key === dedupeKey);
+  async tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]> {
+    return (await this.allTasks()).filter((t) => t.queue === queue && t.dedupe_key === dedupeKey);
   }
 
-  allTasks(): TaskRow[] {
+  async allTasks(): Promise<TaskRow[]> {
     return [...this.tasks.values()].sort((a, b) => a.id - b.id).map((t) => clone(t));
   }
 
-  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): boolean {
+  async liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]> {
+    const live = new Set(statuses);
+    // Go through allTasks() like tasksByDedupe: subclasses that stage a
+    // snapshot by overriding allTasks() (the edge door's EnqueueStore,
+    // #16506) must have their staged rows seen here too — reading the
+    // private map directly made cross-queue identity holders invisible
+    // and the enqueue verb inserted a duplicate task.
+    return (await this.allTasks())
+      .filter((t) => live.has(t.status))
+      .filter((t) => isObj(t.payload) && (t.payload as Record<string, unknown>)["kind"] === kind);
+  }
+
+  async claimedExpired(nowIso: string): Promise<TaskRow[]> {
+    return [...this.tasks.values()]
+      .filter((t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < nowIso)
+      .sort((a, b) => a.id - b.id)
+      .map((t) => clone(t));
+  }
+
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
+    const tasks = [...this.tasks.values()].filter((t) => queueFilter === null || t.queue === queueFilter);
+    const statusKey = (t: TaskRow) => `${t.queue}\0${t.status}`;
+    const statusMap = new Map<string, { queue: string; status: string; count: number }>();
+    for (const t of tasks) {
+      const k = statusKey(t);
+      const e = statusMap.get(k) ?? { queue: t.queue, status: t.status, count: 0 };
+      e.count += 1;
+      statusMap.set(k, e);
+    }
+    const atCap = new Map<string, number>();
+    const oldest = new Map<string, string>();
+    const dep = new Map<string, number>();
+    const parkedNotBefore: Array<{ queue: string; not_before: string }> = [];
+    for (const t of tasks) {
+      if (t.status === "queued") {
+        if (t.attempts >= t.max_attempts) atCap.set(t.queue, (atCap.get(t.queue) ?? 0) + 1);
+        const o = oldest.get(t.queue);
+        if (o === undefined || t.created_at < o) oldest.set(t.queue, t.created_at);
+      }
+      if (t.status === "blocked" && t.blocked_deps !== null) dep.set(t.queue, (dep.get(t.queue) ?? 0) + 1);
+      if (t.status === "parked" && t.not_before !== null) {
+        parkedNotBefore.push({ queue: t.queue, not_before: t.not_before });
+      }
+    }
+    const taskQueue = new Map<number, string>();
+    for (const t of tasks) taskQueue.set(t.id, t.queue);
+    const t7 = new Map<string, number>();
+    const t24 = new Map<string, number>();
+    for (const e of this.events) {
+      if ((e.kind !== "completed" && e.kind !== "failed") || e.task_id === null) continue;
+      if (!(e.created_at > since7Iso)) continue;
+      const q = taskQueue.get(e.task_id);
+      if (q === undefined) continue;
+      t7.set(q, (t7.get(q) ?? 0) + 1);
+      if (e.created_at > since24Iso) t24.set(q, (t24.get(q) ?? 0) + 1);
+    }
+    const byQueue = (m: Map<string, number>) => [...m.entries()].map(([queue, count]) => ({ queue, count }));
+    return {
+      statusCounts: [...statusMap.values()],
+      atCapQueued: byQueue(atCap),
+      oldestQueuedAt: [...oldest.entries()].map(([queue, oldestTs]) => ({ queue, oldest: oldestTs })),
+      depBlocked: byQueue(dep),
+      parkedNotBefore,
+      terminal7: byQueue(t7),
+      terminal24: byQueue(t24),
+    };
+  }
+
+  async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {
     const t = this.tasks.get(id);
     if (!t) return false;
     for (const [k, v] of Object.entries(guard)) {
@@ -256,28 +366,28 @@ export class FixtureQueueStore implements QueueStore {
     return true;
   }
 
-  updateTask(id: number, set: Partial<TaskRow>): void {
+  async updateTask(id: number, set: Partial<TaskRow>): Promise<void> {
     const t = this.tasks.get(id);
     if (t) Object.assign(t, clone(set));
   }
 
-  getLedger(taskId: number): LedgerRow | null {
+  async getLedger(taskId: number): Promise<LedgerRow | null> {
     const l = this.ledgers.get(taskId);
     return l ? clone(l) : null;
   }
 
-  insertLedger(row: Omit<LedgerRow, "id">): LedgerRow {
+  async insertLedger(row: Omit<LedgerRow, "id">): Promise<LedgerRow> {
     const stored: LedgerRow = { ...clone(row), id: this.nextLedgerId++ };
     this.ledgers.set(stored.task_id, stored);
     return clone(stored);
   }
 
-  updateLedger(taskId: number, set: Partial<LedgerRow>): void {
+  async updateLedger(taskId: number, set: Partial<LedgerRow>): Promise<void> {
     const l = this.ledgers.get(taskId);
     if (l) Object.assign(l, clone(set));
   }
 
-  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): void {
+  async upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): Promise<void> {
     const existing = this.leases.get(row.task_id);
     if (existing && opts.keepWorker) {
       existing.lease_until = row.lease_until;
@@ -287,26 +397,26 @@ export class FixtureQueueStore implements QueueStore {
     this.leases.set(row.task_id, clone(row));
   }
 
-  deleteLease(taskId: number): void {
+  async deleteLease(taskId: number): Promise<void> {
     this.leases.delete(taskId);
   }
 
-  deleteExpiredLeases(nowIso: string): void {
+  async deleteExpiredLeases(nowIso: string): Promise<void> {
     for (const [id, l] of this.leases) {
       if (l.lease_until < nowIso) this.leases.delete(id);
     }
   }
 
-  getLane(laneId: string): LaneRow | null {
+  async getLane(laneId: string): Promise<LaneRow | null> {
     const l = this.lanes.get(laneId);
     return l ? clone(l) : null;
   }
 
-  insertLane(row: LaneRow): void {
+  async insertLane(row: LaneRow): Promise<void> {
     this.lanes.set(row.lane_id, clone(row));
   }
 
-  touchWorker(workerId: string, working: boolean, nowIso: string): void {
+  async touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void> {
     const existing = this.workers.get(workerId);
     this.workers.set(workerId, {
       worker_id: workerId,
@@ -318,11 +428,17 @@ export class FixtureQueueStore implements QueueStore {
     });
   }
 
-  upsertCheckpoint(workerId: string, key: string, value: Json): void {
+  async upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void> {
     this.checkpoints.set(`${workerId} ${key}`, clone(value));
   }
 
-  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow {
+  async appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow> {
     const row: EventRow = {
       id: this.nextEventId++,
       worker_id: workerId,
@@ -335,26 +451,26 @@ export class FixtureQueueStore implements QueueStore {
     return clone(row);
   }
 
-  allEvents(): EventRow[] {
+  async allEvents(): Promise<EventRow[]> {
     return this.events.map((e) => clone(e));
   }
 
-  eventsForTask(taskId: number): EventRow[] {
+  async eventsForTask(taskId: number): Promise<EventRow[]> {
     return this.events.filter((e) => e.task_id === taskId).map((e) => clone(e));
   }
 
-  deleteEventsBefore(cutoffIso: string): number {
+  async deleteEventsBefore(cutoffIso: string): Promise<number> {
     const before = this.events.length;
     this.events = this.events.filter((e) => !(e.created_at < cutoffIso));
     return before - this.events.length;
   }
 
-  mirrorLabels(repo: string, issueNumber: number): string[] | null {
+  async mirrorLabels(repo: string, issueNumber: number): Promise<string[] | null> {
     const labels = this.mirror.get(`${repo}#${issueNumber}`);
     return labels ? [...labels] : null;
   }
 
-  describe(): { backend: string; projectSource: string; netloc: string | null } {
+  async describe(): Promise<{ backend: string; projectSource: string; netloc: string | null }> {
     return { backend: "hosted-fixture", projectSource: "hosted-fixture", netloc: null };
   }
 }

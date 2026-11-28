@@ -6,6 +6,7 @@ import {
   storeOutcome,
   type EpicSlugMap,
   type IngestionItem,
+  type NativeParentLookup,
 } from "./metadata-ingestion.ts";
 
 const MAX_WEBHOOK_BODY_BYTES = 100_000;
@@ -102,6 +103,9 @@ function toIngestionItem(payload: JsonRecord, event: string): IngestionItem | nu
   const closedAt = stringValue(rawItem.closed_at) ?? mergedAt;
   const isMerged = event === "pull_request" && (rawItem.merged === true || mergedAt !== null);
   const state = isMerged ? "MERGED" : (stringValue(rawItem.state)?.toUpperCase() ?? "OPEN");
+  // The issue webhook schema carries no `parent` field, so this is null
+  // for issues in practice; the handler resolves native parentage
+  // authoritatively via resolveNativeParent before finalizing (#16011).
   const parent = record(rawItem.parent);
   const parentRepo = stringValue(record(parent?.repository)?.full_name) ?? stringValue(parent?.repository_full_name);
   const parentNumber = parent?.number;
@@ -132,8 +136,25 @@ export interface MetadataWebhookDependencies {
   secret: () => Promise<string | null>;
   db: Database;
   epicSlugs: (item: IngestionItem) => Promise<EpicSlugMap>;
+  /**
+   * Authoritative native-parent lookup for `issues` events (#16011).
+   * The issue webhook schema carries no `parent` field, so the payload
+   * alone proves nothing about sub-issue parentage: the listener
+   * resolves it here before the shared check finalizes an ascertained
+   * outcome. `undefined` is a retryable failure — the handler answers
+   * non-2xx with no store or body writes so GitHub redelivers.
+   */
+  resolveNativeParent: (item: { repo: string; number: number }) => Promise<NativeParentLookup>;
   writeBack: (item: IngestionItem, body: string) => Promise<void>;
   enqueueTriage: (packet: Record<string, unknown>) => Promise<void>;
+  /**
+   * Re-read the live item before a body write-back (issue #16012). The
+   * snapshot above was captured before the awaited epic lookup, so a
+   * concurrent user edit would otherwise be overwritten by stale content.
+   * Return null when the item no longer exists (the write is skipped);
+   * throw when the re-read itself fails (the delivery retries).
+   */
+  readCurrent: (item: IngestionItem) => Promise<IngestionItem | null>;
   now?: () => string;
 }
 
@@ -181,17 +202,68 @@ export function createMetadataWebhookHandler(
     if (!item) return Response.json({ error: "invalid issue or pull request payload" }, { status: 400 });
 
     const now = (dependencies.now ?? (() => new Date().toISOString()))();
+    // #16011: native parentage is authoritative and the issue payload
+    // carries no parent field, so resolve it before the shared check
+    // finalizes anything. PRs skip this — sub-issue parents are an issue
+    // concept, so their label path stands (same rule as the sweeper).
+    let checked = item;
+    if (item.kind === "issue" && !item.nativeParent) {
+      let parent: NativeParentLookup;
+      try {
+        parent = await dependencies.resolveNativeParent(item);
+      } catch {
+        parent = undefined;
+      }
+      if (parent === undefined) {
+        // Retryable: no store, enqueue, or body writes — GitHub redelivers
+        // non-2xx webhook deliveries.
+        return Response.json({ error: "native parent lookup failed" }, { status: 500 });
+      }
+      if (parent) checked = { ...item, nativeParent: parent };
+    }
     try {
-      const outcome = runMetadataCheck(item, {
-        epicSlugs: await dependencies.epicSlugs(item),
+      const epicSlugMap = await dependencies.epicSlugs(checked);
+      const outcome = runMetadataCheck(checked, {
+        epicSlugs: epicSlugMap,
         ingestedBy: WEBHOOK_INGESTOR,
         now,
       });
       if (outcome.kind === "needs-triage") {
         await dependencies.enqueueTriage(buildTriagePacket(outcome.evidence, WEBHOOK_INGESTOR, now));
-      } else {
-        storeOutcome(dependencies.db, outcome);
-        if (outcome.kind === "generated") await dependencies.writeBack(item, outcome.body);
+        return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
+      }
+      storeOutcome(dependencies.db, outcome);
+      if (outcome.kind === "generated") {
+        // Stale-snapshot protection (issue #16012): the check ran on the
+        // event payload captured before the epic lookup. Re-read the live
+        // item and compare body and version; when either moved, recompute
+        // from current data so a concurrent user edit is preserved instead
+        // of overwritten. A throw above (re-read failure) returns 500
+        // without writing, so GitHub retries the delivery.
+        const current = await dependencies.readCurrent(checked);
+        if (current === null) {
+          // The item is gone (or unreadable as gone): the stored row
+          // stands, and there is nothing to write back to.
+          return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
+        }
+        if (current.body !== checked.body || current.updatedAt !== checked.updatedAt) {
+          // Preserve the authoritative native parent resolved above
+          // (#16011): the live re-read carries payload parentage only.
+          const freshItem = { ...current, nativeParent: current.nativeParent ?? checked.nativeParent };
+          const fresh = runMetadataCheck(freshItem, {
+            epicSlugs: epicSlugMap,
+            ingestedBy: WEBHOOK_INGESTOR,
+            now,
+          });
+          if (fresh.kind === "needs-triage") {
+            await dependencies.enqueueTriage(buildTriagePacket(fresh.evidence, WEBHOOK_INGESTOR, now));
+          } else {
+            storeOutcome(dependencies.db, fresh);
+            if (fresh.kind === "generated") await dependencies.writeBack(current, fresh.body);
+          }
+          return Response.json({ accepted: true, outcome: fresh.kind }, { status: 202 });
+        }
+        await dependencies.writeBack(checked, outcome.body);
       }
       return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
     } catch {

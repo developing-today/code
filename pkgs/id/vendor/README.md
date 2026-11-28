@@ -72,3 +72,21 @@ cd pkgs/id/vendor/p2panda-encryption && cargo test --lib data_scheme  # run stan
 ```
 
 **To update.** Change the rev in the three places it appears (this section, the `p2panda-encryption/Cargo.toml` git lines, and `pkgs/id/Cargo.toml`). Copy the crate again, then reapply the changes above and run the fork's test.
+
+## kdl 6.7.1 (fork — universal, multiple annotations)
+
+**Origin.** `https://github.com/kdl-org/kdl-rs`, the `kdl` crate v6.7.1, from the crates.io package (`kdl-6.7.1.crate`, sha256 `082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670`). License `Apache-2.0` (`kdl/LICENSE`, `kdl/NOTICE`).
+
+**Why.** A fork, not a plain vendor copy: the KDL spec allows one type annotation, on node names and values only. ID needs annotations on every part (property keys and children blocks included — upstream Discussions kdl-org/kdl#344, #362, not adopted) and several per part. Fork base selected in #5753 §3; the design (annotation model, `kdlx` declaration, serde shape) is decided in `doc/2026-11-16_decision_id5753_kdl_fork_section5.md`. The full change list, the upstream-tracking procedure, and the known Packet A limits live in `kdl/FORK.md`.
+
+**The changes, in brief** (details in `kdl/FORK.md`): `KdlNode`/`KdlEntry` `ty: Option<_>` becomes `annotations: Vec<_>`, plus new `key_annotations` (entries) and `children_annotations` (nodes) slots, with the upstream `ty()` accessors kept as first-annotation views; a `tys` annotation-run parser in `src/v2_parser.rs` wired into the node-name, value, entry-head, and children positions; a new `src/kdlx.rs` (declaration parse + lint); upstream tests updated only where they name the old AST fields; new tests in `kdl/tests/fork_extensions.rs` and `kdl/src/kdlx.rs`. Package name and version stay upstream's so future upstream releases diff cleanly.
+
+**Workspace exclusion.** Listed in the root manifest's `[workspace] exclude`, like the other vendored crates; no id crate depends on it yet (the #5688 pipeline wiring is Packet B of #5753).
+
+**Verify.**
+
+```sh
+cd pkgs/id/vendor/kdl && cargo test --all-features   # upstream suite + official KDL test cases + fork tests; delete the Cargo.lock it writes
+```
+
+**To update.** Download the new release's `.crate` from crates.io, diff it against `kdl/`, and reapply the fork changes per `kdl/FORK.md`.

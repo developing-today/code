@@ -20,6 +20,12 @@ beforeAll(async () => {
     env: {
       ...Bun.env,
       PM_AGG_PORT: String(port),
+      // The spawned server's freshness IPC listener defaults to the live
+      // port (4871); on any machine running the live aggregator — the
+      // laptop this hub runs on — the bind collides (EADDRINUSE) and the
+      // child dies before readiness. Pin the child to a sibling port the
+      // same way the other server-booting suites do (#1047 slice).
+      PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "fixtures",
       PM_AGG_STORE_BACKEND: "file",
       PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile,
@@ -55,6 +61,25 @@ describe("server boots from fixtures", () => {
     const body = (await res.json()) as { status: string; source: { board: string } };
     expect(body.status).toBe("ok");
     expect(body.source.board).toBe("fixtures");
+  });
+
+  test("search routes expose in-process stage timings", async () => {
+    // Oracle: each named timing is recorded by the search path while it runs
+    // and is returned in the standard Server-Timing response header.
+    const expected = ["board", "roadmap", "registry", "dns", "usage", "orchestration", "items", "search"];
+    const json = await fetch(`http://127.0.0.1:${port}/api/search.json?q=fleet`);
+    expect(json.status).toBe(200);
+    const jsonTiming = json.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "serialize", "total"]) {
+      expect(jsonTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
+
+    const page = await fetch(`http://127.0.0.1:${port}/search?q=fleet`);
+    expect(page.status).toBe(200);
+    const pageTiming = page.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "render", "total"]) {
+      expect(pageTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
   });
 
   test("item JSON exposes ready-for-agent dispatch state and provenance", async () => {

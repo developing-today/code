@@ -5,7 +5,9 @@
 //! - the spec's own inventory arithmetic (§§3.2, 24.2),
 //! - the crate's chain validator (aws-lc-rs signature checks),
 //! - the system `openssl` binary as a fully independent validator
-//!   (skipped only when openssl is absent from the test host),
+//!   (skipped only when openssl is absent from the test host; the
+//!   ML-DSA leg additionally skips, loudly, when the host openssl
+//!   predates ML-DSA support),
 //! - the manifest checksum index (§7.1).
 
 use fleet_cert::algorithm::AlgorithmId;
@@ -103,6 +105,8 @@ fn leaf_request(
         name: name.into(),
         common_name: None,
         dns_names: vec!["www.example.test".into()],
+        ip_addresses: vec![],
+        csr: None,
         key_algorithm,
         issuer_algorithm,
         issuer_partition: None,
@@ -370,10 +374,25 @@ fn cross_signed_path_survives_primary_root_removal() {
     );
 }
 
+/// Whether the host `openssl` can verify ML-DSA signatures.
+/// ML-DSA support landed in OpenSSL 3.5; older builds (e.g. the
+/// fleet-command executor image) list no ML-DSA signature
+/// algorithms. Probe the algorithm list rather than parsing a
+/// version string, so provider configuration is taken into account.
+fn openssl_supports_ml_dsa() -> bool {
+    std::process::Command::new("openssl")
+        .args(["list", "-signature-algorithms"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("ML-DSA"))
+        .unwrap_or(false)
+}
+
 #[test]
 fn openssl_independent_validation() {
     // Oracle: the system openssl binary — a fully independent
-    // implementation (§11.2). Skipped only when openssl is absent.
+    // implementation (§11.2). Skipped only when openssl is absent;
+    // the ML-DSA leg below additionally skips when the host openssl
+    // predates ML-DSA support (#15136).
     if std::process::Command::new("openssl")
         .arg("version")
         .output()
@@ -425,24 +444,33 @@ fn openssl_independent_validation() {
         &leaf_dir.join("leaf.crt.pem"),
     ));
     // ML-DSA leaf against roots-pq via the ML-DSA primary issuer.
-    let pq_dir = tmp.path().join("leaf-pq");
-    engine::issue_leaf(
-        &leaf_request(
-            &issuer_dir,
-            "server",
-            "ossl-pq",
-            Some(AlgorithmId::MlDsa44),
-            Some(AlgorithmId::MlDsa44),
-            CalendarDuration::years(3),
-        ),
-        &pq_dir,
-    )
-    .unwrap();
-    assert!(verify(
-        &root_dir.join("public/bundles/roots-pq.pem"),
-        &issuer_dir.join("public/certs/ml-dsa-44/a/signed-by-ml-dsa-44.crt.pem"),
-        &pq_dir.join("leaf.crt.pem"),
-    ));
+    // This leg needs an openssl that can verify ML-DSA (3.5+);
+    // where the host openssl predates it, skip the leg loudly
+    // instead of failing on an environment limit (#15136).
+    if openssl_supports_ml_dsa() {
+        let pq_dir = tmp.path().join("leaf-pq");
+        engine::issue_leaf(
+            &leaf_request(
+                &issuer_dir,
+                "server",
+                "ossl-pq",
+                Some(AlgorithmId::MlDsa44),
+                Some(AlgorithmId::MlDsa44),
+                CalendarDuration::years(3),
+            ),
+            &pq_dir,
+        )
+        .unwrap();
+        assert!(verify(
+            &root_dir.join("public/bundles/roots-pq.pem"),
+            &issuer_dir.join("public/certs/ml-dsa-44/a/signed-by-ml-dsa-44.crt.pem"),
+            &pq_dir.join("leaf.crt.pem"),
+        ));
+    } else {
+        eprintln!(
+            "openssl lacks ML-DSA support (pre-3.5); skipping the ML-DSA leg of independent validation"
+        );
+    }
     // Cross path: the P-256 issuer variant signed by the Ed25519
     // root, anchored on the Ed25519 root alone.
     let ed_root_pem = root_dir.join("public/roots/ed25519/root.crt.pem");
@@ -530,4 +558,235 @@ fn tampered_bundle_is_rejected() {
     std::fs::write(&cert_path, bytes).unwrap();
     let err = load_bundle(&root_dir).err().expect("tamper must be caught");
     assert!(format!("{err}").contains("checksum"), "got: {err}");
+}
+
+#[test]
+fn revoked_leaf_is_reported_by_validation() {
+    // Oracle: §6.1/§8 revocation semantics — a leaf that validates
+    // before revocation must be reported invalid, with a `revoked`
+    // check, once its revocation is in effect; the revocation record
+    // must be checksummed in the manifest index.
+    let tmp = TempDir::new("revoke-leaf");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "revoked-leaf",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+
+    let before = engine::validate_leaf(
+        &load_bundle(&leaf_dir).unwrap(),
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(before.valid, "leaf must validate before revocation");
+
+    let records = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+    assert_eq!(records.len(), 1, "one leaf certificate revoked");
+
+    let leaf_b = load_bundle(&leaf_dir).unwrap();
+    assert_eq!(leaf_b.manifest.revocations.len(), 1);
+    assert!(
+        leaf_b
+            .manifest
+            .files
+            .iter()
+            .any(|f| f.path == records[0].path),
+        "revocation record must be in the file index"
+    );
+
+    let after = engine::validate_leaf(
+        &leaf_b,
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(!after.valid, "revoked leaf must not validate");
+    assert!(
+        after.checks.iter().any(|c| c.name == "revoked" && !c.ok),
+        "validation must report the revocation: {:?}",
+        after.checks
+    );
+
+    // Idempotent: revoking again adds no record.
+    let again = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        load_bundle(&leaf_dir).unwrap().manifest.revocations.len(),
+        1
+    );
+}
+
+#[test]
+fn revoked_issuer_invalidates_its_leaves_and_wrong_target_is_refused() {
+    // Oracle: the same validator as above — a revoked issuer CA on
+    // the path fails every leaf under it; a leaf target against an
+    // issuer bundle is a policy refusal, not a silent no-op.
+    let tmp = TempDir::new("revoke-issuer");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "client",
+            "under-issuer",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+
+    let wrong = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: issuer_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "unspecified".into(),
+        revoked_at: ts(AT),
+    });
+    assert!(
+        wrong.is_err(),
+        "leaf revoke against an issuer set must be refused"
+    );
+
+    fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: issuer_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Issuer,
+        reason: "ca-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+
+    let report = engine::validate_leaf(
+        &load_bundle(&leaf_dir).unwrap(),
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(
+        !report.valid,
+        "leaf under a revoked issuer must not validate"
+    );
+    assert!(report.checks.iter().any(|c| c.name == "revoked" && !c.ok));
+}
+
+#[test]
+fn signed_crl_contains_revoked_leaf_and_verifies() {
+    // Oracles: x509-parser checks CRL structure/serials, aws-lc-rs verifies
+    // the signature against the issuer certificate, and the chain validator
+    // confirms the same revocation record invalidates the leaf path.
+    let tmp = TempDir::new("crl");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "crl-leaf",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+    fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+
+    let issuer = load_bundle(&issuer_dir).unwrap();
+    let issuer_cert = issuer
+        .manifest
+        .certificates
+        .iter()
+        .find(|r| r.role == "issuer" && r.primary)
+        .unwrap();
+    let request = fleet_cert::crl::GenerateRequest {
+        issuer_bundle: issuer_dir.clone(),
+        signer: SignerSource {
+            key_dir: issuer_dir.join("private/keys"),
+        },
+        revocation_bundles: vec![leaf_dir.clone()],
+        this_update: ts(AT),
+        next_update: ts("2026-06-08T00:00:00Z"),
+        crl_number: 1,
+        previous_crl: None,
+    };
+    let der = fleet_cert::crl::generate(&request, Some(&issuer_cert.fingerprint_sha256)).unwrap();
+    let inspected = fleet_cert::crl::inspect(&der).unwrap();
+    let leaf = load_bundle(&leaf_dir).unwrap();
+    assert_eq!(inspected.revoked.len(), 1);
+    assert_eq!(
+        inspected.revoked[0].serial_hex,
+        leaf.manifest.certificates[0].serial_hex
+    );
+    let verified = fleet_cert::crl::verify(&der, &issuer_dir, &[leaf_dir.clone()], ts(AT)).unwrap();
+    assert!(
+        verified.valid,
+        "CRL verification failed: {:?}",
+        verified.checks
+    );
+
+    let mut tampered = der.clone();
+    *tampered.last_mut().unwrap() ^= 1;
+    let tampered_report =
+        fleet_cert::crl::verify(&tampered, &issuer_dir, &[leaf_dir.clone()], ts(AT)).unwrap();
+    assert!(!tampered_report.valid);
+    assert!(!tampered_report.signature_valid);
+
+    let duplicate_evidence = fleet_cert::crl::generate(
+        &fleet_cert::crl::GenerateRequest {
+            revocation_bundles: vec![leaf_dir.clone(), leaf_dir.clone()],
+            ..request
+        },
+        Some(&issuer_cert.fingerprint_sha256),
+    );
+    assert!(duplicate_evidence.is_err());
+
+    let report = engine::validate_leaf(
+        &leaf,
+        &[&issuer, &load_bundle(&root_dir).unwrap()],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(!report.valid);
+    assert!(report.checks.iter().any(|c| c.name == "revoked" && !c.ok));
 }

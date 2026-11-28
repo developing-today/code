@@ -45,6 +45,11 @@ use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
 
+mod talk;
+mod threads;
+
+pub use talk::TalkEntry;
+
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
 /// another.
 pub const DIR_NAME: &str = "events";
@@ -104,6 +109,9 @@ pub enum Entry {
         content: DocumentRef,
         /// The revisions this one builds on.
         parents: Vec<Hash>,
+        /// The proposal this revision accepts, when it is an accepting
+        /// edit (#7849).
+        proposal: Option<Hash>,
     },
     /// A `document.remove` of the document it names.
     Remove {
@@ -278,6 +286,19 @@ impl LocalEvents {
         }
     }
 
+    /// Runs `op` against the store under its write lock, preserving the store error and reporting
+    /// lock poisoning through the same `anyhow` boundary as [`Self::read_store`].
+    fn write_store<T>(
+        &self,
+        op: impl FnOnce(&mut EventStore) -> Result<T, StoreError>,
+    ) -> Result<T> {
+        match self.store.write(|store| Ok(op(store))) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_poisoned) => Err(anyhow!("the event store lock is poisoned")),
+        }
+    }
+
     /// The blob references in this node's event store, for the blob gate's index
     /// (`EventStore::document_references`).
     ///
@@ -352,7 +373,7 @@ impl LocalEvents {
     /// in that case the store is unchanged (the pass is one
     /// transaction).
     pub fn compact(&mut self, policy: &crate::event_store::CompactionPolicy) -> Result<usize> {
-        Ok(self.store.compact(policy)?)
+        self.write_store(|store| store.compact(policy))
     }
 
     /// Publishes this node's identity event if its log has none (#160, Option A).
@@ -370,7 +391,9 @@ impl LocalEvents {
     /// gives for the identity event itself.
     pub fn ensure_identity_event(&mut self) -> Result<Option<Hash>> {
         let author = self.author();
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         for seq in 0..chain.next_seq {
             if let Some(event) = self.read_store(|store| store.event(&author, seq))? {
                 if is_identity_kind(&event.header.extensions.kind) {
@@ -494,7 +517,10 @@ impl LocalEvents {
     pub fn send_chat(&mut self, group: Hash, message: ChatMessage) -> Result<Hash> {
         message.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its chat write is refused at admission"
             );
@@ -534,7 +560,10 @@ impl LocalEvents {
     pub fn send_anchor(&mut self, group: Hash, anchor: ChatAnchor) -> Result<Hash> {
         anchor.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its anchor write is refused at admission"
             );
@@ -907,6 +936,26 @@ impl LocalEvents {
         content: &[u8],
         parents: &[Hash],
     ) -> Result<Hash> {
+        self.accept_proposal(note, media_type, content, parents, None)
+    }
+
+    /// Adds one revision to the note `note`, as [`Self::revise_note`] does, that
+    /// cites `proposal` when it is `Some`: the signed accepting edit a thread
+    /// fold reads to mark that proposal accepted (#7849). The citation is only
+    /// a claim; the thread fold decides whether it counts, against the
+    /// proposal's object and the object's authority.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::revise_note`].
+    pub fn accept_proposal(
+        &mut self,
+        note: Hash,
+        media_type: &str,
+        content: &[u8],
+        parents: &[Hash],
+        proposal: Option<Hash>,
+    ) -> Result<Hash> {
         let record = self.note_history(note)?;
         for parent in parents {
             if record.revision(*parent).is_none() {
@@ -940,6 +989,7 @@ impl LocalEvents {
             note,
             content,
             parents: parents.to_vec(),
+            proposal,
         };
         check_note_op(NOTE_REVISE_KIND, &op)?;
         self.record(
@@ -982,6 +1032,7 @@ impl LocalEvents {
                     note,
                     content,
                     parents,
+                    proposal,
                 } => Some(AppliedNote {
                     id: *id,
                     author: *author,
@@ -989,6 +1040,7 @@ impl LocalEvents {
                         note: *note,
                         content: content.clone(),
                         parents: parents.clone(),
+                        proposal: *proposal,
                     },
                 }),
                 _ => None,
@@ -1186,7 +1238,9 @@ impl LocalEvents {
     ) -> Result<Hash> {
         let author = self.author();
         let after = self.bounded_after(required)?;
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group,
@@ -1200,6 +1254,7 @@ impl LocalEvents {
             rotation: None,
             chat,
             anchor,
+            thread: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, None, now_ms())? {
@@ -1252,6 +1307,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
                 note,
                 content,
                 parents,
+                proposal,
             }),
         ) => Some(Entry::NoteRevise {
             id,
@@ -1259,6 +1315,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
             note: *note,
             content: content.clone(),
             parents: parents.clone(),
+            proposal: *proposal,
         }),
         (
             SET_KIND,
@@ -1517,6 +1574,7 @@ mod tests {
                     note: id(222),
                     content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
                     parents: vec![id(223)],
+                    proposal: None,
                 }),
                 link: None,
                 checkpoint: None,
@@ -1524,6 +1582,7 @@ mod tests {
 
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1560,6 +1619,7 @@ mod tests {
                     note: id(note),
                     content: DocumentRef::for_bytes("text/markdown", b"revision").unwrap(),
                     parents: parents.iter().map(|parent| id(*parent)).collect(),
+                    proposal: None,
                 },
             }
         }
@@ -1652,7 +1712,7 @@ mod tests {
         // refused before anything is recorded, like the sibling validators
         // (tag.clear claim lists, ChainExt.after, note.revise parents).
         let (_dir, mut events) = open_events();
-        assert!(events.frontier().unwrap().is_empty());
+        assert_eq!(events.frontier().unwrap(), [] as [Head; 0]);
         for tags in [
             vec![
                 ("city".to_owned(), Some("Seattle".to_owned())),
@@ -1697,8 +1757,14 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
         assert_eq!(visible[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            [] as [Claim; 0]
+        );
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
         assert_eq!(events.review_tags().unwrap(), visible);
         assert_eq!(
             events.search("city", Some("Oslo")).unwrap()[0].claims,
@@ -1773,8 +1839,11 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].scope, TagScope::Shared);
         assert_ne!(shared[0].id, local_id);
-        assert!(events.local.claims().is_empty());
-        assert_eq!(events.read_store(|store| store.tag_claims()).unwrap(), shared);
+        assert_eq!(events.local.claims(), [] as [LocalClaim; 0]);
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            shared
+        );
 
         assert_eq!(
             events
@@ -1785,7 +1854,10 @@ mod tests {
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            [] as [Claim; 0]
+        );
     }
 
     #[test]
@@ -1834,8 +1906,11 @@ mod tests {
         let (count, _) = events.clear_tag(subject, "city").unwrap();
 
         assert_eq!(count, 1);
-        assert!(events.tags_on(subject).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert_eq!(events.tags_on(subject).unwrap(), [] as [Claim; 0]);
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
@@ -1888,6 +1963,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1895,9 +1971,10 @@ mod tests {
         assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
         let frontier = events.frontier().unwrap();
         assert!(
-            frontier.iter().any(|head| head.author
-                == *key(9).verifying_key().as_bytes()
-                && head.event == foreign.id),
+            frontier
+                .iter()
+                .any(|head| head.author == *key(9).verifying_key().as_bytes()
+                    && head.event == foreign.id),
             "the foreign event is missing from the frontier: {frontier:?}"
         );
     }
@@ -1976,7 +2053,7 @@ mod tests {
             ]
         );
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(events.tags_on(subject).unwrap().is_empty());
+        assert_eq!(events.tags_on(subject).unwrap(), [] as [Claim; 0]);
     }
 
     #[test]
@@ -2032,6 +2109,7 @@ mod chat_tests {
             checkpoint: None,
             rotation: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(alice, 0, None, Some(&body), ext).unwrap();
         (event, body)
@@ -2040,9 +2118,7 @@ mod chat_tests {
     /// A node whose store already holds the channel create, as sync would have brought it.
     fn node(dir: &Path, key: SigningKey, create: &Event, body: &[u8]) -> LocalEvents {
         let mut node = LocalEvents::open(dir, key).unwrap();
-        node.store
-            .ingest(&create.bytes, Some(body), 0)
-            .unwrap();
+        node.store.ingest(&create.bytes, Some(body), 0).unwrap();
         node
     }
 
@@ -2092,7 +2168,12 @@ mod chat_tests {
         // A non-member's write is refused at admission: nothing is signed or recorded.
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
-        assert!(node_c.read_store(|store| store.chat_records(&group)).unwrap().is_empty());
+        assert_eq!(
+            node_c
+                .read_store(|store| store.chat_records(&group))
+                .unwrap(),
+            [] as [id_store::chat::ChatRecord; 0]
+        );
 
         let first = node_a
             .send_chat(
@@ -2185,6 +2266,132 @@ mod chat_tests {
         );
     }
 
+    /// Moves every applied event of `from`'s author, with its body, into `to`'s store,
+    /// as a sync session would: notes and thread events alike.
+    fn exchange_all(from: &LocalEvents, to: &LocalEvents) {
+        let carried = from
+            .read_store(|store| {
+                let mut carried = Vec::new();
+                for event in store.applied_events(&from.author(), None, None, usize::MAX)? {
+                    let body = store.stored_body(&event.id)?;
+                    carried.push((event, body));
+                }
+                Ok(carried)
+            })
+            .unwrap();
+        for (event, body) in carried {
+            to.store
+                .ingest(&event.bytes, body.as_deref(), now_ms())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_a_proposal_is_accepted_by_the_note_revision_that_cites_it() {
+        use id_store::chat::{ChatLink, ChatLinkKind};
+        use id_store::chat_anchor::ObjectRef;
+        use id_store::thread_resolution::{
+            BaseStanding, ChatProposal, ChatProposalRejection, ChatResolution, ProposalState,
+            ThreadEvent,
+        };
+
+        let (alice, bob, carol) = (key(71), key(72), key(73));
+        let (alice_key, bob_key) = (
+            *alice.verifying_key().as_bytes(),
+            *bob.verifying_key().as_bytes(),
+        );
+        let (create, body) = create_event(&alice, &bob);
+        let group = create.id;
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let mut node_a = node(dir_a.path(), alice, &create, &body);
+        let mut node_b = node(dir_b.path(), bob, &create, &body);
+        let mut node_c = node(dir_c.path(), carol, &create, &body);
+
+        // Alice's note is the object; the thread is any root in the conversation.
+        let note = node_a.create_note("text/markdown", b"first").unwrap();
+        let object = ObjectRef::new(note, alice_key);
+        let thread = Hash::digest(b"the thread root");
+        let blob = |seed: &[u8]| ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(seed),
+            author: bob_key,
+            hint: None,
+        };
+        let propose = |seed: &[u8]| {
+            ThreadEvent::Proposal(ChatProposal {
+                object,
+                base: note,
+                content: blob(seed),
+                thread,
+                supersedes: None,
+            })
+        };
+
+        // A non-member's proposal is refused at admission, and its read stays closed.
+        assert!(node_c.send_thread_event(group, propose(b"carol")).is_err());
+        assert!(node_c.thread_projection(group).is_err());
+
+        // Bob proposes twice, then rejects his own second proposal: he has not
+        // written the note, so the rejection does not count.
+        let accepted = node_b.send_thread_event(group, propose(b"take")).unwrap();
+        let open = node_b.send_thread_event(group, propose(b"leave")).unwrap();
+        let rejection = node_b
+            .send_thread_event(
+                group,
+                ThreadEvent::Rejection(ChatProposalRejection {
+                    proposal: open,
+                    reason: blob(b"why"),
+                }),
+            )
+            .unwrap();
+        exchange_all(&node_a, &node_b);
+        exchange_all(&node_b, &node_a);
+
+        // Alice accepts the first by making the edit that cites it, then resolves
+        // the thread with that edit.
+        let edit = node_a
+            .accept_proposal(note, "text/markdown", b"taken", &[note], Some(accepted))
+            .unwrap();
+        let resolution = node_a
+            .send_thread_event(
+                group,
+                ThreadEvent::Resolution(ChatResolution::edit(thread, object, edit)),
+            )
+            .unwrap();
+        exchange_all(&node_a, &node_b);
+
+        let projection_a = node_a.thread_projection(group).unwrap();
+        let projection_b = node_b.thread_projection(group).unwrap();
+        assert_eq!(projection_a, projection_b);
+        let state = |id: Hash| {
+            projection_a
+                .proposals
+                .iter()
+                .find(|record| record.id == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(state(accepted).state, ProposalState::Accepted);
+        assert_eq!(state(accepted).accepted_by, vec![edit]);
+        assert_eq!(state(open).state, ProposalState::Proposed);
+        assert_eq!(projection_a.refused, vec![rejection]);
+        let resolved = projection_a.resolution_of(&thread).unwrap();
+        assert_eq!(resolved.heads.len(), 1);
+        assert_eq!(resolved.heads[0].id, resolution);
+        assert_eq!(projection_a.resolutions_producing(&object, &edit).len(), 1);
+
+        // The open proposal was made against the note's create, which the edit
+        // replaced as the head, so the editor shows it stale.
+        let heads = node_a.note_history(note).unwrap().heads;
+        let review = projection_a.review(&object, &heads);
+        let open_review = review.iter().find(|r| r.record.id == open).unwrap();
+        assert_eq!(open_review.base, BaseStanding::Stale { heads });
+        let taken = review.iter().find(|r| r.record.id == accepted).unwrap();
+        assert_eq!(taken.base, BaseStanding::Closed);
+    }
+
     #[test]
     fn test_send_rate_admits_the_configured_burst_and_refuses_past_it() {
         let (alice, bob) = (key(54), key(55));
@@ -2257,7 +2464,9 @@ mod chat_tests {
         let policy = crate::event_store::CompactionPolicy::default();
         assert_eq!(node.compact(&policy).unwrap(), 0);
         assert!(
-            node.store.event_by_id(&chat_ids[0]).unwrap().is_some(),
+            node.read_store(|store| store.event_by_id(&chat_ids[0]))
+                .unwrap()
+                .is_some(),
             "a chat event lost its bytes without a live-kinds declaration"
         );
 
@@ -2280,18 +2489,29 @@ mod chat_tests {
         // timeline projection needs message bodies, so it cannot
         // list compacted events; presence is the residue's promise.)
         assert!(
-            node.store.roster(&group).unwrap().contains(&author),
+            node.read_store(|store| store.roster(&group))
+                .unwrap()
+                .contains(&author),
             "the roster no longer reads through the compaction residue"
         );
         for id in &chat_ids {
             assert!(
-                node.store.validity_now(id).unwrap() == crate::event_store::Validity::Applies,
+                node.read_store(|store| store.validity_now(id)).unwrap()
+                    == crate::event_store::Validity::Applies,
                 "chat {id} changed its verdict under compaction"
             );
         }
         // Durable facts keep their bytes.
-        assert!(node.store.event_by_id(&document.id).unwrap().is_some());
-        assert!(node.store.event_by_id(&anchor).unwrap().is_some());
+        assert!(
+            node.read_store(|store| store.event_by_id(&document.id))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            node.read_store(|store| store.event_by_id(&anchor))
+                .unwrap()
+                .is_some()
+        );
 
         // The node still writes after compaction: the chain head and
         // the backlink resolution are intact.
@@ -2302,7 +2522,7 @@ mod chat_tests {
             )
             .unwrap();
         assert_ne!(after, group);
-        node.store.check_invariants().unwrap();
+        node.read_store(EventStore::check_invariants).unwrap();
 
         // The store reopens with the compaction residue intact (the
         // reopen half of criterion 8): a fresh node over the same
@@ -2312,20 +2532,22 @@ mod chat_tests {
         let reopened = LocalEvents::open(dir.path(), key(61)).unwrap();
         assert!(
             reopened
-                .store
-                .roster(&group)
+                .read_store(|store| store.roster(&group))
                 .unwrap()
                 .contains(&reopened.author()),
             "the reopened store lost the roster"
         );
         assert!(
-            reopened.store.event_by_id(&after).unwrap().is_some(),
+            reopened
+                .read_store(|store| store.event_by_id(&after))
+                .unwrap()
+                .is_some(),
             "the reopened store lost the post-compaction write"
         );
         assert!(
             !reopened.chat_timeline(group).unwrap().is_empty(),
             "the reopened store lost the surviving recent chat"
         );
-        reopened.store.check_invariants().unwrap();
+        reopened.read_store(EventStore::check_invariants).unwrap();
     }
 }

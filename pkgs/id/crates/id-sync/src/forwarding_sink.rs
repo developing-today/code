@@ -18,6 +18,15 @@
 //! cycles further round the graph are cut by the gate's duplicate
 //! suppression, because the fan-out reuses the message ID unchanged.
 //!
+//! Neighbour visibility is not group authorization: a discovered peer
+//! is not thereby a member of the envelope's group (§4.2: a gossip
+//! topic ID is not a group credential). A sink built with
+//! [`ForwardingSink::with_group_frontier`] additionally drops every
+//! target the frontier does not authorize for the envelope's group, so
+//! group payloads never fan out to non-members (#15912). The frontier
+//! is read on every delivery, so a member removed from the group stops
+//! receiving forwards as soon as the removal is in the relay's state.
+//!
 //! Delivery must not block the accepting connection, so forwarding runs
 //! on spawned tasks; [`deliver`](ChainedSink::deliver) returns after the
 //! local delivery and the task launches. A failed forward is logged and
@@ -29,7 +38,9 @@ use std::sync::Arc;
 use iroh::{Endpoint, EndpointAddr};
 
 use crate::chained_message::RelayedMessage;
-use crate::relay_ingest::{ChainedSink, forward_message};
+use crate::envelope_outbox::Outcome;
+use crate::relay_gate::MembershipFrontier;
+use crate::relay_ingest::{ChainedSink, RelayBoundaryGate, forward_message};
 
 /// Where a [`ForwardingSink`] hands each message it delivers locally.
 ///
@@ -91,6 +102,8 @@ pub struct ForwardingSink {
     endpoint: Endpoint,
     peers: Arc<dyn NextPeers>,
     local: Arc<dyn LocalSink>,
+    boundary_gate: Option<Arc<dyn RelayBoundaryGate>>,
+    group_frontier: Option<Arc<dyn MembershipFrontier>>,
 }
 
 impl ForwardingSink {
@@ -106,7 +119,30 @@ impl ForwardingSink {
             endpoint,
             peers: Arc::new(peers),
             local: Arc::new(local),
+            boundary_gate: None,
+            group_frontier: None,
         }
+    }
+
+    /// Install the serving app's shared boundary evaluator adapter for
+    /// outbound relay transit.
+    #[must_use]
+    pub fn with_boundary_gate(mut self, gate: Arc<dyn RelayBoundaryGate>) -> Self {
+        self.boundary_gate = Some(gate);
+        self
+    }
+
+    /// Install the group-membership frontier fan-out targets are
+    /// authorized against: a discovered or configured peer receives a
+    /// forward only if the frontier authorizes it for the envelope's
+    /// group (#15912). Read on every delivery, so membership changes
+    /// (including removals) take effect without rebuilding the sink.
+    /// Without one, fan-out goes to every visible neighbour — only
+    /// sound for neighbour sets the host itself scoped to the group.
+    #[must_use]
+    pub fn with_group_frontier(mut self, frontier: Arc<dyn MembershipFrontier>) -> Self {
+        self.group_frontier = Some(frontier);
+        self
     }
 
     /// A sink that fans out and keeps no local copy ([`DropLocal`]).
@@ -119,7 +155,9 @@ impl ForwardingSink {
     }
 
     /// The neighbours this delivery goes on to: every configured peer
-    /// except this relay and the neighbour the message arrived from.
+    /// except this relay and the neighbour the message arrived from,
+    /// and — when a group frontier is installed — except peers the
+    /// frontier does not authorize for the envelope's group.
     fn next_targets(&self, forwarded: &RelayedMessage) -> Vec<(String, EndpointAddr)> {
         // This relay's own hop is last; its previous hop is the arrival
         // neighbour. A direct delivery (no hops, or this relay's first
@@ -133,7 +171,22 @@ impl ForwardingSink {
             .next_peers()
             .into_iter()
             .filter(|(relay, _)| relay != &arrival && relay != &self.self_id)
+            .filter(|(relay, _)| {
+                self.group_frontier
+                    .as_ref()
+                    .is_none_or(|frontier| frontier.is_authorized(relay, &forwarded.envelope.group))
+            })
             .collect()
+    }
+
+    async fn forward_to(&self, target: EndpointAddr, msg: &RelayedMessage) -> Outcome {
+        if let Some(gate) = &self.boundary_gate {
+            let outcome = gate.check_relay(&msg.envelope.origin);
+            if !outcome.is_allow() {
+                return Outcome::Refused(format!("relay boundary refused ({})", outcome.name()));
+            }
+        }
+        forward_message(&self.endpoint, target, msg).await
     }
 }
 
@@ -149,11 +202,12 @@ impl ChainedSink for ForwardingSink {
     fn deliver(&self, forwarded: &RelayedMessage) {
         self.local.deliver(forwarded);
         for (relay, addr) in self.next_targets(forwarded) {
-            let endpoint = self.endpoint.clone();
             let msg = forwarded.clone();
+            let sink = self.clone();
             tokio::spawn(async move {
-                match forward_message(&endpoint, addr, &msg).await {
-                    crate::envelope_outbox::Outcome::Delivered => {}
+                let outcome = sink.forward_to(addr, &msg).await;
+                match outcome {
+                    Outcome::Delivered => {}
                     other => tracing::warn!(
                         relay = %relay,
                         outcome = ?other,
@@ -202,6 +256,36 @@ mod tests {
                 iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, addr.port()))
             }),
         )
+    }
+
+    struct DenyRelayBoundary;
+
+    impl RelayBoundaryGate for DenyRelayBoundary {
+        fn check_relay(&self, _: &str) -> id_core::boundary_surfaces::FrameworkOutcome {
+            id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                placement: Vec::new(),
+                assurance: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn boundary_denial_stops_outbound_relay_before_transport_send() {
+        // Oracle: a denied RelayTransit outcome returns a permanent refusal
+        // before forward_message attempts to open the destination connection.
+        let ep = endpoint().await;
+        let sink = ForwardingSink::fanning_out(key_id(7), ep.clone(), Vec::new())
+            .with_boundary_gate(Arc::new(DenyRelayBoundary));
+        let msg = RelayedMessage {
+            envelope: envelope(),
+            hops: vec![hop(7, None)],
+        };
+
+        let result = sink.forward_to(addr_of(&ep), &msg).await;
+        assert_eq!(
+            result,
+            crate::envelope_outbox::Outcome::Refused("relay boundary refused (deny)".to_owned())
+        );
     }
 
     fn envelope() -> ChainedEnvelope {
@@ -264,6 +348,101 @@ mod tests {
         assert_eq!(
             targets.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
             vec![key_id(1), key_id(2)]
+        );
+    }
+
+    /// A membership frontier a test can mutate between deliveries, so
+    /// fan-out reads the membership state current at each delivery.
+    #[derive(Default)]
+    struct TestFrontier {
+        members:
+            std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    }
+
+    impl TestFrontier {
+        fn allow(&self, group: &str, member: &str) {
+            self.members
+                .lock()
+                .unwrap()
+                .entry(group.to_owned())
+                .or_default()
+                .insert(member.to_owned());
+        }
+
+        fn revoke(&self, group: &str, member: &str) {
+            if let Some(members) = self.members.lock().unwrap().get_mut(group) {
+                members.remove(member);
+            }
+        }
+    }
+
+    impl MembershipFrontier for TestFrontier {
+        fn is_authorized(&self, origin: &str, group: &str) -> bool {
+            self.members
+                .lock()
+                .unwrap()
+                .get(group)
+                .is_some_and(|members| members.contains(origin))
+        }
+    }
+
+    /// Oracle: #15912 — a discovered peer that is not a member of the
+    /// envelope's group must not be a fan-out target, while an
+    /// authorized member still is. Arrival/self exclusions are
+    /// unaffected (the origin is the arrival neighbour here).
+    #[tokio::test]
+    async fn next_targets_with_group_frontier_exclude_non_members() {
+        let ep = endpoint().await;
+        let frontier = Arc::new(TestFrontier::default());
+        frontier.allow("group-1", &key_id(1));
+        frontier.allow("group-1", &key_id(2));
+        let peers = vec![
+            (key_id(7), addr_of(&ep)), // this relay
+            (key_id(1), addr_of(&ep)), // origin / arrival, a member
+            (key_id(2), addr_of(&ep)), // a member
+            (key_id(3), addr_of(&ep)), // discovered non-member
+        ];
+        let sink = ForwardingSink::fanning_out(key_id(7), ep, peers).with_group_frontier(frontier);
+
+        let direct = RelayedMessage {
+            envelope: envelope(),
+            hops: vec![hop(7, None)],
+        };
+        let targets = sink.next_targets(&direct);
+        assert_eq!(
+            targets.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            vec![key_id(2)]
+        );
+    }
+
+    /// Oracle: #15912 — membership is read per delivery, so a member
+    /// removed from the group is excluded from subsequent fan-out
+    /// without rebuilding the sink.
+    #[tokio::test]
+    async fn next_targets_with_group_frontier_track_member_removal() {
+        let ep = endpoint().await;
+        let frontier = Arc::new(TestFrontier::default());
+        frontier.allow("group-1", &key_id(2));
+        frontier.allow("group-1", &key_id(3));
+        let peers = vec![(key_id(2), addr_of(&ep)), (key_id(3), addr_of(&ep))];
+        let sink = ForwardingSink::fanning_out(key_id(7), ep, peers)
+            .with_group_frontier(Arc::clone(&frontier) as Arc<dyn MembershipFrontier>);
+
+        let direct = RelayedMessage {
+            envelope: envelope(),
+            hops: vec![hop(7, None)],
+        };
+        let targets = sink.next_targets(&direct);
+        assert_eq!(
+            targets.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            vec![key_id(2), key_id(3)]
+        );
+
+        frontier.revoke("group-1", &key_id(3));
+        let targets = sink.next_targets(&direct);
+        assert_eq!(
+            targets.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            vec![key_id(2)]
         );
     }
 }

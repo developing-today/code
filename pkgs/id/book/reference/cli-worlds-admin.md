@@ -20,14 +20,14 @@ Changes a world's capabilities. The read form is in [World commands: joining and
 id world caps <NODE> [--grant <CAP>]... [--revoke <CAP>]... [--ceiling <CAPS>] [--admin-token <TOKEN>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--grant` | capability name | — (none) | Capability to grant; repeatable. `*` grants the whole catalog. |
-| `--revoke` | capability name | — (none) | Capability to revoke; repeatable. |
-| `--ceiling` | capability names, comma-separated or repeatable | — (none) | Capability ceiling to set. Only known capabilities; `*` is not accepted in a ceiling. |
-| `--admin-token` | token | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required for any change. |
-| `--capability` | capability string | — (env `ID_WORLD_CAPABILITY`) | A guest capability. Sufficient for reading; never sufficient for a change. |
+| Flag            | Argument                                        | Default                        | Meaning                                                                               |
+| --------------- | ----------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters                               | required                       | The host's node ID.                                                                   |
+| `--grant`       | capability name                                 | — (none)                       | Capability to grant; repeatable. `*` grants the whole catalog.                        |
+| `--revoke`      | capability name                                 | — (none)                       | Capability to revoke; repeatable.                                                     |
+| `--ceiling`     | capability names, comma-separated or repeatable | — (none)                       | Capability ceiling to set. Only known capabilities; `*` is not accepted in a ceiling. |
+| `--admin-token` | token                                           | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required for any change.                                     |
+| `--capability`  | capability string                               | — (env `ID_WORLD_CAPABILITY`)  | A guest capability. Sufficient for reading; never sufficient for a change.            |
 
 Behaviour: any of `--grant`, `--revoke` or `--ceiling` turns the invocation into a change, and a change needs the admin token. A guest capability alone cannot change anything. The background model is in [Capabilities, ceilings and providers](../concepts/capabilities.md).
 
@@ -49,16 +49,16 @@ Persists a world's requested execution profile bounds. The read form is in [Worl
 id world profile <NODE> [--wasm-fuel <N>] [--wasm-memory-bytes <N>] [...] [--admin-token <TOKEN>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--wasm-fuel` | integer | — (none) | Requested Wasm fuel limit per transaction/event. Visible alias: `--fuel`. |
-| `--wasm-memory-bytes` | integer (bytes) | — (none) | Requested Wasm linear memory in bytes. Visible alias: `--wasm-memory`. |
-| `--wasm-message-bytes` | integer (bytes) | — (none) | Requested Wasm message payload limit in bytes. Visible alias: `--wasm-message`. |
-| `--native-memory-bytes` | integer (bytes) | — (none) | Requested native address-space cap in bytes. Visible alias: `--native-memory`. |
-| `--native-cpu-seconds` | integer (seconds) | — (none) | Requested native CPU cap in seconds. Visible alias: `--native-cpu`. |
-| `--native-call-deadline-ms` | integer (milliseconds) | — (none) | Requested native call deadline in milliseconds. Visible alias: `--native-deadline`. |
-| `--admin-token` | token | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required when any limit flag is given. |
+| Flag                        | Argument               | Default                        | Meaning                                                                             |
+| --------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------------------------------- |
+| `<NODE>`                    | 64 hex characters      | required                       | The host's node ID.                                                                 |
+| `--wasm-fuel`               | integer                | — (none)                       | Requested Wasm fuel limit per transaction/event. Visible alias: `--fuel`.           |
+| `--wasm-memory-bytes`       | integer (bytes)        | — (none)                       | Requested Wasm linear memory in bytes. Visible alias: `--wasm-memory`.              |
+| `--wasm-message-bytes`      | integer (bytes)        | — (none)                       | Requested Wasm message payload limit in bytes. Visible alias: `--wasm-message`.     |
+| `--native-memory-bytes`     | integer (bytes)        | — (none)                       | Requested native address-space cap in bytes. Visible alias: `--native-memory`.      |
+| `--native-cpu-seconds`      | integer (seconds)      | — (none)                       | Requested native CPU cap in seconds. Visible alias: `--native-cpu`.                 |
+| `--native-call-deadline-ms` | integer (milliseconds) | — (none)                       | Requested native call deadline in milliseconds. Visible alias: `--native-deadline`. |
+| `--admin-token`             | token                  | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required when any limit flag is given.                     |
 
 Behaviour: giving any limit flag persists the new profile and requires the admin token. Giving none prints the current persisted profile (the read form). The limit flags take bytes, seconds and milliseconds as raw integers; contrast the serve-side runtime flags in [serve and publications](cli-serve.md), which take MiB and KiB units.
 
@@ -71,6 +71,33 @@ $ id world profile 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 
 Failures: a limit flag without the admin token is refused, exit `1`.
 
+## `presentation`
+
+Shows or replaces a world's presentation policy: whether user-uploaded art renders, the richest rung the world draws, which filters and shaders are allowed, and the world's own fallback art.
+
+```
+id world presentation <NODE> [--set <FILE> --admin-token <TOKEN>]
+```
+
+| Flag            | Argument          | Default                        | Meaning                                                                                 |
+| --------------- | ----------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                     |
+| `--set`         | file path (JSON)  | — (none)                       | Replace the policy with the one in this file. A duplicated key or unknown field is refused. |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                         |
+
+Behaviour: without `--set` it prints the current policy, and needs no token, because the policy is public before anyone joins. With `--set` the host checks the policy, journals it and applies it at once. An empty file object `{}` is the default policy, which denies user shaders and disguise filters.
+
+Example: stop rendering user uploads and draw nothing richer than tiles.
+
+```
+$ cat presentation.json
+{"assets": {"user_uploads": "deny", "max_rung": "tileset"}}
+$ id world presentation 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    --set presentation.json
+```
+
+Failures: `--set` without the admin token, a malformed file or a wrong admin token is refused, exit `1`.
+
 ## `doctor`
 
 Diagnoses a broken world setup and prints the fix for each problem. It takes no `<NODE>`: every check is local.
@@ -79,14 +106,14 @@ Diagnoses a broken world setup and prints the fix for each problem. It takes no 
 id world doctor [OPTIONS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--roc-bin` | binary | `ID_ROC_BIN`, then the pinned nightly, then `roc` on PATH | Roc compiler binary to check. Environment fallback: `ID_ROC_BIN`. |
-| `--platform` | directory | `ID_ROC_PLATFORM`, or `./examples/roc-world` | World platform directory to check. Environment fallback: `ID_ROC_PLATFORM`. |
-| `--journal` | file path | — (none) | World journal (`journal.jsonl`) to check for format errors. |
-| `--ceiling` | capability names, comma-separated or repeatable | — (none) | Capability ceiling to check. Only known capabilities, no `*`. Without it, the ceiling check reports that none is configured. |
-| `--profile` | file path (JSON) | — (none) | Execution profile to check, as a JSON file whose fields are the execution-profile bounds, e.g. `{"wasm_fuel": 0}`. Without it, the profile check reports that none is configured. |
-| `--json` | switch | off | Print one machine-readable report instead of text. |
+| Flag         | Argument                                        | Default                                                   | Meaning                                                                                                                                                                           |
+| ------------ | ----------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--roc-bin`  | binary                                          | `ID_ROC_BIN`, then the pinned nightly, then `roc` on PATH | Roc compiler binary to check. Environment fallback: `ID_ROC_BIN`.                                                                                                                 |
+| `--platform` | directory                                       | `ID_ROC_PLATFORM`, or `./examples/roc-world`              | World platform directory to check. Environment fallback: `ID_ROC_PLATFORM`.                                                                                                       |
+| `--journal`  | file path                                       | — (none)                                                  | World journal (`journal.jsonl`) to check for format errors.                                                                                                                       |
+| `--ceiling`  | capability names, comma-separated or repeatable | — (none)                                                  | Capability ceiling to check. Only known capabilities, no `*`. Without it, the ceiling check reports that none is configured.                                                      |
+| `--profile`  | file path (JSON)                                | — (none)                                                  | Execution profile to check, as a JSON file whose fields are the execution-profile bounds, e.g. `{"wasm_fuel": 0}`. Without it, the profile check reports that none is configured. |
+| `--json`     | switch                                          | off                                                       | Print one machine-readable report instead of text.                                                                                                                                |
 
 Behaviour: checks the Roc toolchain, the platform build, the capability ceiling, the execution profile, the journal format and the clock. Each problem is printed with its fix.
 
@@ -108,10 +135,10 @@ Shows the drift between a `world.toml` file and a live world. Read-only: it chan
 id world diff <NODE> --file <FILE> --capability <CAP>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--file` | file path | required | Path to the `world.toml` to compare against. |
+| Flag           | Argument          | Default                              | Meaning                                                                                              |
+| -------------- | ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `<NODE>`       | 64 hex characters | required                             | The host's node ID.                                                                                  |
+| `--file`       | file path         | required                             | Path to the `world.toml` to compare against.                                                         |
 | `--capability` | capability string | required (env `ID_WORLD_CAPABILITY`) | A guest capability, enough to read the world. No admin token is needed or accepted for this command. |
 
 Behaviour: prints the drift report and stays informational: drift alone does not fail the command. If the manifest's plan is one an `apply` would refuse (the schedule-horizon check), `diff` prints ``warning: `world apply` would refuse this manifest: <error>`` to stderr and still exits `0`.
@@ -133,15 +160,23 @@ Reconciles a live world to a `world.toml`. Idempotent and journaled by the host.
 id world apply <NODE> --file <FILE> --admin-token <TOKEN> --capability <CAP> [--dry-run]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--file` | file path | required | Path to the `world.toml` to apply. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
-| `--capability` | capability string | required (env `ID_WORLD_CAPABILITY`) | A guest capability, used to read the current state. Applying reads before it writes, so both credentials are required. |
-| `--dry-run` | switch | off | Print the plan only; change nothing. |
+| Flag            | Argument          | Default                               | Meaning                                                                                                                |
+| --------------- | ----------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                              | The host's node ID.                                                                                                    |
+| `--file`        | file path         | required                              | Path to the `world.toml` to apply.                                                                                     |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                                                                                               |
+| `--capability`  | capability string | required (env `ID_WORLD_CAPABILITY`)  | A guest capability, used to read the current state. Applying reads before it writes, so both credentials are required. |
+| `--dry-run`     | switch            | off                                   | Print the plan only; change nothing.                                                                                   |
 
-Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, presentation policy, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+
+A `[presentation]` table sets the world's presentation policy, in the same shape `id world presentation --set` takes. Leaving the table out leaves the live policy alone. A present table replaces the policy whole, and its omitted fields take their defaults, so an empty `[presentation]` resets a changed policy:
+
+```toml
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+```
 
 Example — preview, then apply, a toy manifest:
 
@@ -162,9 +197,9 @@ Prints the versioned shell contract — the frame protocol every shell speaks �
 id world contract [--check <FILE> | --check-suite <FILE>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--check` | file path | — (none) | Transcript to check. `-` reads stdin. Without `--check` or `--check-suite`, the command prints the shell contract itself. Conflicts with `--check-suite`. |
+| Flag            | Argument  | Default  | Meaning                                                                                                                                                         |
+| --------------- | --------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--check`       | file path | — (none) | Transcript to check. `-` reads stdin. Without `--check` or `--check-suite`, the command prints the shell contract itself. Conflicts with `--check-suite`.       |
 | `--check-suite` | file path | — (none) | Suite manifest to run (`contract/shell-suite.v1.json`): every shell's capability statement and recorded session, checked in one pass. Conflicts with `--check`. |
 
 Behaviour: a transcript has one JSON object per line, of the form `{"from": "client"|"server", "frame": {...}}`. The check prints each violation.
@@ -187,13 +222,13 @@ Measures a compiled `.wasm` world program's fuel use, offline. No host is contac
 id world measure --module <FILE> [OPTIONS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--module` | file path | required | Wasm module built for the `id` Roc world ABI. |
-| `--seed` | integer | `1` | Deterministic seed supplied to the guest initializer. |
-| `--input` | hex string | — (none) | Event to apply as participant 1, hex-encoded; repeatable, in order. |
-| `--width` | integer | — (none) | Viewport width for the `layout` call. Requires `--height`. |
-| `--height` | integer | — (none) | Viewport height for the `layout` call. Requires `--width`. |
+| Flag       | Argument   | Default  | Meaning                                                             |
+| ---------- | ---------- | -------- | ------------------------------------------------------------------- |
+| `--module` | file path  | required | Wasm module built for the `id` Roc world ABI.                       |
+| `--seed`   | integer    | `1`      | Deterministic seed supplied to the guest initializer.               |
+| `--input`  | hex string | — (none) | Event to apply as participant 1, hex-encoded; repeatable, in order. |
+| `--width`  | integer    | — (none) | Viewport width for the `layout` call. Requires `--height`.          |
+| `--height` | integer    | — (none) | Viewport height for the `layout` call. Requires `--width`.          |
 
 Behaviour: compiles the module with the default limits, runs `view`, then `layout` (with `--width`/`--height`), `records`, `wants` and `snapshot`, then each `--input` as participant 1 followed by a `view`. It prints one JSON object with, per call kind, the calls made, total and worst fuel, and the worst call as a percent of the fuel limit.
 
@@ -215,11 +250,11 @@ Tails a world's recent events, bounded by retention and a deadline.
 id world logs <NODE> --capability <CAP> [OPTIONS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--capability` | capability string | required (env `ID_WORLD_CAPABILITY`) | A guest capability for the world. |
-| `--seconds` | integer, `0..=86400` | `5` | Stop after this many seconds. The maximum is `86400` (24 hours); a larger value is a clap error, exit `2`. |
+| Flag           | Argument             | Default                              | Meaning                                                                                                    |
+| -------------- | -------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `<NODE>`       | 64 hex characters    | required                             | The host's node ID.                                                                                        |
+| `--capability` | capability string    | required (env `ID_WORLD_CAPABILITY`) | A guest capability for the world.                                                                          |
+| `--seconds`    | integer, `0..=86400` | `5`                                  | Stop after this many seconds. The maximum is `86400` (24 hours); a larger value is a clap error, exit `2`. |
 
 Example — tail a toy world for 30 seconds:
 
@@ -238,9 +273,9 @@ Prints a world's module, capability and profile state as one JSON object.
 id world stats <NODE> --capability <CAP>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
+| Flag           | Argument          | Default                              | Meaning                           |
+| -------------- | ----------------- | ------------------------------------ | --------------------------------- |
+| `<NODE>`       | 64 hex characters | required                             | The host's node ID.               |
 | `--capability` | capability string | required (env `ID_WORLD_CAPABILITY`) | A guest capability for the world. |
 
 Example:
@@ -260,11 +295,11 @@ Writes a world's retained journal history and records to a replayable fixture (J
 id world record <NODE> --admin-token <TOKEN> [--out <FILE>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
-| `--out` | file path | stdout | Write the fixture here instead of standard output. |
+| Flag            | Argument          | Default                               | Meaning                                            |
+| --------------- | ----------------- | ------------------------------------- | -------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                              | The host's node ID.                                |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                           |
+| `--out`         | file path         | stdout                                | Write the fixture here instead of standard output. |
 
 Example:
 
@@ -283,12 +318,12 @@ Replays a recorded fixture offline through a module and compares records. No hos
 id world replay --module <FILE> --fixture <FILE> --seed <N> [--allow-partial]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--module` | file path | required | The Wasm module the fixture was recorded under. |
-| `--fixture` | file path | required | Fixture written by `world record`. |
-| `--seed` | integer | required | The seed the module was installed with. The fixture does not carry it. |
-| `--allow-partial` | switch | off | Replay a window that does not start at sequence 1. Its records are not compared. |
+| Flag              | Argument  | Default  | Meaning                                                                          |
+| ----------------- | --------- | -------- | -------------------------------------------------------------------------------- |
+| `--module`        | file path | required | The Wasm module the fixture was recorded under.                                  |
+| `--fixture`       | file path | required | Fixture written by `world record`.                                               |
+| `--seed`          | integer   | required | The seed the module was installed with. The fixture does not carry it.           |
+| `--allow-partial` | switch    | off      | Replay a window that does not start at sequence 1. Its records are not compared. |
 
 Behaviour: prints a verdict line first — `records match`, `records differ`, or `records not compared (<reason>)` — followed by the replayed records and view.
 
@@ -310,12 +345,12 @@ Verifies a recorded fixture's determinism: replays it twice offline through a mo
 id world verify --module <FILE> --fixture <FILE> --seed <N> [--allow-partial]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--module` | file path | required | The Wasm module the fixture was recorded under. |
-| `--fixture` | file path | required | Fixture written by `world record`. |
-| `--seed` | integer | required | The seed the module was installed with. The fixture does not carry it. |
-| `--allow-partial` | switch | off | Replay a window that does not start at sequence 1. Its records are not compared against the fixture's header, but the two replays are still compared against each other. |
+| Flag              | Argument  | Default  | Meaning                                                                                                                                                                  |
+| ----------------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--module`        | file path | required | The Wasm module the fixture was recorded under.                                                                                                                          |
+| `--fixture`       | file path | required | Fixture written by `world record`.                                                                                                                                       |
+| `--seed`          | integer   | required | The seed the module was installed with. The fixture does not carry it.                                                                                                   |
+| `--allow-partial` | switch    | off      | Replay a window that does not start at sequence 1. Its records are not compared against the fixture's header, but the two replays are still compared against each other. |
 
 Behaviour: prints a verdict line first. Verification covers the events captured by the admin-authorized fixture, including host-originated events in their recorded order. It proves determinism for that history, not correctness of host policy.
 
@@ -337,11 +372,11 @@ Lists the worlds a host serves, using the admin listing. The public directory fo
 id world list <NODE> --admin-token <TOKEN> [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--admin-token` | token | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Giving it selects the admin listing; omitting it reads the public directory instead. |
-| `--json` | switch | off | Print one JSON object instead of tab-separated lines. |
+| Flag            | Argument          | Default                        | Meaning                                                                                                       |
+| --------------- | ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                                           |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Giving it selects the admin listing; omitting it reads the public directory instead. |
+| `--json`        | switch            | off                            | Print one JSON object instead of tab-separated lines.                                                         |
 
 Example:
 
@@ -359,11 +394,11 @@ Sets whether a world's directory may be read from other unisolated worlds. World
 id world isolation <NODE> <isolated|unisolated> --admin-token <TOKEN>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `<MODE>` | `isolated\|unisolated` | required positional | `isolated`: no cross-world reads. `unisolated`: readable from other unisolated worlds. Any other value is a clap error, exit `2`. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
+| Flag            | Argument               | Default                               | Meaning                                                                                                                           |
+| --------------- | ---------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters      | required                              | The host's node ID.                                                                                                               |
+| `<MODE>`        | `isolated\|unisolated` | required positional                   | `isolated`: no cross-world reads. `unisolated`: readable from other unisolated worlds. Any other value is a clap error, exit `2`. |
+| `--admin-token` | token                  | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                                                                                                          |
 
 Example:
 
@@ -382,11 +417,11 @@ Lets other unisolated worlds write into a world, or stops them.
 id world cross-world-write <NODE> <on|off> --admin-token <TOKEN>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `<MODE>` | `on\|off` | required positional | `on`: other unisolated worlds may write here. `off`: they may not. Any other value is a clap error, exit `2`. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
+| Flag            | Argument          | Default                               | Meaning                                                                                                       |
+| --------------- | ----------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                              | The host's node ID.                                                                                           |
+| `<MODE>`        | `on\|off`         | required positional                   | `on`: other unisolated worlds may write here. `off`: they may not. Any other value is a clap error, exit `2`. |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                                                                                      |
 
 Example:
 
@@ -405,10 +440,10 @@ Forces cross-world writes on for an unisolated world, overriding its own setting
 id world force-cross-world-write <NODE> --admin-token <TOKEN>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
+| Flag            | Argument          | Default                               | Meaning                  |
+| --------------- | ----------------- | ------------------------------------- | ------------------------ |
+| `<NODE>`        | 64 hex characters | required                              | The host's node ID.      |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
 
 Example:
 
@@ -426,12 +461,12 @@ Sets a world's file scope.
 id world file-scope <NODE> <confined|unrestricted> --admin-token <TOKEN> [--write-override <on|off>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `<SCOPE>` | `confined\|unrestricted` | required positional | `confined`: the world's own sandbox root. `unrestricted`: any path. Any other value is a clap error, exit `2`. |
-| `--write-override` | `on\|off` | — (none) | Admin file write override for an isolated world. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
+| Flag               | Argument                 | Default                               | Meaning                                                                                                        |
+| ------------------ | ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`           | 64 hex characters        | required                              | The host's node ID.                                                                                            |
+| `<SCOPE>`          | `confined\|unrestricted` | required positional                   | `confined`: the world's own sandbox root. `unrestricted`: any path. Any other value is a clap error, exit `2`. |
+| `--write-override` | `on\|off`                | — (none)                              | Admin file write override for an isolated world.                                                               |
+| `--admin-token`    | token                    | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                                                                                       |
 
 Example:
 
@@ -450,16 +485,16 @@ Follows a pinned writer into a durable replica, opens it under the policy-B admi
 id world replica <NODE> --dir <DIR> --admin-token <TOKEN> [OPTIONS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The writer host's node ID. |
-| `--dir` | directory path | required | Replica directory: the durable journal lives here and is opened in place on later runs (created on first follow). Omitting it is a clap error, exit `2`. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | Admin secret of the writer host, authorizing the raw journal feed. |
-| `--world` | name | `lobby` | World to replicate (the writer's world name). Environment fallback: `ID_WORLD`. This is the only world command where `--world` has a clap default value. |
-| `--source` | 64 hex characters | the writer's node ID | Pinned writer source key: the replication stream and the admission lease must both verify against it. The default holds because the writer's node ID is the key the writer signs its replication stream with. |
-| `--lease` | file path (JSON) | — (none) | A writer-signed admission lease to hold while serving: new spectators are admitted only while it verifies (policy B). Without one the replica serves gated, admitting no new spectators. |
-| `--once` | switch | off | Sync once from the writer, print the replica status as JSON, and exit without serving. Conflicts with `--follow`. |
-| `--follow` | switch | off | Keep following the writer (reconnecting across sessions), printing one JSON line per committed cursor; never serves. Conflicts with `--once`. |
+| Flag            | Argument          | Default                               | Meaning                                                                                                                                                                                                       |
+| --------------- | ----------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                              | The writer host's node ID.                                                                                                                                                                                    |
+| `--dir`         | directory path    | required                              | Replica directory: the durable journal lives here and is opened in place on later runs (created on first follow). Omitting it is a clap error, exit `2`.                                                      |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | Admin secret of the writer host, authorizing the raw journal feed.                                                                                                                                            |
+| `--world`       | name              | `lobby`                               | World to replicate (the writer's world name). Environment fallback: `ID_WORLD`. This is the only world command where `--world` has a clap default value.                                                      |
+| `--source`      | 64 hex characters | the writer's node ID                  | Pinned writer source key: the replication stream and the admission lease must both verify against it. The default holds because the writer's node ID is the key the writer signs its replication stream with. |
+| `--lease`       | file path (JSON)  | — (none)                              | A writer-signed admission lease to hold while serving: new spectators are admitted only while it verifies (policy B). Without one the replica serves gated, admitting no new spectators.                      |
+| `--once`        | switch            | off                                   | Sync once from the writer, print the replica status as JSON, and exit without serving. Conflicts with `--follow`.                                                                                             |
+| `--follow`      | switch            | off                                   | Keep following the writer (reconnecting across sessions), printing one JSON line per committed cursor; never serves. Conflicts with `--once`.                                                                 |
 
 Behaviour: in its default mode the command syncs the replica directory from the writer's signed journal feed, prints the replica status (source, world, cursor, staleness) as one JSON object, then serves the replica's world sessions on this node. `--once` stops after the status print. `--follow` keeps the replica journal current without serving.
 
@@ -480,11 +515,11 @@ Creates a world on a host.
 id world create <NODE> <NAME> --admin-token <TOKEN>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NODE>` | 64 hex characters | required | The host's node ID. |
-| `<NAME>` | string | required positional | Name of the new world. Charset: `a-z`, `0-9`, `-` and `_`. |
-| `--admin-token` | token | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. |
+| Flag            | Argument          | Default                               | Meaning                                                    |
+| --------------- | ----------------- | ------------------------------------- | ---------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                              | The host's node ID.                                        |
+| `<NAME>`        | string            | required positional                   | Name of the new world. Charset: `a-z`, `0-9`, `-` and `_`. |
+| `--admin-token` | token             | required (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret.                                   |
 
 Behaviour: on success the command prints `created`; if the world already exists on the host it prints `exists`.
 
@@ -508,10 +543,10 @@ id world journal backup <DIR> <OUT>
 
 ### `journal check`
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required | Directory of the world to check (the one holding `journal.jsonl`). |
-| `--json` | switch | off | Print one JSON object instead of text lines. |
+| Flag     | Argument       | Default  | Meaning                                                            |
+| -------- | -------------- | -------- | ------------------------------------------------------------------ |
+| `<DIR>`  | directory path | required | Directory of the world to check (the one holding `journal.jsonl`). |
+| `--json` | switch         | off      | Print one JSON object instead of text lines.                       |
 
 Behaviour: reports the journal's format version and validity, flagging a journal written in a newer format than this binary can read.
 
@@ -525,10 +560,10 @@ $ id world journal check ./toy-world-dir
 
 ### `journal backup`
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required | Directory of the world to back up (the one holding `journal.jsonl`). |
-| `<OUT>` | file path | required positional | The backup file to write. It must not already exist. |
+| Flag    | Argument       | Default             | Meaning                                                              |
+| ------- | -------------- | ------------------- | -------------------------------------------------------------------- |
+| `<DIR>` | directory path | required            | Directory of the world to back up (the one holding `journal.jsonl`). |
+| `<OUT>` | file path      | required positional | The backup file to write. It must not already exist.                 |
 
 Behaviour: copies the journal to the backup file, byte for byte, so the copy restores the world exactly. The journal must check valid first: the backup runs the same validity check before copying.
 
@@ -539,3 +574,49 @@ $ id world journal backup ./toy-world-dir ./toy-world-journal-backup.jsonl
 ```
 
 Failures: an `<OUT>` path that already exists fails the command, exit `1`, and the existing file is not overwritten. A journal that does not check valid fails the backup, exit `1`.
+
+## `announce` and `lookup`
+
+Publishes a world's signed announcement to pkarr relays, and reads one back, so anyone holding the world id can find the node that hosts it (#10706). The encoding, timing and relay rules are in the design addendum `doc/2026-11-25T03-10-00Z_design_id10706_announcement_pkarr`. No world host is contacted: these commands talk only to the relays.
+
+```
+id world announce --key-file <PATH> --node <NODE> --name <NAME> [--description <TEXT>] [--tag <TAG>]... [--listed] [--occupancy <has_room|near_full|full>] [--relay-hint <URL>] [--relay <BASE>]... [--lifetime <DURATION>] [--watch]
+id world lookup <WORLD_ID> [--relay <BASE>]...
+```
+
+### `announce`
+
+| Flag            | Argument     | Default                    | Meaning                                                                                                              |
+| --------------- | ------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--key-file`    | file path    | required                   | The world's signing key, an owner-only file created on first use. The world id is its public key.                    |
+| `--node`        | 64 hex chars | required                   | The node that hosts the world. It must not be the world key itself.                                                  |
+| `--name`        | text         | required                   | Display name, at most 64 characters.                                                                                 |
+| `--description` | text         | empty                      | At most 200 characters.                                                                                              |
+| `--tag`         | text         | none                       | Repeatable, at most 8 tags of at most 32 characters.                                                                 |
+| `--listed`      | switch       | off (unlisted)             | Lets registries include the world. An unlisted world is found only by its id.                                        |
+| `--occupancy`   | name         | `has_room`                 | Coarse occupancy: `has_room`, `near_full` or `full`.                                                                 |
+| `--relay-hint`  | URL          | none                       | A relay URL that reaches the node, never a raw IP and port.                                                          |
+| `--relay`       | base URL     | the developing-today relay | Repeatable. Each publish is `PUT <base>/<z32 world id>`.                                                             |
+| `--lifetime`    | duration     | `3h`                       | How long each announcement stays valid, at most 7 days.                                                              |
+| `--watch`       | switch       | off                        | Stay up and republish on the heartbeat (half of the lifetime or of 2 hours, whichever is shorter) until interrupted. |
+
+Behaviour: signs a fresh announcement (its `seq` is the publish time in microseconds), sends it to every relay and prints one JSON line per publish: `world_id`, `world_z32`, `seq`, `expires_at`, `published` (at least one relay accepted), `contested` (a relay holds a newer announcement, so another publisher has the key) and one `relays` entry per relay with its outcome (`accepted`, `stale`, `refused` or `unreachable`).
+
+Exit behaviour: without `--watch`, exits `1` when no relay accepted the announcement. With `--watch`, a failed publish is printed and retried at the next heartbeat, and an interrupt exits `0`.
+
+Example:
+
+```
+$ id world announce --key-file ./toy-world.key --node 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --name harbor --tag calm
+```
+
+### `lookup`
+
+| Flag         | Argument     | Default                    | Meaning                    |
+| ------------ | ------------ | -------------------------- | -------------------------- |
+| `<WORLD_ID>` | 64 hex chars | required                   | The world id to look up.   |
+| `--relay`    | base URL     | the developing-today relay | Repeatable relay base URL. |
+
+Behaviour: fetches the world's packet from every relay, keeps only what verifies (the pkarr signature, exactly one announcement record, the world id, the announcement's own signature, a `seq` equal to the packet time, not expired) and prints the newest as one JSON object.
+
+Exit behaviour: exits `1` when no relay served a valid announcement.

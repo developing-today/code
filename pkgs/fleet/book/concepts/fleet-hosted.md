@@ -19,18 +19,25 @@ Where the hosted edition deliberately diverges, the divergence is
 named in the code and in this chapter — the queue door's refusal of
 anonymous claims is the one deliberate case.
 
-**Status, stated plainly (2026-11-23): implemented and tested, never
-deployed — local-only.** The package's own `wrangler.toml` header says
-the config is for `wrangler dev` and tests and authorises no
-account-level deployment; the platform registry
-(`pm-stack/platform/workers.json`) records `state: "not deployed"`,
-`deploy: "none"`, `address: null`. The package documentation's phrase
-"every door is live" is true of the code — `/capabilities` reports all
-five doors `state: "live"` and an in-process smoke run answers the
-acceptance checks end to end — and false of the service, which has
-never run in production. This chapter follows the code and the config,
-not the shorter phrase (disagreement D35 in the survey record for
-programme #13900).
+**Status, stated plainly (2026-11-25): deployed and in service —
+the queue door live, the other doors failing closed.** The first
+production deployment landed with #14870 (the #14866 queue slice) via
+Cloudflare versions. The platform registry
+(`pm-stack/platform/workers.json`) records `state: "in service"`,
+`deploy: "actions"` (workflow `cf-worker-versions-release.yml`) and
+the address `https://fleet-hosted.developing-today.workers.dev`, and
+the package's own `wrangler.toml` header now records the deployment
+and its posture: the queue door runs on the `QUEUE_D1` binding (the
+D1 queue store of #14868, over the fleet-queue D1 database), while
+the other doors' production wiring (RP issuer, tenancy DB, GitHub
+App material) is still owned elsewhere — absent that config they
+fail closed. The package documentation's phrase "every door is live"
+is true of the code — `/capabilities` reports all five doors
+`state: "live"` and an in-process smoke run answers the acceptance
+checks end to end — and, since 2026-11-25, true of the service for
+the queue door only. This chapter follows the code, the config and
+the registry, not the shorter phrase (disagreement D35 in the survey
+record for programme #13900).
 
 ## The plumbing layer
 
@@ -146,6 +153,25 @@ converge on one database row and at most one triage task, and a create
 that reported `metadata_inserted: false` at the stamping door is
 healed by the first check that sees the item.
 
+Two operator surfaces complete the #9074 remainder (#14312). A
+**backfill** (`POST /v1/ingestion/backfill`) is the sweeper's whole-
+scope pass with a recorded run: the run record — scope, the check's
+counts in/out, and every per-item failure named — is stored as the
+sweep completes and read back via `GET /v1/ingestion/backfill/runs`,
+so a re-run over an unchanged store is a recorded no-op (0 inserted /
+0 refreshed), not a claim. A **divergence report** (`POST
+/v1/ingestion/divergence`) is the aggregate counterpart of the query
+door's per-result divergence finding: over the scope it compares
+every item's body block against the database and names three classes
+with counts — `missing_row` (an item with no row), `stale_field` (a
+row whose body block differs, naming the top-level fields, or
+`pm_meta_block` when the block was removed or no longer parses), and
+`orphan_row` (a row whose item is gone from GitHub, visible only
+through the store's cross-tenancy repo seam). The report heals
+nothing; the backfill is the heal. The CLI reaches both as
+`fleet-hosted backfill [--repo <owner/name>]...`, `backfill runs`,
+and `divergence [--repo <owner/name>]...`.
+
 ### Sync
 
 The sync door (#12591) answers `POST /v1/sync/project` and
@@ -171,42 +197,51 @@ closed session is a 409 `session_closed`.
 
 The package also carries a thin TypeScript CLI (`cli.ts` /
 `src/cli.ts`, #12588) whose verb set is a fixed, caller-owned
-allowlist, and the two public routes `GET /health` and
-`GET /capabilities`; `/capabilities` mirrors the native
-`fleet capabilities` JSON shape.
+allowlist, and the three public routes `GET /health`,
+`GET /capabilities` and `GET /version`; `/capabilities` mirrors the native
+`fleet capabilities` JSON shape, and `/version` is a public meta route
+beside them, ahead of the auth plumbing: it answers `{ok, service, version}`
+naming the deployed commit (the `VERSION` deploy stamp, or `unknown` when
+unstamped), while `/health`'s version stays the static package version
+(#15793).
 
 ## The direct-read path
 
 The direct-read mint (#12592) issues scoped, expiring, read-only
 libsql tokens bound to the metadata database only. The token claims
-are `a: "read-only"`, `id`, `binding_id` and `exp`, and the package
-ships a scope inspector beside the mint. The queue database is
+are `a: "ro"` (libSQL's wire enum for read permission), `id`,
+`binding_id` and `exp`, and the package ships a scope inspector beside
+the mint. The queue database is
 refused: the mint is for the metadata store, not the broker's store.
 The wiring today is **library only** — no HTTP route and no CLI verb
 expose the mint (grep-verified in the survey).
 
-## Seams: why implemented is not deployed
+## Seams: what production has replaced, and what it has not
 
 `src/worker.ts` wires fixture, in-memory, module-scope
-implementations of every store interface:
+implementations of the store interfaces wherever a production
+binding has not replaced them. The queue store is the one seam
+production has replaced so far:
 
-| Seam in the Worker                                     | Production home                                                                 |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `FixtureSessionRegistry`                               | The session registry's production store                                         |
-| `FixtureMetadataStore`                                 | The #9074 metadata database                                                     |
-| `FixtureQueueStore`                                    | The existing `fleet-queue` Turso database (#6741), behind a libSQL `QueueStore` |
-| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet                        |
+| Seam in the Worker                                     | Production home                                                                                                                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FixtureSessionRegistry`                               | The session registry's production store                                                                                                                                    |
+| `FixtureMetadataStore`                                 | The #9074 metadata database                                                                                                                                                |
+| `FixtureQueueStore`                                    | The fleet-queue D1 database, behind the D1 queue store (#14868) — replaced in production by the `QUEUE_D1` binding (#14870); the fixture remains the local and test wiring |
+| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet                                                                                                                   |
 
-`wrangler.toml` declares no bindings at all — no D1, KV, R2, Durable
-Objects or queues — and `INGESTION_REPOS` is commented out, so the
-scheduled sweep currently has nothing to scan. A later component-C
-issue owns the production deployment; neither `wrangler.toml` nor the
-README names its number, and this chapter does not invent one.
+`wrangler.toml` declares the `QUEUE_D1` binding and the bridge
+service binding; it declares no KV, R2, Durable Objects or queues,
+and `INGESTION_REPOS` is commented out, so the scheduled sweep
+currently has nothing to scan. The first production deployment was
+#14870; the remaining doors' production wiring is owned elsewhere.
 
-Verification is in-package: there is no GitHub Actions workflow for
-fleet-hosted. `npm test` runs node --test over 18 test files with no
-network and no wrangler, `npm run smoke` runs the acceptance checks
-end to end in-process, and `npm run typecheck` covers the types.
+Verification is in-package, and deployment runs through GitHub
+Actions: the `cf-worker-versions-release.yml` workflow publishes the
+Worker by Cloudflare versions, the registry's recorded deploy route.
+`npm test` runs node --test over 25 test files with no network and
+no wrangler, `npm run smoke` runs the acceptance checks end to end
+in-process, and `npm run typecheck` covers the types.
 
 ## Failure shapes
 
@@ -216,6 +251,7 @@ Every refusal is a `FailClosed` rendered as
 | Shape                     | Meaning                                                                                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 404 `not_found`           | Unmatched path; the Worker advertises nothing                                                                                                             |
+| 413 `body_too_large`      | A JSON request body over the 1 MiB cap (`MAX_JSON_BODY_BYTES`) on any ingress door; refused before parsing (#16519)                                                                 |
 | 401 `missing_token`       | No credential on a route that requires one                                                                                                                |
 | 403                       | Cross-tenant assertion, or a service token outside its door scope                                                                                         |
 | 503                       | One row per unconfigured dependency: auth, stamp signing (refused before any GitHub write), session registry, metadata store, queue store, webhook secret |

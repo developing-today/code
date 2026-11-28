@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use id_core::graph::comment_projection::{carried_comments, CommentFilters};
+use id_core::graph::comment_projection::{CommentFilters, carried_comments};
 use id_core::graph::social::{SocialObject, SocialObjectKind};
 use id_core::graph::term::{ObjectRef, Term};
 use id_core::graph::version::{SucceedsEdge, Version, VersionDag};
@@ -51,6 +51,7 @@ fn comment(id: u8, target: Option<u8>) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 

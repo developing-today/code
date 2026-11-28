@@ -1,8 +1,8 @@
 //! `world.toml`: a world described as data.
 //!
 //! A manifest names the module (by hash or source), the seed, the granted
-//! capability set, the capability ceiling, the requested execution profile and
-//! the pending schedules. `id world apply` reconciles a live world to the
+//! capability set, the capability ceiling, the requested execution profile,
+//! the presentation policy and the pending schedules. `id world apply` reconciles a live world to the
 //! manifest through the existing admin operations, `--dry-run` prints the plan
 //! without applying it, and `id world diff` shows drift between the two.
 //!
@@ -17,11 +17,13 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::role_config::{ROLE_CONFIG_SCHEMA_VERSION, RoleDefinition};
 use crate::world_caps::{
     MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_DAYS, MAX_SCHEDULE_HORIZON_MS,
     default_ceiling_names, validate_ceiling_names, validate_grant_names,
 };
 use crate::world_limits::WorldExecutionProfile;
+use id_core::presentation_policy::PresentationPolicy;
 
 /// A declarative description of a world. Fields the manifest omits are left
 /// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
@@ -53,11 +55,42 @@ pub struct WorldManifest {
     /// Requested execution profile bounds. Omitted fields inherit the server,
     /// so the all-default profile leaves the live profile alone.
     pub profile: WorldExecutionProfile,
+    /// The world's presentation policy (design #5970 §5): what appearances
+    /// it lets render. `None` (the `[presentation]` table is omitted)
+    /// leaves the live policy alone; a present table replaces it whole,
+    /// with its omitted fields at their conservative defaults.
+    pub presentation: Option<PresentationPolicy>,
     /// Pending schedules: id to fire time, in unix milliseconds. `None` (the
     /// field is omitted) leaves the live schedules alone; a present map is
     /// reconciled exactly — missing ids are scheduled, undeclared ones
     /// cancelled.
     pub schedules: Option<BTreeMap<String, u64>>,
+    /// Declared role definitions (design #13237): the versioned
+    /// `[role_config]` table, parsed with the canonical
+    /// [`crate::role_config`] module types — never a parallel copy.
+    /// `None` (the table is omitted) leaves the live roles alone; a
+    /// present table is authoritative, reconciled by name exactly like
+    /// grants and schedules. The wire executor has no admin role path
+    /// yet, so a declared table plans a reported-only step until that
+    /// path lands.
+    pub role_config: Option<RoleConfigSection>,
+}
+
+/// The declarative `[role_config]` table: versioned role definitions a
+/// world carries as configuration. `schema_version` must be
+/// [`ROLE_CONFIG_SCHEMA_VERSION`]; anything else fails at parse time so
+/// a future shape never parses into old meaning. Role bodies are the
+/// canonical [`RoleDefinition`] — validated by
+/// [`RoleDefinition::validate`], never re-checked field by field here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoleConfigSection {
+    /// Shape version of this table; 1 is the only accepted value.
+    pub schema_version: u32,
+    /// Declared roles, reconciled by name. An empty list is
+    /// authoritative: it declares the world holds no roles.
+    #[serde(default)]
+    pub roles: Vec<RoleDefinition>,
 }
 
 /// The relevant current state of a live world, as `id world stats` would see
@@ -74,8 +107,15 @@ pub struct WorldState {
     pub ceiling: Option<Vec<String>>,
     /// The requested execution profile.
     pub profile: WorldExecutionProfile,
+    /// The world's presentation policy.
+    pub presentation: PresentationPolicy,
     /// Pending schedules: id to fire time, in unix milliseconds.
     pub schedules: BTreeMap<String, u64>,
+    /// Declared role definitions, by declaration order. The host reports
+    /// no roles yet, so the wire projection starts empty and a manifest
+    /// that declares roles plans a reported-only step until the admin
+    /// role path lands.
+    pub roles: Vec<RoleDefinition>,
 }
 
 impl Default for WorldState {
@@ -86,7 +126,9 @@ impl Default for WorldState {
             grants: Vec::new(),
             ceiling: None,
             profile: WorldExecutionProfile::default(),
+            presentation: PresentationPolicy::default(),
             schedules: BTreeMap::new(),
+            roles: Vec::new(),
         }
     }
 }
@@ -141,12 +183,24 @@ pub enum ApplyStep {
         /// The requested bounds.
         profile: WorldExecutionProfile,
     },
+    /// Replace the presentation policy.
+    SetPresentation {
+        /// The policy to hold.
+        policy: PresentationPolicy,
+    },
     /// Schedule a fire.
     ScheduleAt {
         /// The schedule's id.
         id: String,
         /// When it fires, in unix milliseconds.
         at_ms: u64,
+    },
+    /// Replace the declared role definitions. Reported-only until the
+    /// admin role path lands: the wire executor refuses this step
+    /// loudly instead of claiming it applied roles it never touched.
+    SetRoles {
+        /// Desired roles, in declaration order.
+        roles: Vec<RoleDefinition>,
     },
     /// Cancel a schedule the manifest does not declare.
     CancelSchedule {
@@ -164,8 +218,10 @@ impl ApplyStep {
             Self::SetGrants { .. } => "set_grants",
             Self::SetCeiling { .. } => "set_ceiling",
             Self::SetProfile { .. } => "set_profile",
+            Self::SetPresentation { .. } => "set_presentation",
             Self::ScheduleAt { .. } => "schedule_at",
             Self::CancelSchedule { .. } => "cancel_schedule",
+            Self::SetRoles { .. } => "set_roles",
         }
     }
 }
@@ -258,6 +314,11 @@ impl WorldManifest {
         // manifest must never parse and plan clean, then fail partway
         // through a live apply (#3015).
         self.profile.validate()?;
+        if let Some(policy) = &self.presentation {
+            policy
+                .validate()
+                .map_err(|error| anyhow::anyhow!("invalid presentation policy: {error}"))?;
+        }
         if let Some(schedules) = &self.schedules {
             ensure!(
                 schedules.len() <= MAX_PENDING_SCHEDULES,
@@ -267,6 +328,31 @@ impl WorldManifest {
             for (id, at_ms) in schedules {
                 crate::world_caps::validate_schedule_id(id)?;
                 ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+            }
+        }
+        if let Some(role_config) = &self.role_config {
+            ensure!(
+                role_config.schema_version == ROLE_CONFIG_SCHEMA_VERSION,
+                "unknown role_config schema version {} (expected {ROLE_CONFIG_SCHEMA_VERSION})",
+                role_config.schema_version
+            );
+            // Bodies are the canonical RoleDefinition: the single
+            // authority is RoleDefinition::validate, never a parallel
+            // field-by-field re-check here (#13237).
+            let mut seen = std::collections::BTreeSet::new();
+            for (index, role) in role_config.roles.iter().enumerate() {
+                ensure!(
+                    seen.insert(role.name.clone()),
+                    "duplicate role_config role name {:?} (index {index})",
+                    role.name
+                );
+                role.validate().map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid role_config role {:?} (index {index}): {}",
+                        role.name,
+                        error.code()
+                    )
+                })?;
             }
         }
         ensure!(
@@ -378,6 +464,16 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
         });
     }
 
+    // Presentation: an omitted table leaves the live policy alone; a
+    // present one replaces it when it differs.
+    if let Some(policy) = &desired.presentation
+        && *policy != current.presentation
+    {
+        steps.push(ApplyStep::SetPresentation {
+            policy: policy.clone(),
+        });
+    }
+
     // Schedules: an omitted field leaves the live schedules alone; a present
     // map is reconciled exactly — add missing, cancel extra.
     if let Some(desired_schedules) = &desired.schedules {
@@ -393,6 +489,25 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
             if !desired_schedules.contains_key(id) {
                 steps.push(ApplyStep::CancelSchedule { id: id.clone() });
             }
+        }
+    }
+
+    // Roles: an omitted table leaves the live roles alone; a present
+    // table is authoritative and reconciles by name — a reordered table
+    // with identical definitions is not drift, exactly like grants and
+    // the ceiling. The step is reported-only until the admin role path
+    // lands (see ApplyStep::SetRoles).
+    if let Some(role_config) = &desired.role_config {
+        fn by_name(roles: &[RoleDefinition]) -> BTreeMap<&str, &RoleDefinition> {
+            roles
+                .iter()
+                .map(|role| (role.name.as_str(), role))
+                .collect()
+        }
+        if by_name(&role_config.roles) != by_name(&current.roles) {
+            steps.push(ApplyStep::SetRoles {
+                roles: role_config.roles.clone(),
+            });
         }
     }
 
@@ -456,6 +571,15 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
                     changed += 1;
                 }
             }
+            ApplyStep::SetPresentation { policy } => {
+                policy
+                    .validate()
+                    .map_err(|error| anyhow::anyhow!("invalid presentation policy: {error}"))?;
+                if state.presentation != *policy {
+                    state.presentation = policy.clone();
+                    changed += 1;
+                }
+            }
             ApplyStep::ScheduleAt { id, at_ms } => {
                 crate::world_caps::validate_schedule_id(id)?;
                 ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
@@ -476,6 +600,22 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
             }
             ApplyStep::CancelSchedule { id } => {
                 if state.schedules.remove(id).is_some() {
+                    changed += 1;
+                }
+            }
+            ApplyStep::SetRoles { roles } => {
+                // Defensive re-check (#4769): a manifest is validated
+                // first, but a hand-built step must still refuse unknown
+                // ceilings and bad bounds instead of folding them into
+                // state. Duplicate names cannot survive parse, so the
+                // fold keeps declaration order verbatim.
+                for role in roles {
+                    role.validate().map_err(|error| {
+                        anyhow::anyhow!("invalid role {:?}: {}", role.name, error.code())
+                    })?;
+                }
+                if state.roles != *roles {
+                    state.roles = roles.clone();
                     changed += 1;
                 }
             }
@@ -549,11 +689,22 @@ fn render_steps(steps: &[ApplyStep]) -> String {
             ApplyStep::SetProfile { profile } => {
                 out.push_str(&format!("~ profile {profile:?}\n"));
             }
+            ApplyStep::SetPresentation { policy } => {
+                // One line of JSON: the policy's own wire form, which is
+                // what an operator would write back into the manifest.
+                let json = serde_json::to_string(policy)
+                    .unwrap_or_else(|_| "(unrenderable policy)".to_owned());
+                out.push_str(&format!("~ presentation {json}\n"));
+            }
             ApplyStep::ScheduleAt { id, at_ms } => {
                 out.push_str(&format!("+ schedule {id} at {at_ms}\n"));
             }
             ApplyStep::CancelSchedule { id } => {
                 out.push_str(&format!("- schedule {id}\n"));
+            }
+            ApplyStep::SetRoles { roles } => {
+                let names: Vec<&str> = roles.iter().map(|role| role.name.as_str()).collect();
+                out.push_str(&format!("~ roles [{}]\n", names.join(", ")));
             }
         }
     }
@@ -745,7 +896,10 @@ native_memory_bytes = 16777216",
     fn an_empty_manifest_drifts_nothing() {
         let manifest = WorldManifest::default();
         // A default (empty) manifest leaves a default (empty) world alone.
-        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        assert_eq!(
+            plan(&manifest, &WorldState::default()),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         // And it leaves a fully populated world alone too (#817): every field
         // is unspecified, so nothing is revoked, widened, or cancelled.
         let state = WorldState {
@@ -756,7 +910,10 @@ native_memory_bytes = 16777216",
             schedules: BTreeMap::from([("round".to_owned(), 5)]),
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -865,7 +1022,10 @@ native_memory_bytes = 16777216",
         // None — and None means the default ceiling, so nothing drifts.
         state.ceiling = fold_reported_ceiling(state.ceiling.clone().unwrap());
         assert_eq!(state.ceiling, None);
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         // A host report of exactly the default list (never folded by hand)
         // also converges from the start.
         let reported = WorldState {
@@ -876,7 +1036,10 @@ native_memory_bytes = 16777216",
             ceiling: fold_reported_ceiling(reported.ceiling.clone().unwrap()),
             ..reported
         };
-        assert!(plan(&manifest, &folded).is_empty());
+        assert_eq!(
+            plan(&manifest, &folded),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -911,7 +1074,10 @@ native_memory_bytes = 16777216",
             }]
         );
         let omitted = WorldManifest::default();
-        assert!(plan(&omitted, &current).is_empty());
+        assert_eq!(
+            plan(&omitted, &current),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -950,11 +1116,14 @@ native_memory_bytes = 16777216",
         let manifest = parse(manifest_toml()).unwrap();
         let mut state = WorldState::default();
         let steps = plan(&manifest, &state);
-        assert!(!steps.is_empty());
+        assert_ne!(steps, [] as [crate::world_manifest::ApplyStep; 0]);
         let changed = apply(&steps, &mut state).unwrap();
         assert_eq!(changed, steps.len());
         // A second plan against the reconciled state is empty.
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1186,7 +1355,10 @@ native_memory_bytes = 16777216",
         // Applying the step reconciles: a second plan is empty.
         let mut applied = state.clone();
         apply(&steps, &mut applied).unwrap();
-        assert!(plan(&manifest, &applied).is_empty());
+        assert_eq!(
+            plan(&manifest, &applied),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1237,12 +1409,18 @@ native_memory_bytes = 16777216",
         // #1519 ruling: no installed program and none desired -- there is
         // nothing whose seed could change.
         let manifest = parse("seed = 99").unwrap();
-        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        assert_eq!(
+            plan(&manifest, &WorldState::default()),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
         let state = WorldState {
             seed: 7,
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1254,7 +1432,10 @@ native_memory_bytes = 16777216",
             ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
             ..WorldState::default()
         };
-        assert!(plan(&manifest, &state).is_empty());
+        assert_eq!(
+            plan(&manifest, &state),
+            [] as [crate::world_manifest::ApplyStep; 0]
+        );
     }
 
     #[test]
@@ -1297,5 +1478,236 @@ native_memory_bytes = 16777216",
             diff(&WorldManifest::default(), &WorldState::default()),
             "no drift"
         );
+    }
+
+    mod presentation {
+        use super::*;
+        use id_core::presentation_policy::{Permit, Rung};
+
+        const MANIFEST: &str = r#"
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+
+[presentation.fallback.world_glyphs]
+tree = "T"
+"#;
+
+        #[test]
+        fn a_presentation_table_parses_and_round_trips() {
+            let manifest = parse(MANIFEST).unwrap();
+            let policy = manifest.presentation.as_ref().unwrap();
+            assert_eq!(policy.assets.user_uploads, Permit::Deny);
+            assert_eq!(policy.assets.max_rung, Rung::Tileset);
+            // Omitted sections keep their conservative defaults.
+            assert!(!policy.shaders.enabled);
+            assert_eq!(round_trip(&manifest).unwrap(), manifest);
+        }
+
+        #[test]
+        fn an_unknown_presentation_key_is_refused() {
+            for bad in [
+                "[presentation]\nasset = {}\n",
+                "[presentation.assets]\nuploads = \"deny\"\n",
+                "[presentation.shaders]\nenabled = true\nformats = [\"made.up/v9\"]\n",
+            ] {
+                assert!(parse(bad).is_err(), "{bad}");
+            }
+        }
+
+        #[test]
+        fn an_omitted_table_leaves_the_live_policy_alone() {
+            let mut state = WorldState::default();
+            state.presentation.assets.max_rung = Rung::Glyph;
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
+        }
+
+        #[test]
+        fn a_present_table_replaces_the_policy_once() {
+            let manifest = parse(MANIFEST).unwrap();
+            let mut state = WorldState::default();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert_eq!(steps[0].kind(), "set_presentation");
+            let rendered = diff(&manifest, &state);
+            assert!(rendered.starts_with("~ presentation {"), "{rendered}");
+            assert!(rendered.contains("\"max_rung\":\"tileset\""), "{rendered}");
+
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert_eq!(Some(&state.presentation), manifest.presentation.as_ref());
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
+            assert_eq!(diff(&manifest, &state), "no drift");
+        }
+
+        #[test]
+        fn an_empty_table_resets_a_changed_policy_to_the_default() {
+            // A present but empty table is authoritative: it is the
+            // default policy, so a live world that drifted is reset.
+            let manifest = parse("[presentation]\n").unwrap();
+            assert_eq!(manifest.presentation, Some(PresentationPolicy::default()));
+            let mut state = WorldState::default();
+            state.presentation.assets.user_uploads = Permit::Deny;
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            apply(&steps, &mut state).unwrap();
+            assert_eq!(state.presentation, PresentationPolicy::default());
+        }
+    }
+
+    mod roles {
+        use super::*;
+        use crate::role_config::starter_roles;
+
+        const MANIFEST: &str = r#"
+[role_config]
+schema_version = 1
+
+[[role_config.roles]]
+name = "observer"
+ceiling = 17
+lifetime_min_secs = 900
+lifetime_max_secs = 3600
+
+[role_config.roles.quota_class]
+budget = { frames = 500, tool_calls = 500, program_invocations = 0 }
+
+[role_config.roles.review]
+queue_above_ceiling = false
+digest_every_refusals = 10
+"#;
+
+        #[test]
+        fn a_role_table_parses_and_round_trips() {
+            let manifest = parse(MANIFEST).unwrap();
+            let section = manifest.role_config.as_ref().unwrap();
+            assert_eq!(section.schema_version, ROLE_CONFIG_SCHEMA_VERSION);
+            assert_eq!(section.roles, starter_roles()[..1]);
+            assert_eq!(round_trip(&manifest).unwrap(), manifest);
+        }
+
+        #[test]
+        fn an_unknown_schema_version_is_refused() {
+            for bad in [
+                "[role_config]\nschema_version = 0\n",
+                "[role_config]\nschema_version = 2\n",
+                // A versioned table without its version is not version 1
+                // by assumption: it is a missing shape marker.
+                "[role_config]\n",
+            ] {
+                let err = parse(bad).unwrap_err();
+                assert!(err.to_string().contains("role_config"), "{bad}: {err:?}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_section_key_is_refused() {
+            let err = parse("[role_config]\nschema_version = 1\nshapes = []\n").unwrap_err();
+            assert!(err.to_string().contains("shapes"), "{err:?}");
+        }
+
+        #[test]
+        fn invalid_roles_fail_naming_the_role() {
+            // Unknown ceiling bits (bit 7 names no scope), an empty name,
+            // and inverted lifetime bounds each fail at parse time — the
+            // canonical validate() is the authority, surfaced with the
+            // role's name and code.
+            let ceiling = MANIFEST.replace("ceiling = 17", "ceiling = 128");
+            let err = parse(&ceiling).unwrap_err();
+            assert!(err.to_string().contains("bad_ceiling_bits"), "{err:?}");
+
+            let name = MANIFEST.replace("name = \"observer\"", "name = \"\"");
+            let err = parse(&name).unwrap_err();
+            assert!(err.to_string().contains("bad_name"), "{err:?}");
+
+            let bounds = MANIFEST
+                .replace("lifetime_min_secs = 900", "lifetime_min_secs = 7200")
+                .replace("lifetime_max_secs = 3600", "lifetime_max_secs = 1000");
+            let err = parse(&bounds).unwrap_err();
+            assert!(err.to_string().contains("bad_lifetime_bounds"), "{err:?}");
+            assert!(err.to_string().contains("observer"), "{err:?}");
+        }
+
+        #[test]
+        fn duplicate_role_names_are_refused() {
+            let doubled = format!(
+                "{MANIFEST}\n[[role_config.roles]]\nname = \"observer\"\nceiling = 7\nlifetime_min_secs = 900\nlifetime_max_secs = 900\n\n[role_config.roles.quota_class]\nbudget = {{ frames = 0, tool_calls = 0, program_invocations = 0 }}\n\n[role_config.roles.review]\nqueue_above_ceiling = false\ndigest_every_refusals = 0\n"
+            );
+            let err = parse(&doubled).unwrap_err();
+            assert!(err.to_string().contains("duplicate"), "{err:?}");
+            assert!(err.to_string().contains("observer"), "{err:?}");
+        }
+
+        #[test]
+        fn an_omitted_table_leaves_live_roles_alone() {
+            // No [role_config] table: a world holding roles drifts nothing.
+            let mut state = WorldState::default();
+            state.roles = starter_roles();
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
+        }
+
+        #[test]
+        fn drift_plans_applies_converges_and_diffs() {
+            let manifest = parse(MANIFEST).unwrap();
+            let mut state = WorldState::default();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert_eq!(steps[0].kind(), "set_roles");
+            assert_eq!(diff(&manifest, &state), "~ roles [observer]\n");
+
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert_eq!(state.roles, starter_roles()[..1]);
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
+            assert_eq!(diff(&manifest, &state), "no drift");
+        }
+
+        #[test]
+        fn a_reordered_table_with_identical_definitions_is_not_drift() {
+            let mut two = MANIFEST.to_owned();
+            two.push_str(
+                "\n[[role_config.roles]]\nname = \"participant\"\nceiling = 7\nlifetime_min_secs = 900\nlifetime_max_secs = 14400\n\n[role_config.roles.quota_class]\nbudget = { frames = 1, tool_calls = 1, program_invocations = 1 }\n\n[role_config.roles.review]\nqueue_above_ceiling = false\ndigest_every_refusals = 10\n",
+            );
+            let manifest = parse(&two).unwrap();
+            let mut state = WorldState::default();
+            state.roles = manifest
+                .role_config
+                .as_ref()
+                .unwrap()
+                .roles
+                .iter()
+                .rev()
+                .cloned()
+                .collect();
+            assert_eq!(
+                plan(&manifest, &state),
+                [] as [ApplyStep; 0],
+                "{:?}",
+                state.roles
+            );
+        }
+
+        #[test]
+        fn a_present_empty_table_clears_live_roles() {
+            // Present-but-empty is authoritative, like grants and ceiling:
+            // it declares the world holds no roles.
+            let manifest = parse("[role_config]\nschema_version = 1\n").unwrap();
+            assert_eq!(manifest.role_config.as_ref().unwrap().roles, Vec::new());
+            let mut state = WorldState::default();
+            state.roles = starter_roles();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert!(matches!(
+                &steps[0],
+                ApplyStep::SetRoles { roles } if roles.is_empty()
+            ));
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert!(state.roles.is_empty());
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
+        }
     }
 }

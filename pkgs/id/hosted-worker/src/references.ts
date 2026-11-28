@@ -283,20 +283,14 @@ export class ReferenceStore {
    * false; removing an unknown id fails closed. */
   removeReference(referenceId: string, opts: { actor: string; now?: string }): boolean {
     const actor = parseBindingId(opts.actor);
-    const found = this.sql
-      .exec("SELECT * FROM content_reference WHERE reference_id = ?", referenceId)
-      .toArray()[0];
+    const found = this.sql.exec("SELECT * FROM content_reference WHERE reference_id = ?", referenceId).toArray()[0];
     if (!found) {
       throw new FailClosed(404, "reference_not_found", `no reference ${referenceId} in this database`);
     }
     const row = toReferenceRow(found);
     if (row.tombstoned_at !== null) return false;
     const now = opts.now ?? new Date().toISOString();
-    this.sql.exec(
-      "UPDATE content_reference SET tombstoned_at = ? WHERE reference_id = ?",
-      now,
-      referenceId,
-    );
+    this.sql.exec("UPDATE content_reference SET tombstoned_at = ? WHERE reference_id = ?", now, referenceId);
     this.appendEvent("reference.removed", { ...row, tombstoned_at: now }, actor, now);
     return true;
   }
@@ -306,7 +300,21 @@ export class ReferenceStore {
    * GC sweep uses the full set. */
   referencesFor(contentId: string): ReferenceRow[] {
     return this.sql
-      .exec("SELECT * FROM content_reference WHERE content_id = ? ORDER BY created_at, reference_id", parseContentId(contentId))
+      .exec(
+        "SELECT * FROM content_reference WHERE content_id = ? ORDER BY created_at, reference_id",
+        parseContentId(contentId),
+      )
+      .toArray()
+      .map(toReferenceRow);
+  }
+
+  /** Every live (non-tombstoned) reference in this database, in
+   * content then reference order. This is the authoritative side of
+   * the derived index's reconciliation sweep (#12805); a full scan,
+   * meant for periodic partition sweeps, never the request path. */
+  liveReferences(): ReferenceRow[] {
+    return this.sql
+      .exec("SELECT * FROM content_reference WHERE tombstoned_at IS NULL ORDER BY content_id, reference_id")
       .toArray()
       .map(toReferenceRow);
   }

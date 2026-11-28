@@ -471,11 +471,16 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
-// The collector is scheduled every five minutes. No grace is possible if a
-// stop just after a write must be visible by the next interval: slow runs,
-// scheduler jitter and transport delays can therefore cause transient alarms.
-// This is evaluated on request, not pushed to an already-open browser.
-export const FEED_STALE_MS = 5 * 60_000;
+// The collector is scheduled every five minutes, so a healthy feed is up to
+// one cadence old plus the run's own time and scheduler jitter. #14062: a
+// threshold of one cadence was crossed on nearly every read (the page's
+// degraded banner never cleared), so the feed is stale only once a whole
+// write has been missed: two cadences, which is also the feed-age SLO's
+// "bad minute" bound (slo-sampler.ts), so the health page and the SLO table
+// agree. A stopped collector still shows within two cadences of its last
+// write. This is evaluated on request, not pushed to an already-open browser.
+export const FEED_COLLECTOR_CADENCE_MS = 5 * 60_000;
+export const FEED_STALE_MS = 2 * FEED_COLLECTOR_CADENCE_MS;
 
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
@@ -1128,10 +1133,19 @@ export function sanitizePayg(v: unknown): PaygSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
-export async function loadFeed(path: string): Promise<FleetFeed | null> {
+export async function loadFeed(
+  path: string,
+  onTiming?: (stage: "feedReadMs" | "feedParseMs" | "feedSanitizeMs", elapsedMs: number) => void,
+): Promise<FleetFeed | null> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    let started = performance.now();
+    const text = await readFile(path, "utf8");
+    onTiming?.("feedReadMs", performance.now() - started);
+    started = performance.now();
+    const parsed: unknown = JSON.parse(text);
+    onTiming?.("feedParseMs", performance.now() - started);
     if (!isFleetFeed(parsed)) return null;
+    started = performance.now();
     // The gate pins the section-level shape; element-level damage is
     // dropped here so every loadFeed consumer (live source, server)
     // sees only renderer-safe pools/windows (#2429). Drop counts are
@@ -1169,11 +1183,11 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // The raw optional PAYG section may be malformed or absent. Remove
     // it (and any stale count) before projecting only the sanitized rows
     // and this load's own drop count.
-    const feed = { ...parsed };
-    delete feed.payg;
-    delete feed.paygDropped;
-    return {
-      ...feed,
+    const sanitizedBase = { ...parsed };
+    delete sanitizedBase.payg;
+    delete sanitizedBase.paygDropped;
+    const feed: FleetFeed = {
+      ...sanitizedBase,
       meta,
       quota: san.view,
       saas: saas.rows,
@@ -1200,6 +1214,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
       ...chargesPart,
     };
+    onTiming?.("feedSanitizeMs", performance.now() - started);
+    return feed;
   } catch {
     return null;
   }

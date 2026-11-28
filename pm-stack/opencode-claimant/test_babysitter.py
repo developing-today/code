@@ -195,9 +195,7 @@ class TestVerdicts(unittest.TestCase):
         # binding shape, carried through public_binding.
         s = session("ses_a", updated=NOW - 1 * MIN)
         bound = binding(repo="developing-today/code")
-        record, _ = round_of(
-            [s], active_ids={"ses_a"}, bindings={"ses_a": bound}
-        )
+        record, _ = round_of([s], active_ids={"ses_a"}, bindings={"ses_a": bound})
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "progressing")
         self.assertEqual(
@@ -220,6 +218,29 @@ class TestVerdicts(unittest.TestCase):
         self.assertTrue(v["retryable"])
         self.assertEqual(v["binding"]["task_id"], 101)
         self.assertEqual(v["binding"]["repo"], "developing-today/code")
+
+    def test_error_outcome_with_unreadable_activity_is_unclassified(self):
+        # #16214 (#16066 design part 4): fail closed - a bound
+        # session with a stored error outcome whose activity is
+        # unreadable (active_ids is None) must not be verdicted
+        # error-stopped; it is named unclassified instead.
+        s = session("ses_a", idle=NOW, outcome="error")
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of([s], bindings={"ses_a": bound}, active_ids=None)
+        self.assertNotIn("ses_a", record["verdicts"])
+        self.assertEqual([u["session_id"] for u in record["unclassified"]], ["ses_a"])
+
+    def test_active_session_with_error_outcome_progresses(self):
+        # #16214: the same stored error outcome on a session that
+        # IS in the readable active set is a resumed session, not
+        # a terminal one - membership overrides the stored marker.
+        s = session(
+            "ses_a", updated=NOW - 1 * MIN, idle=NOW - 60 * MIN, outcome="error"
+        )
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of([s], bindings={"ses_a": bound}, active_ids={"ses_a"})
+        v = record["verdicts"]["ses_a"]
+        self.assertEqual(v["verdict"], "progressing")
 
     def test_blocked_reason_explains_silence(self):
         s = session("ses_a", updated=NOW - 25 * MIN)

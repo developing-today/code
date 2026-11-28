@@ -15,15 +15,15 @@ shape of the Desktop Commander door
 The Worker is not part of the Go module. Its source is
 `pkgs/mcpx/worker/`:
 
-| File | What it is |
-|---|---|
-| `src/index.ts` | the router, the `/mcp` bearer check and the proxy to the bridge door |
-| `src/oauth.ts` | the OAuth 2.1 authorization server: discovery, registration, `/authorize`, `/token` |
-| `src/filter.ts` | the `ns` selector: request gating and response filtering at the JSON-RPC layer |
+| File            | What it is                                                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`  | the router, the `/mcp` bearer check and the proxy to the bridge door                                                                   |
+| `src/oauth.ts`  | the OAuth 2.1 authorization server: discovery, registration, `/authorize`, `/token`                                                    |
+| `src/filter.ts` | the `ns` selector: request gating and response filtering at the JSON-RPC layer                                                         |
 | `wrangler.toml` | the Worker definition: name `mcpx`, compatibility date `2025-09-15`, `workers_dev` off, the plain variables and the `OAUTH_KV` binding |
-| `config.json` | the `cf` tool's view of the same deployment: worker `mcpx`, the single route `mcpx.security.cab`, `workersDev: false` |
-| `test/` | vitest suites for the filter, the OAuth server, the proxy and the promote step |
-| `README.md` | the Worker's own operational readme; this chapter is its book form |
+| `config.json`   | the `cf` tool's view of the same deployment: worker `mcpx`, the single route `mcpx.security.cab`, `workersDev: false`                  |
+| `test/`         | vitest suites for the filter, the OAuth server, the proxy and the promote step                                                         |
+| `README.md`     | the Worker's own operational readme; this chapter is its book form                                                                     |
 
 ## The door chain
 
@@ -46,7 +46,7 @@ Three boundaries, three different credentials, and no credential crosses
 a boundary it was not issued for:
 
 - The caller's bearer — an OAuth access token this Worker issued, or the
-  machine bearer — is checked at the public door and then *removed*.
+  machine bearer — is checked at the public door and then _removed_.
   The bridge leg carries the Worker's own Access service token
   (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) instead, and any
   Access headers the caller sent are stripped.
@@ -71,17 +71,18 @@ deployment configuration.
 Every route the router in `src/index.ts` serves, and nothing else —
 any other path is a 404 with a JSON `not found` body:
 
-| Route | Method | What answers |
-|---|---|---|
-| `/healthz` | any | `{"ok": true, "service": "mcpx"}`, no authentication |
-| `/.well-known/oauth-protected-resource` | any | the RFC 9728 protected-resource document: resource `https://mcpx.security.cab/mcp`, this Worker as its authorization server, scope `mcpx` |
-| `/.well-known/oauth-protected-resource/mcp` | any | the same document |
-| `/.well-known/oauth-authorization-server` | any | the RFC 8414 authorization-server document: the `/authorize`, `/token` and `/register` endpoints, `code` response type, `authorization_code` and `refresh_token` grants, PKCE `S256` only |
-| `/register` | POST (405 otherwise) | dynamic client registration, RFC 7591 |
-| `/authorize` | GET and POST (405 otherwise) | the approval page and the approval decision; the one path behind Cloudflare Access |
-| `/token` | POST (405 otherwise) | authorization-code exchange and refresh-token rotation |
-| `/mcp` | any | the gated, filtered proxy described below |
-| `/` | any | exactly `/mcp`: same gate, same proxying; the upstream path is always `/mcp` |
+| Route                                       | Method                       | What answers                                                                                                                                                                              |
+| ------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/healthz`                                  | any                          | `{"ok": true, "service": "mcpx"}`, no authentication                                                                                                                                      |
+| `/version`                                  | GET (405 otherwise)          | `{ "ok": true, "service": "mcpx", "version": "<deployed commit>" }`, no authentication; the deploy-stamped `VERSION` variable, or `"unknown"` when unstamped (#15793) |
+| `/.well-known/oauth-protected-resource`     | any                          | the RFC 9728 protected-resource document: resource `https://mcpx.security.cab/mcp`, this Worker as its authorization server, scope `mcpx`                                                 |
+| `/.well-known/oauth-protected-resource/mcp` | any                          | the same document                                                                                                                                                                         |
+| `/.well-known/oauth-authorization-server`   | any                          | the RFC 8414 authorization-server document: the `/authorize`, `/token` and `/register` endpoints, `code` response type, `authorization_code` and `refresh_token` grants, PKCE `S256` only |
+| `/register`                                 | POST (405 otherwise)         | dynamic client registration, RFC 7591                                                                                                                                                     |
+| `/authorize`                                | GET and POST (405 otherwise) | the approval page and the approval decision; the one path behind Cloudflare Access                                                                                                        |
+| `/token`                                    | POST (405 otherwise)         | authorization-code exchange and refresh-token rotation                                                                                                                                    |
+| `/mcp`                                      | any                          | the gated, filtered proxy described below                                                                                                                                                 |
+| `/`                                         | any                          | exactly `/mcp`: same gate, same proxying; the upstream path is always `/mcp`                                                                                                              |
 
 ## Who may call: the authentication model
 
@@ -102,7 +103,7 @@ OAuth flow:
   `ACCESS_AUD`, the issuer, the expiry, and the owner email held in the
   `OWNER_EMAIL` constant in `src/oauth.ts`). Approving mints a
   single-use authorization code, good for 10 minutes; `/token`
-  exchanges it — code verifier checked, code consumed on *any* attempt,
+  exchanges it — code verifier checked, code consumed on _any_ attempt,
   successful or not — for an opaque access token good for 1 hour and a
   refresh token good for 30 days. Refreshing rotates: the presented
   refresh token dies whatever happens next, and a fresh pair is issued.
@@ -127,7 +128,7 @@ OAuth flow:
 ## The `ns` selector
 
 The upstream daemon offers this door no per-client hooks, so the Worker
-polices exposure itself, on requests *and* responses. Enforcement is a
+polices exposure itself, on requests _and_ responses. Enforcement is a
 pure function of the request's selector and the message: nothing is
 keyed to `Mcp-Session-Id`, and a client cannot widen its own exposure
 mid-session except by choosing a wider selector on the next request.
@@ -139,12 +140,12 @@ proxying — the bridge and the daemon never see it — and hands the
 selector to the gate and the filter. Any caller `codemode` parameter is
 dropped the same way: only the code-mode surface is offered.
 
-| `ns` | Profile | Selected set | What it means |
-|---|---|---|---|
-| absent | `conservative` | empty | discovery only: see the catalogue, call nothing |
-| `a,b` | `selected` | `{a, b}` | discovery, plus calls into exactly namespaces `a` and `b` |
-| `*` | `full` | — | no filtering at all: the whole daemon, as a local client would see it |
-| empty, or only commas | `selected` | empty | still enforced as an empty set; an empty selector never silently widens to the discovery profile |
+| `ns`                  | Profile        | Selected set | What it means                                                                                    |
+| --------------------- | -------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| absent                | `conservative` | empty        | discovery only: see the catalogue, call nothing                                                  |
+| `a,b`                 | `selected`     | `{a, b}`     | discovery, plus calls into exactly namespaces `a` and `b`                                        |
+| `*`                   | `full`         | —            | no filtering at all: the whole daemon, as a local client would see it                            |
+| empty, or only commas | `selected`     | empty        | still enforced as an empty set; an empty selector never silently widens to the discovery profile |
 
 ### What each profile may do
 
@@ -156,10 +157,10 @@ the conservative or selected profiles — not in listings, and not by
 calling them directly.
 
 - **`tools/list`** responses are filtered to the profile's tool set.
-- **`tools/call`** requests are gated *before* anything reaches the
+- **`tools/call`** requests are gated _before_ anything reaches the
   bridge; a refused call never touches the daemon:
   - `mcpx_namespaces`, `mcpx_catalog` and `mcpx_search` are allowed in
-    both profiles. The `mcpx_namespaces` *response* is filtered to the
+    both profiles. The `mcpx_namespaces` _response_ is filtered to the
     selected set (empty under conservative); `mcpx_catalog` and
     `mcpx_search` responses are metadata and pass unfiltered — a known
     v1 limitation, below.
@@ -173,7 +174,7 @@ calling them directly.
     on the first dot, from either argument — and is allowed only when
     the resolved namespace is in the set.
   - `mcpx_batch` and its alias `batch_call` (selected only) are
-    all-or-nothing *as a tool call*: every item must resolve to a
+    all-or-nothing _as a tool call_: every item must resolve to a
     namespace in the set, and no item may target a gateway tool (any
     `mcpx_*` name, or `batch_call`). One bad item refuses the whole
     batch call.
@@ -182,7 +183,7 @@ calling them directly.
   `mcpx_batch` tool — are gated element by element. Allowed elements
   go upstream; each refused element gets its own error object, and the
   two halves are merged back into one response (as appended SSE events
-  when the upstream answer is a stream). If *every* element is refused,
+  when the upstream answer is a stream). If _every_ element is refused,
   the door answers itself and nothing is called upstream at all.
 - **Prompts and resources.** `prompts/list` and `resources/list`
   responses drop entries whose `mcpx://<ns>/…` URI is outside
@@ -202,7 +203,7 @@ A refused call is not an HTTP error. The door answers HTTP 200 with a
 JSON-RPC error object:
 
 ```json
-{"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "not exposed by this door's selector"}}
+{ "jsonrpc": "2.0", "id": 1, "error": { "code": -32602, "message": "not exposed by this door's selector" } }
 ```
 
 (`-32602` and that message are the `NOT_EXPOSED_ERROR` constant in
@@ -214,33 +215,33 @@ and closed on meaning.
 ## Configuration and secret reference
 
 Every load-bearing name below is spelled as it appears in
-`wrangler.toml`, `src/index.ts` or `src/oauth.ts`. Secret *values*
+`wrangler.toml`, `src/index.ts` or `src/oauth.ts`. Secret _values_
 appear nowhere in the repository; only their names do.
 
 Plain variables (`[vars]` in `wrangler.toml`):
 
-| Name | Value in the repository | What it is |
-|---|---|---|
-| `BRIDGE_BASE` | `https://mcpx-link.security.cab` | the bridge door; the proxy's upstream, always at path `/mcp` |
-| `ACCESS_TEAM_DOMAIN` | `snowy-sun-58a9.cloudflareaccess.com` | the Access team domain hosting the JWKS the Worker verifies `/authorize` assertions against |
-| `ACCESS_AUD` | the audience string in `wrangler.toml` | the audience of the Access application scoped to `/authorize`; an assertion for any other audience is refused |
+| Name                 | Value in the repository                | What it is                                                                                                    |
+| -------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `BRIDGE_BASE`        | `https://mcpx-link.security.cab`       | the bridge door; the proxy's upstream, always at path `/mcp`                                                  |
+| `ACCESS_TEAM_DOMAIN` | `snowy-sun-58a9.cloudflareaccess.com`  | the Access team domain hosting the JWKS the Worker verifies `/authorize` assertions against                   |
+| `ACCESS_AUD`         | the audience string in `wrangler.toml` | the audience of the Access application scoped to `/authorize`; an assertion for any other audience is refused |
 
 Bindings and secrets:
 
-| Name | Kind | What it is |
-|---|---|---|
-| `OAUTH_KV` | KV namespace binding (id in `wrangler.toml`) | all OAuth state: clients, pending approvals, hashed codes and tokens |
-| `ACCESS_CLIENT_ID` | per-version Worker secret | the Access service token's client id for the bridge door |
-| `ACCESS_CLIENT_SECRET` | per-version Worker secret | its secret; with the id, presented as `CF-Access-Client-Id` / `CF-Access-Client-Secret` on the bridge leg |
-| `MACHINE_BEARER` | per-version Worker secret | the static bearer the owner's machine clients present at `/mcp` |
+| Name                   | Kind                                         | What it is                                                                                                |
+| ---------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `OAUTH_KV`             | KV namespace binding (id in `wrangler.toml`) | all OAuth state: clients, pending approvals, hashed codes and tokens                                      |
+| `ACCESS_CLIENT_ID`     | per-version Worker secret                    | the Access service token's client id for the bridge door                                                  |
+| `ACCESS_CLIENT_SECRET` | per-version Worker secret                    | its secret; with the id, presented as `CF-Access-Client-Id` / `CF-Access-Client-Secret` on the bridge leg |
+| `MACHINE_BEARER`       | per-version Worker secret                    | the static bearer the owner's machine clients present at `/mcp`                                           |
 
 Where the values live, by name only:
 
-| Store | Names |
-|---|---|
-| fleet secrets | `cloudflare.access.mcpx-link-client-id`, `cloudflare.access.mcpx-link-client-secret` (the bridge-door token), `mcpx.machine-bearer`, `cloudflare.api-token-mcpx-worker` (the scoped deploy token), `cloudflare.tunnel.sandbox-link-token` (the tunnel the bridge door rides) |
-| GitHub environment `mcpx-production` | `MCPX_WORKER_CF_TOKEN`, `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` |
-| Worker version secrets | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow, from the environment secrets |
+| Store                                | Names                                                                                                                                                                                                                                                                        |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| fleet secrets                        | `cloudflare.access.mcpx-link-client-id`, `cloudflare.access.mcpx-link-client-secret` (the bridge-door token), `mcpx.machine-bearer`, `cloudflare.api-token-mcpx-worker` (the scoped deploy token), `cloudflare.tunnel.sandbox-link-token` (the tunnel the bridge door rides) |
+| GitHub environment `mcpx-production` | `MCPX_WORKER_CF_TOKEN`, `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER`                                                                                                                                                                           |
+| Worker version secrets               | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow, from the environment secrets                                                                                                                                    |
 
 Fixed in code, not configuration: the issuer and resource
 (`https://mcpx.security.cab` and `…/mcp`), the scope `mcpx`, the owner
@@ -249,19 +250,19 @@ email (`OWNER_EMAIL`), and the lifetimes — code and pending approval
 
 ## Failure shapes
 
-| Symptom | Where it comes from | Meaning |
-|---|---|---|
-| 401 `{"error": "unauthorized"}` with a `WWW-Authenticate` resource pointer | `/mcp` gate | no bearer, or neither an unexpired OAuth token nor the machine bearer |
-| 404 `{"error": "not found"}` | the router | the path is not one of the routes above |
-| 405 `{"error": "method not allowed"}` | `/register`, `/authorize`, `/token` | wrong method for the endpoint |
-| 500 `{"error": "bridge credentials are not configured"}` | `/mcp`, after the bearer check | the deployed version carries no `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET`; the door refuses rather than proxying unauthenticated to the bridge |
-| HTTP 200 with JSON-RPC `-32602` | the filter gate | the selector does not expose that call; nothing reached the daemon |
-| OAuth `invalid_grant` from `/token` | the token endpoint | unknown, expired or already-consumed code; a code whose client, redirect URI or PKCE verifier does not match; an unknown, expired or rotated-out refresh token. Codes and refresh tokens are consumed on the attempt, so a failed exchange cannot be retried with the same material |
-| OAuth `invalid_client_metadata` / `invalid_redirect_uri` from `/register` | registration | a non-JSON body, a client asking for a token-endpoint auth method other than `none`, or redirect URIs that are not https / loopback http |
-| OAuth `unsupported_grant_type` from `/token` | the token endpoint | a grant other than `authorization_code` or `refresh_token` |
-| an HTML error page from `/authorize` (403, or 400) | the authorization endpoint | 403: no verifiable Access assertion for the owner — the request did not come through the Access application as the owner. 400: unknown client, unregistered redirect URI, a response type other than `code`, a missing or non-`S256` PKCE challenge, or a scope outside `mcpx`; on POST, an expired or already-used approval nonce |
-| a redirect to the client with `error=access_denied` | `/authorize` POST | the owner pressed Deny — a completed flow, not a failure |
-| the upstream's own status and body | the proxy | once a request passes the gate, upstream answers — including its errors, its `Mcp-Session-Id` header and its SSE streams — pass back untouched, subject to response filtering |
+| Symptom                                                                    | Where it comes from                 | Meaning                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 401 `{"error": "unauthorized"}` with a `WWW-Authenticate` resource pointer | `/mcp` gate                         | no bearer, or neither an unexpired OAuth token nor the machine bearer                                                                                                                                                                                                                                                              |
+| 404 `{"error": "not found"}`                                               | the router                          | the path is not one of the routes above                                                                                                                                                                                                                                                                                            |
+| 405 `{"error": "method not allowed"}`                                      | `/register`, `/authorize`, `/token` | wrong method for the endpoint                                                                                                                                                                                                                                                                                                      |
+| 500 `{"error": "bridge credentials are not configured"}`                   | `/mcp`, after the bearer check      | the deployed version carries no `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET`; the door refuses rather than proxying unauthenticated to the bridge                                                                                                                                                                                   |
+| HTTP 200 with JSON-RPC `-32602`                                            | the filter gate                     | the selector does not expose that call; nothing reached the daemon                                                                                                                                                                                                                                                                 |
+| OAuth `invalid_grant` from `/token`                                        | the token endpoint                  | unknown, expired or already-consumed code; a code whose client, redirect URI or PKCE verifier does not match; an unknown, expired or rotated-out refresh token. Codes and refresh tokens are consumed on the attempt, so a failed exchange cannot be retried with the same material                                                |
+| OAuth `invalid_client_metadata` / `invalid_redirect_uri` from `/register`  | registration                        | a non-JSON body, a client asking for a token-endpoint auth method other than `none`, or redirect URIs that are not https / loopback http                                                                                                                                                                                           |
+| OAuth `unsupported_grant_type` from `/token`                               | the token endpoint                  | a grant other than `authorization_code` or `refresh_token`                                                                                                                                                                                                                                                                         |
+| an HTML error page from `/authorize` (403, or 400)                         | the authorization endpoint          | 403: no verifiable Access assertion for the owner — the request did not come through the Access application as the owner. 400: unknown client, unregistered redirect URI, a response type other than `code`, a missing or non-`S256` PKCE challenge, or a scope outside `mcpx`; on POST, an expired or already-used approval nonce |
+| a redirect to the client with `error=access_denied`                        | `/authorize` POST                   | the owner pressed Deny — a completed flow, not a failure                                                                                                                                                                                                                                                                           |
+| the upstream's own status and body                                         | the proxy                           | once a request passes the gate, upstream answers — including its errors, its `Mcp-Session-Id` header and its SSE streams — pass back untouched, subject to response filtering                                                                                                                                                      |
 
 ## Operations
 
@@ -274,14 +275,14 @@ that touch the directory.
 desktop-commander and id-mail publisher–promoter pairs, and uploading
 never moves traffic by itself:
 
-1. *Publish* — `mcpx-worker-publish.yml`, manual dispatch on `main`
+1. _Publish_ — `mcpx-worker-publish.yml`, manual dispatch on `main`
    with `confirm_upload`: tests, a credential-free dry run, then
    `upload-version.mjs` creates a Worker version with the version
    secrets file. The run emits a provenance artifact
    (`mcpx-worker-upload-<run_id>-<run_attempt>`) naming
    the version, its tag (`mcpx-<sha12>-run-<id>-attempt-<n>`)
    and the baseline it was built against.
-2. *Promote* — `mcpx-worker-promote.yml`, manual dispatch naming the
+2. _Promote_ — `mcpx-worker-promote.yml`, manual dispatch naming the
    publish run and attempt, with `confirm_promotion`:
    `verify-upload-run.mjs` vouches that the run was a successful manual
    publish on `main`; `promote.mjs` checks the live deployment still
@@ -317,14 +318,14 @@ exposure with `?ns=` on the URL.
 The door's own items, in the order they should be worked — the same
 shape as the programme's issue map, narrowed to this Worker:
 
-| Order | Issue | What it is | Depends on |
-|---|---|---|---|
-| 1 | [#13770](https://github.com/developing-today/code/issues/13770) — mcpx Worker does not exist on the Cloudflare account | the publish workflow cannot upload a first version; a first full deployment has to happen before the versions flow can run | nothing in code; it is an account/deployment step |
-| 2 | [#13754](https://github.com/developing-today/code/issues/13754) — main CI failure: mcpx worker publish workflow | the recorded `main` failure of that publish step | #13770 resolved, then a green publish + promote run |
-| 3 | [#13657](https://github.com/developing-today/code/issues/13657) — public endpoint at mcpx.security.cab with OAuth/Google-SSO front door and machine bearer | the door's specification and acceptance list: discovery documents, registration, authorize/token behaviour, machine-bearer access from outside, `/` ≡ `/mcp`, the 401 shape, the service-token-only bridge door, the pipeline proven end to end | the implementation (#13697, closed) and a live deployment (order 1–2) to check the acceptance list against |
-| 4 | [#13659](https://github.com/developing-today/code/issues/13659) — per-user/per-key authentication in the daemon | moves authentication into the Go daemon and resolves each identity to a CapabilityCeiling / PolicySession; the `ns` selector then *maps onto* a ceiling instead of being enforced by Worker-side filtering | #13657's door as the interim boundary; its own design record first. Does not block the door |
-| — | [#13697](https://github.com/developing-today/code/issues/13697) — public front-door Worker with OAuth and selector enforcement | the implementation of #13657, including this Worker's source and tests — **closed** | — |
-| — | [#13404](https://github.com/developing-today/code/issues/13404) — self-hosted Desktop Commander MCP endpoint | the proven pattern this door mirrors: Worker front door, Access gate, laptop bridge (covered in the fleet book) | — |
+| Order | Issue                                                                                                                                                      | What it is                                                                                                                                                                                                                                      | Depends on                                                                                                 |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 1     | [#13770](https://github.com/developing-today/code/issues/13770) — mcpx Worker does not exist on the Cloudflare account                                     | the publish workflow cannot upload a first version; a first full deployment has to happen before the versions flow can run                                                                                                                      | nothing in code; it is an account/deployment step                                                          |
+| 2     | [#13754](https://github.com/developing-today/code/issues/13754) — main CI failure: mcpx worker publish workflow                                            | the recorded `main` failure of that publish step                                                                                                                                                                                                | #13770 resolved, then a green publish + promote run                                                        |
+| 3     | [#13657](https://github.com/developing-today/code/issues/13657) — public endpoint at mcpx.security.cab with OAuth/Google-SSO front door and machine bearer | the door's specification and acceptance list: discovery documents, registration, authorize/token behaviour, machine-bearer access from outside, `/` ≡ `/mcp`, the 401 shape, the service-token-only bridge door, the pipeline proven end to end | the implementation (#13697, closed) and a live deployment (order 1–2) to check the acceptance list against |
+| 4     | [#13659](https://github.com/developing-today/code/issues/13659) — per-user/per-key authentication in the daemon                                            | moves authentication into the Go daemon and resolves each identity to a CapabilityCeiling / PolicySession; the `ns` selector then _maps onto_ a ceiling instead of being enforced by Worker-side filtering                                      | #13657's door as the interim boundary; its own design record first. Does not block the door                |
+| —     | [#13697](https://github.com/developing-today/code/issues/13697) — public front-door Worker with OAuth and selector enforcement                             | the implementation of #13657, including this Worker's source and tests — **closed**                                                                                                                                                             | —                                                                                                          |
+| —     | [#13404](https://github.com/developing-today/code/issues/13404) — self-hosted Desktop Commander MCP endpoint                                               | the proven pattern this door mirrors: Worker front door, Access gate, laptop bridge (covered in the fleet book)                                                                                                                                 | —                                                                                                          |
 
 Dependency map, in words: #13404 proved the shape; #13697 built the
 mcpx door from it for #13657; #13770 blocks #13754's workflow, and
@@ -334,6 +335,77 @@ exposure policy lives in the proxy — once the daemon can hold it
 itself. The Google identity behind the `/authorize` Access application
 rests on the Access Google OAuth client recorded in
 [#12417](https://github.com/developing-today/code/issues/12417).
+
+## Disagreement rulings (register #13965, items M2–M6)
+
+Where the Worker's wording and the code disagreed, the code won.
+Each ruling below cites the evidence it rests on; M1 needed no ruling
+(it was settled: manifest registration,
+`pkgs/mcpx/docs/compendium.manifest.json:1197`).
+
+- **M2 — the laptop half of the door chain is asserted, not
+  configured. Ruling: the chapter says so, and keeps saying so.**
+  `pkgs/mcpx/worker/README.md:24-25` and `src/index.ts:18` describe a
+  bridge proxy on `127.0.0.1:8932` reached through the `sandbox-link`
+  tunnel — but no unit, service or ingress rule defining either exists
+  in `home/`, `pkgs/mcpx/modules/` or `pkgs/mcpx/daemon/` (grep for
+  `8932` across those trees is empty). The only bridge this
+  repository's home configuration defines is the Desktop Commander
+  bridge on `127.0.0.1:8931`
+  (`home/common/default.nix`, `desktop-commander-bridge`). The
+  chapter's door-chain section records the laptop legs as asserted by
+  the Worker, not as described by the deployment configuration, and
+  the Operations section treats every live statement as code behaviour
+  verified by the test suite, not a probed endpoint.
+- **M3 — "transparent" is a property of the full profile only.
+  Ruling: the chapter now says exactly that.** `src/index.ts:26` and
+  `:140` call the `/mcp` proxy "transparent", but in the conservative
+  and selected profiles the door gates request bodies
+  (`gatewayCallAllowed`, `src/filter.ts:122`) and filters responses
+  (`filterMcpResponse`); only the full profile short-circuits both
+  (`selector.mode === "full"` returns at `filter.ts:127`, and the
+  response streams through untouched). The chapter's `ns` selector
+  section names the full profile as the exception whose response
+  "streams through untouched". The source comments keep the word in
+  its narrow sense — the proxy adds no framing of its own — and the
+  code wins where the two could be read apart.
+- **M4 — the #8299 cite stands. Ruling: #8299 is related, and the
+  alignment target is #13659's own choice.** `README.md:127` says
+  daemon-side auth lands "aligned with #8299". #8299's scope is role
+  definitions as first-class world configuration whose definition
+  shape includes the capability ceiling — the same `CapabilityCeiling`
+  / `PolicySession` model the id book records as shipped
+  (`pkgs/id/book/concepts/capabilities.md:51`, `id_caps::mcp_policy`).
+  And #13659's own scope text names "#8299 and neighbors" as the work
+  the daemon auth aligns with. There is no mis-citation to repair; the
+  chapter keeps pointing at #13659, and the question of what #8299
+  delivers belongs to #13659's design record, not to this chapter.
+- **M5 — the door route lives in `config.json`, not
+  `wrangler.toml`. Ruling: recorded in the source table.** The
+  `mcpx.security.cab` route exists only in
+  `pkgs/mcpx/worker/config.json:1` (whose `routes` array names the
+  door); `wrangler.toml` defines no route — grep for `route` in that
+  file is empty. The chapter's source table describes
+  `config.json` as "the `cf` tool's view of the same deployment" and
+  `wrangler.toml` without any route claim, which matches the code.
+- **M6 — `mcpx_types` is listed but uncallable under the conservative
+  profile. Ruling: recorded as intended behaviour, with the one
+  genuinely open question named.** `mcpx_types` is in
+  `DISCOVERY_TOOLS` (`src/filter.ts:30`) so every non-full profile
+  lists it, but the call path refuses it unless the caller is
+  `selected` _and_ names an in-set namespace list (`src/filter.ts:134`;
+  the "leaks out-of-set names" comment at `:137-139` states the
+  reason). Listing-without-calling under conservative is therefore
+  deliberate, not an oversight — the same shape as catalog/search
+  metadata being visible but uncallable — and the chapter's selector
+  section already records the consequence ("the conservative profile
+  ... refuses `mcpx_types` even though it lists it"). The open
+  decision, stated here and not smuggled in: whether the conservative
+  `tools/list` _should_ advertise a tool that profile can never call
+  is undecided — no commit message, test name or review comment in the
+  Worker's history (`020967e2131` is the sole authoring commit)
+  records the intent. If that ever matters, file it as its own issue;
+  this chapter will not guess.
 
 ## Limitations, stated once
 

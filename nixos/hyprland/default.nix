@@ -10,10 +10,6 @@ in
     # package32 = pkgs-hyprland.pkgsi686Linux.mesa.drivers;
     extraPackages = [ pkgs.mesa ];
   };
-  # hardware.opengl.extraPackages = [
-  # pkgs-hyprland.mesa.drivers
-  # pkgs-hyprland.pkgsi686Linux.mesa.drivers
-  # ];
   programs.hyprland = {
     enable = true;
     # Master build: hyprland dropped hyprlang/.conf support, so the Lua config

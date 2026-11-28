@@ -1,0 +1,9 @@
+{
+  "name": "muse-agent-handoff-worker",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "cf": "1.0.0-rc.5",
+    "wrangler": "4.168.0"
+  }
+}

@@ -18,7 +18,7 @@ use crate::algorithm::AlgorithmId;
 use crate::bundle::sha256_hex;
 use crate::error::{CertError, Result};
 use crate::timeparse::Rfc3339;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::prelude::*;
 
@@ -39,6 +39,7 @@ pub struct CertInfo {
     pub not_before: Rfc3339,
     pub not_after: Rfc3339,
     pub is_ca: bool,
+    pub crl_sign: bool,
     pub path_len: Option<u8>,
     /// Subject key algorithm, when it is a registered one.
     pub subject_algorithm: Option<AlgorithmId>,
@@ -49,8 +50,21 @@ pub struct CertInfo {
     pub signature_is_pq: bool,
     tbs: Vec<u8>,
     signature: Vec<u8>,
-    spki_bytes: Vec<u8>,
+    pub(crate) spki_bytes: Vec<u8>,
     spki_oid: String,
+}
+
+impl CertInfo {
+    /// The raw signature bytes over this certificate's TBS.
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+    /// The subject-key SPKI algorithm OID (dotted string), for error
+    /// detail when a certificate cannot be classified into a trust
+    /// bundle. The classified form is [`CertInfo::subject_algorithm`].
+    pub fn spki_oid(&self) -> &str {
+        &self.spki_oid
+    }
 }
 
 pub fn hex_bytes(bytes: &[u8]) -> String {
@@ -97,7 +111,7 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Classify a subject key from its SPKI OID (+ size for RSA).
-fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
+pub(crate) fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
     match spki_oid {
         "1.3.101.112" => Some(AlgorithmId::Ed25519),
         "1.2.840.10045.2.1" => Some(AlgorithmId::P256),
@@ -124,6 +138,11 @@ pub fn parse_cert(der: &[u8]) -> Result<CertInfo> {
         Ok(Some(bc)) => (bc.value.ca, bc.value.path_len_constraint.map(|n| n as u8)),
         _ => (false, None),
     };
+    let crl_sign = tbs
+        .key_usage()
+        .ok()
+        .flatten()
+        .is_some_and(|usage| usage.value.crl_sign());
     // Extension lookup by OID string (2.5.29.14 SKI, 2.5.29.35 AKI).
     let ext_by_oid = |oid: &str| {
         tbs.extensions()
@@ -162,6 +181,7 @@ pub fn parse_cert(der: &[u8]) -> Result<CertInfo> {
         not_before: Rfc3339(tbs.validity.not_before.to_datetime()),
         not_after: Rfc3339(tbs.validity.not_after.to_datetime()),
         is_ca: bc_is_ca,
+        crl_sign,
         path_len: bc_path_len,
         subject_algorithm: classify_subject(&spki_oid, &spki_bytes),
         signature_is_pq: signature_oid == "2.16.840.1.101.3.4.3.17",
@@ -197,6 +217,39 @@ pub fn verify_signature(issuer: &CertInfo, subject: &CertInfo) -> bool {
         _ => false,
     };
     ok
+}
+
+/// Verify a signed ASN.1 object with the certificate's public key.
+/// Used for CRLs, which use the same X.509 signature algorithms as
+/// certificates but carry their own TBS bytes and signature OID.
+pub(crate) fn verify_signed_bytes(
+    issuer: &CertInfo,
+    signature_oid: &str,
+    tbs: &[u8],
+    signature: &[u8],
+) -> bool {
+    use aws_lc_rs::signature::{
+        ECDSA_P256_SHA256_ASN1, ED25519, ML_DSA_44, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey,
+    };
+    match signature_oid {
+        "1.3.101.112" => UnparsedPublicKey::new(&ED25519, &issuer.spki_bytes)
+            .verify(tbs, signature)
+            .is_ok(),
+        "1.2.840.10045.4.3.2" => {
+            UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, &issuer.spki_bytes)
+                .verify(tbs, signature)
+                .is_ok()
+        }
+        "1.2.840.113549.1.1.11" => {
+            UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, &issuer.spki_bytes)
+                .verify(tbs, signature)
+                .is_ok()
+        }
+        "2.16.840.1.101.3.4.3.17" => UnparsedPublicKey::new(&ML_DSA_44, &issuer.spki_bytes)
+            .verify(tbs, signature)
+            .is_ok(),
+        _ => false,
+    }
 }
 
 /// Which roots a validation trusts (§3.5 trust bundles).
@@ -243,7 +296,7 @@ impl TrustSelection {
 }
 
 /// One named check in a validation report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
     pub ok: bool,

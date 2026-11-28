@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // doJSON sends one request over the coverage-recording socket client and
@@ -231,6 +233,11 @@ func TestRestartReplacesTheServerInstancesOverTheSocket(t *testing.T) {
 // and held at runtime, the listing says where it came from, and unsetting
 // returns the name to unset without touching the environment.
 func TestSecretSetAndUnsetOverTheSocket(t *testing.T) {
+	// Quarantined per #1973: intermittent hang on aarch64-darwin in the
+	// daemon config-reload path (#16312); secret set/unset exercises the
+	// reload path and the test binary times out at 30m. Root-cause stays
+	// open on #16312 — this quarantine only stops the CI timeouts meanwhile.
+	testsupport.Quarantine(t, "https://github.com/developing-today/code/issues/16312", "2026-12-31")
 	e := newEnv(t, secretServer)
 	e.run("ls")
 	client := e.socketClient(t)

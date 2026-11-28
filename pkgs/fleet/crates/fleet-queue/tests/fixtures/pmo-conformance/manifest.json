@@ -1,0 +1,73 @@
+{
+  "schema_version": "fleet.pmo-conformance-manifest/v1",
+  "design_record": "doc/2026-11-25T20-54-29Z_design_cen07_adapter_conformance_ci/",
+  "issue": 9437,
+  "test_target": "pmo_contract_conformance",
+  "harness_tests": ["test_adapter_conformance_manifest_matches_targets"],
+  "families": [
+    {
+      "id": "command",
+      "status": "landed",
+      "contract_owner": "DST-01 / CLI-01 (#9451)",
+      "fixtures": "command/",
+      "tests": [
+        "test_adapter_conformance_command_envelope_round_trips",
+        "test_adapter_conformance_command_rejects_client_authorization",
+        "test_adapter_conformance_command_unknown_major_version_typed"
+      ]
+    },
+    {
+      "id": "acceptance",
+      "status": "landed",
+      "contract_owner": "DSP-01 (#9445)",
+      "fixtures": "acceptance/",
+      "tests": [
+        "test_adapter_conformance_distinguishes_projection_ack_from_fleet_acceptance",
+        "test_adapter_conformance_projector_key_template_matches_fixture"
+      ],
+      "projector_tests": [
+        "pm-stack/projector/test/webhook-delivery-id.test.ts",
+        "pm-stack/projector/test/webhook-operation-forwarding.test.ts"
+      ]
+    },
+    {
+      "id": "selector",
+      "status": "landed",
+      "contract_owner": "PRI-01 (#9478)",
+      "fixtures": "selector/",
+      "tests": ["test_adapter_conformance_selector_profile_golden"]
+    },
+    {
+      "id": "authority.managed_section",
+      "status": "landed",
+      "contract_owner": "AUTH-04 (#9431)",
+      "fixtures": "authority/managed_section/",
+      "tests": ["test_adapter_conformance_authority_managed_section_golden"]
+    },
+    {
+      "id": "receipt",
+      "status": "gated",
+      "contract_owner": "REL-03 (#9513)",
+      "gating_issue": 9513,
+      "tests": []
+    },
+    {
+      "id": "cursor",
+      "status": "landed",
+      "contract_owner": "HYD-06 (#9508)",
+      "fixtures": "cursor/",
+      "tests": [
+        "test_adapter_conformance_cursor_refresh_distinguishes_edit_from_creation",
+        "test_adapter_conformance_cursor_replay_dedupes_revision_not_creation",
+        "test_adapter_conformance_cursor_rejects_empty_identity"
+      ]
+    },
+    {
+      "id": "authority.field_ownership",
+      "status": "gated",
+      "contract_owner": "AUTH-01 (#9429)",
+      "gating_issue": 9429,
+      "tests": []
+    }
+  ]
+}

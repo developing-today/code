@@ -14,8 +14,8 @@
 //     unit and pins the aggregator's PM_PROJECTOR_URL to it.
 //   - install.sh renders PM_AGG_SOURCE=live for the deployment.
 //   - src/sources/live.ts wires items pool-first (fleet feed Project
-//     pool, then projector, then fixtures) and comments via the
-//     projector with a fixture fallback.
+//     pool, then projector) and comments via the projector, with no
+//     fixture fallback for either in live mode (#14065).
 //   - src/program.ts (/program) must not claim the comment projection
 //     is fixture-backed or still to come.
 //   - README.md carries the matrix, naming the projector and Pad.
@@ -54,16 +54,29 @@ check(install.includes("PM_AGG_SOURCE=live"), "install.sh renders PM_AGG_SOURCE=
 
 const live = read("pm-stack/aggregator/src/sources/live.ts");
 const poolIdx = live.indexOf("poolFromFeed(feed)");
-const projectorItemsIdx = live.indexOf("projectorItems(cfg.projector.baseUrl");
+// #8570 Phase 3: the projector read seam. items() no longer calls
+// projectorItems(cfg.projector.baseUrl …) directly; it reads through
+// projectorReader.items(), whose default is the HTTP client built from
+// cfg.projector.baseUrl (createHttpProjectorReader preserves the exact
+// current behaviour).
+const projectorItemsIdx = live.indexOf("projectorReader.items(");
 check(
   poolIdx >= 0 && projectorItemsIdx > poolIdx,
   "live.ts items() resolves the fleet-feed Project pool before the projector (pool-first)",
 );
-const commentsStart = live.indexOf("async comments(refs)");
-const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStart + 600) : "";
 check(
-  commentsBody.includes("projectorComments(cfg.projector.baseUrl"),
+  live.includes("createHttpProjectorReader(cfg.projector.baseUrl)"),
+  "live.ts defaults the projector seam to the HTTP projector client from cfg.projector.baseUrl (#8570)",
+);
+const commentsStart = live.indexOf("async comments(refs)");
+const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStart + 800) : "";
+check(
+  commentsBody.includes("projectorReader.comments("),
   "live.ts comments() reads the GitHub comment projection from the projector",
+);
+check(
+  !live.includes("fix.items(") && !live.includes("fix.comments("),
+  "live.ts serves no fixture items or comments in live mode (#14065)",
 );
 check(!live.includes("projector is dead by config"), "live.ts carries no stale 'projector is dead by config' claim");
 

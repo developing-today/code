@@ -143,10 +143,51 @@ export function detectWithholding(
 
 // ----- batch codec ---------------------------------------------------
 
-export function encodeBatch(events: Uint8Array[]): Uint8Array<ArrayBuffer> {
+/** Bytes one event occupies inside an encoded batch: its 4-byte
+ * length prefix plus its payload. Senders budget this framed size —
+ * receivers enforce maxBatchBytes against the encoded batch, not
+ * the payload sum (#14644). */
+export function encodedEventBytes(event: Uint8Array): number {
+  return 4 + event.length;
+}
+
+/** The encoded size of a batch of `events`: the 4-byte count prefix
+ * plus every event's framed size — exactly what encodeBatch emits
+ * and what decodeBatch bounds. */
+export function encodedBatchBytes(events: Uint8Array[]): number {
   let size = 4;
-  for (const e of events) size += 4 + e.length;
-  const out = new Uint8Array(size);
+  for (const e of events) size += encodedEventBytes(e);
+  return size;
+}
+
+/** Splits `events` into batches that each fit `limits` by count and
+ * by encoded size, preserving order: a batch closes before the
+ * first event that would cross either bound. An event whose framed
+ * size alone exceeds maxBatchBytes can never be sent under these
+ * limits — that is a named error, never an oversized batch. */
+export function splitBatches(events: Uint8Array[], limits: BridgeLimits): Uint8Array[][] {
+  const batches: Uint8Array[][] = [];
+  let batch: Uint8Array[] = [];
+  let batchBytes = 4; // the encoded count prefix
+  for (const event of events) {
+    const framed = encodedEventBytes(event);
+    if (batch.length > 0 && (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 4;
+    }
+    if (batchBytes + framed > limits.maxBatchBytes) {
+      throw new Error(`event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`);
+    }
+    batch.push(event);
+    batchBytes += framed;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+export function encodeBatch(events: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(encodedBatchBytes(events));
   const view = new DataView(out.buffer);
   view.setUint32(0, events.length);
   let at = 4;
@@ -186,9 +227,12 @@ export function decodeBatch(bytes: Uint8Array, limits: BridgeLimits): Uint8Array
   return events;
 }
 
-/** Decodes raw event bytes into ingest entries, in order: a verified
- * event, or the refusal recorded in its place (the native
- * ingest_batch shape). */
+/** Hosted signed-event ingress gate for the existing LogSync/range-sync
+ * representation: every event is structurally/semantically decoded and its
+ * author signature verified before BridgeStore can admit it. The enclosing
+ * bridge session separately authenticates the bound peer key and tenant; the
+ * store then enforces replay, chain order and fork evidence. Invalid events
+ * become explicit refusals, never partially admitted data. */
 export async function decodeEntries(
   rawEvents: Uint8Array[],
 ): Promise<(Awaited<ReturnType<typeof decodeEvent>> | { malformed: string })[]> {
@@ -236,8 +280,99 @@ function jsonFrame(tag: number, value: unknown): Uint8Array {
   return frame(tag, new TextEncoder().encode(JSON.stringify(value)));
 }
 
-function parseJson(payload: Uint8Array): unknown {
-  return JSON.parse(new TextDecoder().decode(payload));
+/**
+ * Parses one peer bridge frame, refusing a duplicated object key at
+ * any depth (#16360, contract #6520): `JSON.parse` collapses a
+ * duplicate last-wins, and a bridge frame is frontier evidence — the
+ * document this leg acts on must be the document as written. The
+ * refusal names the repeated key, in the native gate's vocabulary.
+ */
+export function parseJson(payload: Uint8Array): unknown {
+  const text = new TextDecoder().decode(payload);
+  const value: unknown = JSON.parse(text);
+  assertNoDuplicateKeys(text);
+  return value;
+}
+
+const STRING_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+
+/**
+ * Refuses a duplicated object key at any depth in `text`, naming the
+ * key. The text has already parsed, so it is well-formed JSON; this
+ * pass only tracks each object's key set. Keys are compared after
+ * escape decoding, as `JSON.parse` compares them.
+ */
+function assertNoDuplicateKeys(text: string): void {
+  interface ObjectFrame {
+    keys: Set<string>;
+    expectingKey: boolean;
+  }
+  const stack: (ObjectFrame | null)[] = []; // null: an array frame
+  let i = 0;
+  const readString = (): string => {
+    // text[i] is the opening quote; returns the decoded string and
+    // leaves i just past the closing quote.
+    let out = "";
+    i += 1;
+    while (text[i] !== '"') {
+      const ch = text[i];
+      if (ch === "\\") {
+        const esc = text[i + 1];
+        if (esc === "u") {
+          out += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16));
+          i += 6;
+        } else {
+          out += STRING_ESCAPES[esc] ?? esc;
+          i += 2;
+        }
+      } else {
+        out += ch;
+        i += 1;
+      }
+    }
+    i += 1;
+    return out;
+  };
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "{") {
+      stack.push({ keys: new Set<string>(), expectingKey: true });
+      i += 1;
+    } else if (ch === "[") {
+      stack.push(null);
+      i += 1;
+    } else if (ch === "}" || ch === "]") {
+      stack.pop();
+      i += 1;
+    } else if (ch === ",") {
+      const top = stack[stack.length - 1];
+      if (top) top.expectingKey = true;
+      i += 1;
+    } else if (ch === '"') {
+      const top = stack[stack.length - 1];
+      if (top && top.expectingKey) {
+        const key = readString();
+        if (top.keys.has(key)) {
+          throw new Error(`duplicate JSON object key ${JSON.stringify(key)}`);
+        }
+        top.keys.add(key);
+        top.expectingKey = false;
+      } else {
+        readString(); // a value string: skipped, its decode unused
+      }
+    } else {
+      i += 1; // whitespace, ":", and scalar characters
+    }
+  }
 }
 
 // ----- the server session (the hosted store side) --------------------
@@ -251,9 +386,66 @@ export interface ServerSessionOptions {
   params?: RangeParams;
   limits?: BridgeLimits;
   now?: () => number;
-  /** Storage-ceiling guard: given the bytes a batch is about to add,
-   * return false to refuse it before anything is written. */
-  guardBatch?: (newBytes: number) => boolean;
+  /** Write guard: given the bytes a batch is about to add, return true
+   * to commit it, false to refuse it as over the storage ceiling, or a
+   * named refusal (a migration fence, #3404) to end the session with
+   * that error. Nothing is written on a refusal. */
+  guardBatch?: (newBytes: number) => boolean | { code: string; message: string };
+  /** #15484: continue a session from a snapshot instead of starting
+   * one. The CHALLENGE is not re-sent: the peer is mid-session. */
+  resume?: BridgeSessionSnapshot;
+  /** #15484: called with the session's snapshot after every message
+   * it handles, so a host that may be evicted between messages (a
+   * hibernating WebSocket) can persist it. */
+  onSettled?: (snapshot: BridgeSessionSnapshot) => void;
+}
+
+/** Everything a server session keeps between messages (#15484).
+ * Plain JSON, so a hibernating host can store it and rebuild the
+ * session after its object is evicted. */
+export interface BridgeSessionSnapshot {
+  v: 1;
+  authed: boolean;
+  announced: Head[];
+  learned: string[];
+  /** The frames of a range flight still arriving, hex-encoded. */
+  rangeFlight: string[];
+  spent: number;
+  closed: boolean;
+  tokenIssued: boolean;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hex)) throw new Error("not lowercase hex");
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+/** Parse a stored snapshot; throws on anything that is not exactly
+ * a version-1 snapshot, so a damaged row never half-restores. */
+export function parseSessionSnapshot(value: unknown): BridgeSessionSnapshot {
+  const s = value as Partial<BridgeSessionSnapshot> | null;
+  if (
+    !s ||
+    typeof s !== "object" ||
+    s.v !== 1 ||
+    typeof s.authed !== "boolean" ||
+    !Array.isArray(s.announced) ||
+    !Array.isArray(s.learned) ||
+    !s.learned.every((id) => typeof id === "string") ||
+    !Array.isArray(s.rangeFlight) ||
+    !s.rangeFlight.every((f) => typeof f === "string") ||
+    typeof s.spent !== "number" ||
+    !Number.isFinite(s.spent) ||
+    s.spent < 0 ||
+    typeof s.closed !== "boolean" ||
+    typeof s.tokenIssued !== "boolean"
+  ) {
+    throw new Error("not a bridge session snapshot");
+  }
+  for (const f of s.rangeFlight) hexToBytes(f);
+  return s as BridgeSessionSnapshot;
 }
 
 export class BridgeSessionServer {
@@ -269,15 +461,52 @@ export class BridgeSessionServer {
   constructor(private opts: ServerSessionOptions) {
     // Messages are handled strictly in arrival order: an async
     // handler (batch ingest verifies signatures) must not let a
-    // later message overtake an earlier one.
+    // later message overtake an earlier one. The returned promise
+    // settles once this message is handled and its snapshot taken.
     this.opts.transport.onMessage((data) => {
-      this.queue = this.queue.then(() => this.onMessage(data));
+      this.queue = this.queue.then(async () => {
+        await this.onMessage(data);
+        if (!this.opts.onSettled) return;
+        try {
+          this.opts.onSettled(this.snapshot());
+        } catch (e) {
+          // A session whose state cannot be kept cannot survive an
+          // eviction either: end it now rather than lose it later.
+          if (!this.closed) this.fail("session_error", e instanceof Error ? e.message : "session state not saved");
+        }
+      });
+      return this.queue;
     });
     this.opts.transport.onClose(() => {
       this.closed = true;
     });
+    const resume = this.opts.resume;
+    if (resume) {
+      this.authed = resume.authed;
+      this.announced = resume.announced;
+      this.learned = new Set(resume.learned);
+      this.rangeFlight = resume.rangeFlight.map(hexToBytes);
+      this.spent = resume.spent;
+      this.closed = resume.closed;
+      this.tokenIssued = resume.tokenIssued;
+      return;
+    }
     const { nonce } = issueNonce(this.opts.store, this.now());
     this.send(frame(TAG.challenge, new TextEncoder().encode(nonce)));
+  }
+
+  /** The session's state between messages (#15484). */
+  snapshot(): BridgeSessionSnapshot {
+    return {
+      v: 1,
+      authed: this.authed,
+      announced: this.announced,
+      learned: [...this.learned],
+      rangeFlight: this.rangeFlight.map((f) => bytesToHex(f)),
+      spent: this.spent,
+      closed: this.closed,
+      tokenIssued: this.tokenIssued,
+    };
   }
 
   private get params(): RangeParams {
@@ -417,25 +646,18 @@ export class BridgeSessionServer {
   }
 
   private sendBatches(events: Uint8Array[]): void {
-    let batch: Uint8Array[] = [];
-    let batchBytes = 0;
-    const flush = () => {
-      if (batch.length === 0) return;
-      this.send(frame(TAG.batch, encodeBatch(batch)));
-      batch = [];
-      batchBytes = 0;
-    };
-    for (const event of events) {
-      if (
-        batch.length >= this.limits.maxBatchEvents ||
-        batchBytes + event.length > this.limits.maxBatchBytes
-      ) {
-        flush();
-      }
-      batch.push(event);
-      batchBytes += event.length;
+    let batches: Uint8Array[][];
+    try {
+      batches = splitBatches(events, this.limits);
+    } catch (e) {
+      // A held event that cannot fit any batch under these limits:
+      // name it and close, rather than emit a batch the peer's
+      // decoder is bound to reject (#14644).
+      return this.fail("event_too_large", e instanceof Error ? e.message : "an event cannot fit the batch bound");
     }
-    flush();
+    for (const batch of batches) {
+      this.send(frame(TAG.batch, encodeBatch(batch)));
+    }
   }
 
   private async onBatch(payload: Uint8Array): Promise<void> {
@@ -450,12 +672,19 @@ export class BridgeSessionServer {
         if ("malformed" in entry) continue;
         if (!this.opts.store.heldEvent(entry.id)) newBytes += entry.bytes.length;
       }
-      if (!this.opts.guardBatch(newBytes)) {
+      const verdict = this.opts.guardBatch(newBytes);
+      if (verdict === false) {
         return this.fail("storage_ceiling", "the batch would exceed the storage ceiling");
       }
+      if (verdict !== true) return this.fail(verdict.code, verdict.message);
     }
     const outcomes = this.opts.store.ingestBatch(entries, this.now());
-    this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));
+    this.send(
+      jsonFrame(TAG.ack, {
+        ...summarizeOutcomes(outcomes),
+        conflicts: this.opts.store.conflictReports(),
+      }),
+    );
   }
 
   private onClientWantEnd(): void {
@@ -531,7 +760,10 @@ export class BridgeClient {
   }
 
   private async next(): Promise<Uint8Array> {
-    const data = this.inbox.length > 0 ? (this.inbox.shift() as Uint8Array | null) : await new Promise<Uint8Array | null>((resolve) => this.waiters.push(resolve));
+    const data =
+      this.inbox.length > 0
+        ? (this.inbox.shift() as Uint8Array | null)
+        : await new Promise<Uint8Array | null>((resolve) => this.waiters.push(resolve));
     if (data === null) throw new Error("the transport closed mid-session");
     return data;
   }
@@ -553,16 +785,9 @@ export class BridgeClient {
     // AUTH: answer the server's challenge with the ID-key proof.
     const challenge = await this.nextTag(TAG.challenge);
     const nonce = new TextDecoder().decode(challenge);
-    const transcriptBytes = authTranscript(
-      this.opts.bindingId,
-      nonce,
-      "ws",
-      bodyHashHex(new Uint8Array(0)),
-    );
+    const transcriptBytes = authTranscript(this.opts.bindingId, nonce, "ws", bodyHashHex(new Uint8Array(0)));
     const signature = await this.opts.key.sign(transcriptBytes);
-    this.transport.send(
-      jsonFrame(TAG.auth, { nonce, signature: bytesToHex(signature) }),
-    );
+    this.transport.send(jsonFrame(TAG.auth, { nonce, signature: bytesToHex(signature) }));
 
     // HELLO or RESUME.
     let serverHeads: Head[];
@@ -644,20 +869,11 @@ export class BridgeClient {
       const held = store.heldEvent(id);
       if (held) answer.push(held.bytes);
     }
-    let batch: Uint8Array[] = [];
-    let batchBytes = 0;
-    const flush = () => {
-      if (batch.length === 0) return;
+    // Batches are cut on the encoded size (splitBatches throws
+    // on an event that cannot fit any batch under these limits).
+    for (const batch of splitBatches(answer, this.limits)) {
       this.transport.send(frame(TAG.batch, encodeBatch(batch)));
-      batch = [];
-      batchBytes = 0;
-    };
-    for (const eventBytes of answer) {
-      if (batch.length >= this.limits.maxBatchEvents || batchBytes + eventBytes.length > this.limits.maxBatchBytes) flush();
-      batch.push(eventBytes);
-      batchBytes += eventBytes.length;
     }
-    flush();
     this.transport.send(frame(TAG.wantEnd, new Uint8Array(0)));
     // The server's ACK for our answer batches may arrive; drain one
     // ack per batch sent (acks are informational for the client).

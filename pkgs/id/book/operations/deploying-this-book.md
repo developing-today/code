@@ -4,14 +4,14 @@ This book is one of four books on **one** GitHub Pages site. That single fact de
 
 ## The pieces
 
-| Piece | What it is |
-|---|---|
-| `pkgs/id/book/` | The book sources — the Markdown chapters, in the layout the summary file names |
-| `pkgs/id/book.toml` | The mdBook configuration: title `id`, `src = "book"`, `build-dir = "rendered"`, `create-missing = false` — a chapter named in the summary but missing on disk is a build failure, never a silently generated stub |
-| `pkgs/id/docs.nix` | The build: an mdBook build of the sources above, sandboxed, with the flake-pinned mdBook from nixpkgs and no network access. It rewrites links that escape the book tree to their repository URLs in the rendered copy only, and takes the base URL as its `siteUrl` argument |
-| `lib/default.nix` | Exposes that build to the flake as **`.#id-docs`** |
-| `.github/workflows/id-docs.yml` | The build-only workflow for this book (below) |
-| `.github/workflows/mcpx-docs.yml` | The combined deploy workflow for the whole Pages site (below) |
+| Piece                             | What it is                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pkgs/id/book/`                   | The book sources — the Markdown chapters, in the layout the summary file names                                                                                                                                                                                                |
+| `pkgs/id/book.toml`               | The mdBook configuration: title `id`, `src = "book"`, `build-dir = "rendered"`, `create-missing = false` — a chapter named in the summary but missing on disk is a build failure, never a silently generated stub                                                             |
+| `pkgs/id/docs.nix`                | The build: an mdBook build of the sources above, sandboxed, with the flake-pinned mdBook from nixpkgs and no network access. It rewrites links that escape the book tree to their repository URLs in the rendered copy only, and takes the base URL as its `siteUrl` argument |
+| `lib/default.nix`                 | Exposes that build to the flake as **`.#id-docs`**                                                                                                                                                                                                                            |
+| `.github/workflows/id-docs.yml`   | The build-only workflow for this book (below)                                                                                                                                                                                                                                 |
+| `.github/workflows/mcpx-docs.yml` | The combined deploy workflow for the whole Pages site (below)                                                                                                                                                                                                                 |
 
 Build the book locally exactly as CI does:
 
@@ -33,12 +33,12 @@ It publishes nothing. Its permissions are `contents: read` only; there is no Pag
 
 This is the repository's one Pages deployment. It builds each book and stages them into **one site tree**, then deploys that tree as the site's single artifact. The mcpx book is the site root; the other three books are staged under it:
 
-| Staged path | Book | Site URL |
-|---|---|---|
-| Site root (`site/`) | The mcpx book | `https://developing-today.github.io/code/` |
-| `site/fleet/` | The fleet book | `https://developing-today.github.io/code/fleet/` |
-| `site/atlas/` | The atlas book | `https://developing-today.github.io/code/atlas/` |
-| `site/id/` | This book | `https://developing-today.github.io/code/id/` |
+| Staged path         | Book           | Site URL                                         |
+| ------------------- | -------------- | ------------------------------------------------ |
+| Site root (`site/`) | The mcpx book  | `https://developing-today.github.io/code/`       |
+| `site/fleet/`       | The fleet book | `https://developing-today.github.io/code/fleet/` |
+| `site/atlas/`       | The atlas book | `https://developing-today.github.io/code/atlas/` |
+| `site/id/`          | This book      | `https://developing-today.github.io/code/id/`    |
 
 Each book is built with its own `siteUrl` override — `/code/` for the root mcpx book, `/code/fleet/`, `/code/atlas/` and `/code/id/` for the staged books — the path prefix the rendered links and assets must assume, because those books do not live at the site root. The deploy then publishes the assembled `site/` tree once, through the Pages artifact flow: `actions/configure-pages`, `actions/upload-pages-artifact`, and `actions/deploy-pages` in a separate publish job, serialised so two deploys never interleave.
 

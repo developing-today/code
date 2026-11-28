@@ -16,7 +16,11 @@
   "vars": {
     "ORIGIN": "pkarr.developing-today.workers.dev",
     "RETENTION_SECONDS": "604800",
-    "DNS_TTL": "30"
+    "DNS_TTL": "30",
+    // Deployed commit named by GET /version (#15793); real deploys stamp
+    // it at build time (cloudflare.config.ts), this keeps local dev and
+    // the test suite honest.
+    "VERSION": "unknown"
   },
 
   "durable_objects": {

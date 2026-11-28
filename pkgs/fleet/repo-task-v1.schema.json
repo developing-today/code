@@ -3,6 +3,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "allOf": [
     {
+      "if": { "properties": { "kind": { "const": "prompt" } }, "required": ["kind"] },
+      "then": { "required": ["prompt"] }
+    },
+    {
       "if": {
         "required": ["risk"],
         "properties": {
@@ -40,6 +44,10 @@
   },
   "additionalProperties": true,
   "anyOf": [
+    {
+      "properties": { "kind": { "const": "prompt" } },
+      "required": ["kind", "prompt"]
+    },
     { "required": ["issue"] },
     { "properties": { "prs": { "minItems": 1 } }, "required": ["prs"] },
     { "required": ["set"] },
@@ -71,12 +79,23 @@
       "type": "object"
     },
     "kind": {
-      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"],
+      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice", "prompt"],
       "type": "string"
     },
     "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
+    "prompt": {
+      "type": "object",
+      "description": "Prompt task identity is the prompt-store submission ID, not its source issue.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      },
+      "required": ["id"]
+    },
     "prs": {
       "items": {
         "additionalProperties": true,
@@ -148,6 +167,16 @@
       "type": "integer",
       "minimum": 1,
       "description": "Optional minimum uninterrupted budget in minutes to reach the next safe checkpoint (#3418). Absent means no requirement (legacy claim behavior)."
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "reason"],
+      "description": "Optional structured route declaration (#15070, follow-up to #14993): the packet declares, in machine-readable form, that it may run only on one platform family. `platform` names the family (never a specific lane); `reason` records why the route is required, mirroring the platform-limitation rule that a limitation exists only with a good reason recorded beside it (#8210). At enqueue, verb_enqueue translates a valid declaration into the new task's lane-ledger platform limitation (platform_limit / platform_limit_reason), so the claim pick and by-id/transfer claims refuse every other family from the moment the task lands — the first wrong draw that prompt-text routing (e.g. 'work in the laptop checkout') could not prevent never happens. A packet without `route` behaves exactly as before (no ledger row is created at enqueue, no limitation applies). Producers that may set it: fleet dispatch (when it enqueues a packet for a surface-bound job), monitor intake (when a filed task is bound to one family's checkout or tooling), and manual enqueue via repo-queue enqueue (an operator filing a packet by hand). Producers must set it from the job's actual binding, never by scraping route text out of the prompt.",
+      "properties": {
+        "platform": { "type": "string", "enum": ["openchamber", "muse"] },
+        "reason": { "type": "string", "minLength": 1 }
+      }
     }
   },
   "required": [

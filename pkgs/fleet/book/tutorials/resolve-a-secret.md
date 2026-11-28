@@ -109,8 +109,9 @@ fleet secrets get example.api-token
 
 What the output means: the same contract as the broker path — the value
 on stdout, exit `0`, nothing else. The fallback runs `bws secret list`
-plus `bws secret get`, the same shape the broker itself uses to fill its
-cache, with the `bws` credential resolved the way the broker resolves
+plus `bws secret get` for the one name — the broker itself fills its cache
+from the list call alone, because the list carries the values — with the
+`bws` credential resolved the way the broker resolves
 its own (the `BWS_ACCESS_TOKEN` environment variable when non-empty,
 else the on-disk machine-account token file, handed to the `bws` child
 through its environment).

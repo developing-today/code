@@ -1,0 +1,58 @@
+{
+  "title": "Measure remaining pkgs/id test runtime targets after nextest",
+  "body": "Measure the remaining #6378 test-time targets on remote Fleet runners and route any missed target into a scoped follow-up. Do not remove or weaken tests.",
+  "priority": 50,
+  "max_attempts": 1000,
+  "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:15079",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "ci_investigation",
+    "repo": "developing-today/code",
+    "problem": "After #8032 adopted cargo-nextest, #6378 was closed without measuring all of its remaining runtime targets. Measure current-main unit, integration, E2E, NixOS VM and CI legs on remote Fleet runners, compare against the original thresholds, and route every missed target to a scoped live follow-up.",
+    "priority_reason": "Normal-priority performance investigation; the nextest slice landed, but the previous issue has unmeasured acceptance criteria and no current follow-up tracker.",
+    "evidence": [
+      "#6378 issue body sets unit <2m, integration <5m, E2E <10m, VM and CI optimization criteria.",
+      "PR #8032 recorded 3468 cargo nextest lib tests in 132s with a stub web/dist; it did not measure integration, E2E or VM legs.",
+      "#6378 triage note #6737334164 says VM-test optimization and selective-by-path execution were left as later slices.",
+      "Search of current issues found no separate follow-up for those remaining criteria."
+    ],
+    "acceptance": [
+      "Remote current-main run evidence records exact command, SHA, handle/URL, elapsed time and result for unit, integration, E2E, NixOS VM and CI legs; each unavailable leg records the exact blocker.",
+      "Results are compared against #6378 thresholds and separate build/setup time from test execution time.",
+      "Each missed target gets a scoped implementation issue with a runnable done check and a live queue task, or evidence shows all targets are met.",
+      "No test coverage is removed or weakened to improve timing."
+    ],
+    "tests": [
+      "Measure all available test classes via Fleet remote dispatch; verify test suites remain enabled and compare timing results to the stated thresholds."
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/15079",
+      "https://github.com/developing-today/code/issues/6378",
+      "https://github.com/developing-today/code/pull/8032",
+      "https://github.com/developing-today/code/issues/13871#issuecomment-7162067831"
+    ],
+    "issue": {
+      "number": 15079,
+      "title": "[Performance] Measure remaining pkgs/id test runtime targets after nextest",
+      "url": "https://github.com/developing-today/code/issues/15079"
+    },
+    "scope": {
+      "include": [
+        "pkgs/id test recipes and current test target partitioning",
+        "CI test steps and NixOS VM test legs",
+        "remote run timing, coverage and follow-up routing"
+      ],
+      "exclude": [
+        "running suites on laptop or sandbox",
+        "removing or weakening test coverage",
+        "bundling multiple implementation optimizations into this measurement pass"
+      ]
+    },
+    "risk": { "level": "low", "flags": [] },
+    "timebox_minutes": 45,
+    "dedupe": {
+      "checked_at": "2026-11-25T12:15:46Z",
+      "basis": "Searched developing-today/code issues for #6378 test execution time, nextest, NixOS VM test optimization and selective-by-file execution; no existing open follow-up matched the remaining acceptance criteria."
+    }
+  }
+}

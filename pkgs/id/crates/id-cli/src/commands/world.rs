@@ -25,12 +25,16 @@ use crate::{
     is_node_id, load_or_create_keypair,
 };
 
+mod announce;
 mod journal;
+mod manifest_apply;
 mod owner;
 mod scaffold;
+mod template;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
+use manifest_apply::{apply_steps, current_world_state, parse_manifest_file};
 use scaffold::scaffold_world;
 
 /// Dial a world host and open one session.
@@ -401,6 +405,38 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 client
                     .execution_profile(admin_token.as_deref(), capability.as_deref())
                     .await
+            };
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
+        WorldCommand::Presentation(args) => {
+            let crate::cli::WorldPresentationArgs {
+                node,
+                set,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+            } = args;
+            // Read and check the file before connecting, so a bad file
+            // never costs a round trip.
+            let replacement = match set {
+                Some(path) => {
+                    let admin_token = admin_token.context(
+                        "the admin token is needed to replace the world's presentation policy",
+                    )?;
+                    Some((admin_token, read_presentation_policy(&path)?))
+                }
+                None => None,
+            };
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = match &replacement {
+                Some((admin_token, policy)) => {
+                    client.set_presentation_policy(admin_token, policy).await
+                }
+                None => client.presentation_policy().await,
             };
             client.close();
             endpoint.close().await;
@@ -1029,12 +1065,49 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             template,
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
+        WorldCommand::TemplateExport {
+            dir,
+            out,
+            keep_state,
+            json,
+        } => template::export_world_template(&dir, &out, &keep_state, json),
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateCreate {
+            template,
+            dir,
+            name,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => {
+            template::create_world_from_template_file(
+                &template,
+                &dir,
+                name.as_deref(),
+                &bundles,
+                &trust_keys,
+                seed,
+                json,
+            )
+            .await
+        }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateResume {
+            dir,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => template::resume_template_world_dir(&dir, &bundles, &trust_keys, seed, json).await,
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
         WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {
             JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
             JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
         },
+        WorldCommand::Announce(args) => announce::announce(args).await,
+        WorldCommand::Lookup(args) => announce::lookup(args).await,
     }
 }
 
@@ -1206,277 +1279,6 @@ async fn join_over_ssh(
     _capability: &str,
 ) -> Result<()> {
     bail!("this build of id has no SSH support (cargo feature `ssh`)")
-}
-
-/// Parse a `world.toml` file into a validated manifest.
-fn parse_manifest_file(file: &std::path::Path) -> Result<id_caps::world_manifest::WorldManifest> {
-    let text = std::fs::read_to_string(file)
-        .with_context(|| format!("read world manifest {}", file.display()))?;
-    id_caps::world_manifest::parse(&text)
-}
-
-/// Fetch the current world state the manifest is compared against: the active
-/// module hash, the grants, the ceiling, the execution profile, the pending
-/// schedules and the install seed. The host returns the seed only to a caller
-/// presenting the admin token (#240), so a capability-only read (diff) plans
-/// with seed 0 — a seed alone never plans a step, and apply always reads with
-/// the admin token.
-async fn current_world_state(
-    client: &WorldClient,
-    capability: &str,
-    admin_token: Option<&str>,
-) -> Result<id_caps::world_manifest::WorldState> {
-    // One fresh session per read: admin and query frames are served one
-    // operation per stream, so sequencing these reads on one stream would
-    // talk to a session the host already finished.
-    let info = client
-        .fresh_session()
-        .await?
-        .info_details(capability)
-        .await?;
-    let caps: id_caps::world_caps::CapsReport =
-        serde_json::from_value(client.fresh_session().await?.caps(capability).await?)
-            .context("host returned a malformed capability report")?;
-    let profile: id_caps::world_limits::WorldExecutionProfile = serde_json::from_value(
-        client
-            .fresh_session()
-            .await?
-            .execution_profile(None, Some(capability))
-            .await?,
-    )
-    .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; the shared
-    // fold turns a report equal to the default ceiling into None, which
-    // means the default ceiling — the one meaning of None for a live
-    // ceiling (#6817, #838).
-    let ceiling = id_caps::world_manifest::fold_reported_ceiling(caps.ceiling.clone());
-    let (seed, schedules) = client
-        .fresh_session()
-        .await?
-        .manifest_state(admin_token, Some(capability))
-        .await?;
-    Ok(id_caps::world_manifest::WorldState {
-        module_hash: info.active_module_hash,
-        seed: seed.unwrap_or(0),
-        grants: caps.granted,
-        ceiling,
-        profile,
-        schedules,
-    })
-}
-
-/// Whether [`apply_steps`] actually applies this step over the wire. Every
-/// step kind is wired since #807 (module install and schedules included),
-/// so every step counts toward the "applied N step(s)" summary (#818). The
-/// predicate stays explicit per kind so a future reported-only step cannot
-/// silently claim credit: list it here only when its apply path lands.
-fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
-    use id_caps::world_manifest::ApplyStep;
-    matches!(
-        step,
-        ApplyStep::InstallModule { .. }
-            | ApplyStep::SetGrants { .. }
-            | ApplyStep::SetCeiling { .. }
-            | ApplyStep::SetProfile { .. }
-            | ApplyStep::ScheduleAt { .. }
-            | ApplyStep::CancelSchedule { .. }
-    )
-}
-
-/// Apply every reconciliation step over the wire through the admin
-/// operations: module install (compile a source, or download a known hash
-/// and re-install its bytes), grants, ceiling, profile, and schedule
-/// set/cancel — each journaled by the host. Returns how many of the steps
-/// were actually applied, so the caller's summary cannot claim credit for
-/// any step whose apply path is missing (#818).
-///
-/// The steps run in an order that makes the plan's result reachable, not
-/// strictly in plan order (#807): schedule cancels first, so a manifest
-/// that replaces ids at the pending-schedule capacity frees the slots its
-/// additions need; the execution profile next, so a module installed in
-/// the same apply is instantiated under the manifest's profile, not the
-/// previous one (a profile applies on the next install); grants and
-/// ceiling next, so a module compiled in the same apply may import the
-/// capabilities the manifest grants; then the module install; schedule
-/// additions last.
-///
-/// Each operation runs on a fresh session (see
-/// [`WorldClient::fresh_session`]): the host serves admin frames one
-/// operation per stream, so a second operation on the same stream would
-/// write to a session that no longer has a receiver.
-/// Order steps for reachability (see [`apply_steps`]): cancellations
-/// first, then profile, grants and ceiling, then the module install,
-/// and schedule additions last. The sort is stable, so steps of the
-/// same kind keep their plan order.
-fn ordered_steps<'a>(
-    steps: &'a [id_caps::world_manifest::ApplyStep],
-) -> Vec<&'a id_caps::world_manifest::ApplyStep> {
-    use id_caps::world_manifest::ApplyStep;
-    fn rank(step: &ApplyStep) -> u8 {
-        match step {
-            ApplyStep::CancelSchedule { .. } => 0,
-            ApplyStep::SetProfile { .. } => 1,
-            ApplyStep::SetGrants { .. } => 2,
-            ApplyStep::SetCeiling { .. } => 3,
-            ApplyStep::InstallModule { .. } => 4,
-            ApplyStep::ScheduleAt { .. } => 5,
-        }
-    }
-    let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
-    ordered.sort_by_key(|step| rank(step));
-    ordered
-}
-
-async fn apply_steps(
-    client: &WorldClient,
-    admin_token: &str,
-    capability: &str,
-    steps: &[id_caps::world_manifest::ApplyStep],
-) -> Result<usize> {
-    use id_caps::world_manifest::ApplyStep;
-    let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-    let ordered = ordered_steps(steps);
-    for step in ordered {
-        match step {
-            ApplyStep::SetGrants { grants } => {
-                let current: id_caps::world_caps::CapsReport =
-                    serde_json::from_value(client.fresh_session().await?.caps(capability).await?)
-                        .context("host returned a malformed capability report")?;
-                let to_revoke: Vec<String> = current
-                    .granted
-                    .iter()
-                    .filter(|name| !grants.contains(name))
-                    .cloned()
-                    .collect();
-                let to_grant: Vec<String> = grants
-                    .iter()
-                    .filter(|name| !current.granted.contains(name))
-                    .cloned()
-                    .collect();
-                if !to_grant.is_empty() || !to_revoke.is_empty() {
-                    client
-                        .fresh_session()
-                        .await?
-                        .update_caps(admin_token, &to_grant, &to_revoke)
-                        .await?;
-                }
-            }
-            ApplyStep::SetCeiling { ceiling } => {
-                // `None` means the default ceiling — the one meaning of
-                // None for a live ceiling (#6817): restore the default
-                // names on the wire; providers with an `Excluded` manifest
-                // default stay out until a ceiling names them (#838).
-                let names = ceiling.clone().unwrap_or_else(|| {
-                    id_caps::world_caps::default_ceiling_names()
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                });
-                client
-                    .fresh_session()
-                    .await?
-                    .set_caps_ceiling(admin_token, &names)
-                    .await?;
-            }
-            ApplyStep::SetProfile { profile } => {
-                client
-                    .fresh_session()
-                    .await?
-                    .set_execution_profile(admin_token, *profile)
-                    .await?;
-            }
-            ApplyStep::InstallModule { hash, source, seed } => {
-                if let Some(source) = source {
-                    let sources = read_compile_sources(source)?;
-                    client
-                        .fresh_session()
-                        .await?
-                        .compile(admin_token, sources, *seed, false)
-                        .await?;
-                } else if let Some(hash) = hash {
-                    // The module is already on the host: fetch its bytes by
-                    // hash and install them under the manifest's seed.
-                    let wasm = client
-                        .fresh_session()
-                        .await?
-                        .download_module_admin(admin_token, hash)
-                        .await?;
-                    client
-                        .fresh_session()
-                        .await?
-                        .install_wasm(admin_token, &wasm, *seed)
-                        .await?;
-                } else {
-                    anyhow::bail!("install_module step names neither a hash nor a source");
-                }
-            }
-            ApplyStep::ScheduleAt { id, at_ms } => {
-                client
-                    .fresh_session()
-                    .await?
-                    .set_schedule(admin_token, id, *at_ms)
-                    .await?;
-            }
-            ApplyStep::CancelSchedule { id } => {
-                client
-                    .fresh_session()
-                    .await?
-                    .cancel_schedule(admin_token, id)
-                    .await?;
-            }
-        }
-    }
-    Ok(applied)
-}
-
-/// Read the Roc sources a manifest `module_source` names, in the shape the
-/// host compile operation expects: the main file first (always sent as
-/// `main.roc`), then any sibling `.roc` files when the source is a
-/// directory. Size bounds mirror `id world compile`.
-fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)>> {
-    let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
-    if source.is_dir() {
-        paths.push(("main.roc".to_owned(), source.join("main.roc")));
-        let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
-            .with_context(|| format!("read source directory {}", source.display()))?
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension().is_some_and(|ext| ext == "roc")
-                    && path.file_name().is_some_and(|name| name != "main.roc")
-            })
-            .collect();
-        siblings.sort();
-        for path in siblings {
-            let name = path
-                .file_name()
-                .context("a source file has no name")?
-                .to_string_lossy()
-                .into_owned();
-            paths.push((name, path));
-        }
-    } else {
-        paths.push(("main.roc".to_owned(), source.to_path_buf()));
-    }
-    let mut sources = Vec::new();
-    let mut total = 0usize;
-    for (name, path) in paths {
-        let content =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        anyhow::ensure!(
-            content.len() <= id_worlds::world_compile::MAX_COMPILE_FILE_BYTES,
-            "{} exceeds {} bytes",
-            path.display(),
-            id_worlds::world_compile::MAX_COMPILE_FILE_BYTES
-        );
-        total += content.len();
-        sources.push((name, content));
-    }
-    anyhow::ensure!(
-        total <= id_worlds::world_compile::MAX_COMPILE_TOTAL_BYTES,
-        "the sources exceed {} bytes",
-        id_worlds::world_compile::MAX_COMPILE_TOTAL_BYTES
-    );
-    Ok(sources)
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
@@ -1875,6 +1677,7 @@ fn render_view_frame(
         id_worlds::world_presentation::WorldSurface::Scene(_) => None,
         id_worlds::world_presentation::WorldSurface::Audio(_) => None,
         id_worlds::world_presentation::WorldSurface::Widget(_) => None,
+        id_worlds::world_presentation::WorldSurface::Media(_) => None,
     }
 }
 
@@ -2280,14 +2083,60 @@ fn read_execution_profile(
         .with_context(|| format!("parse execution profile {}", path.display()))
 }
 
+/// The presentation policy in the file at `path`, for
+/// `id world presentation --set`. A duplicated key is refused rather
+/// than read as its last value (#8794), and the policy is validated
+/// here so an oversized one is refused before it is sent.
+fn read_presentation_policy(
+    path: &std::path::Path,
+) -> Result<id_core::presentation_policy::PresentationPolicy> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read presentation policy {}", path.display()))?;
+    let policy: id_core::presentation_policy::PresentationPolicy =
+        id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+            .with_context(|| format!("parse presentation policy {}", path.display()))?;
+    policy
+        .validate()
+        .with_context(|| format!("invalid presentation policy {}", path.display()))?;
+    Ok(policy)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use super::manifest_apply::{ordered_steps, read_compile_sources, step_is_applied};
     use super::{
         PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
         local_transcript_record, print_journal_check, pump_command, read_execution_profile,
-        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
+        read_presentation_policy, scaffold_world, world_list_plain_row, world_provenance,
     };
+
+    #[test]
+    fn a_presentation_policy_file_is_read_checked_and_refused_when_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        std::fs::write(
+            &path,
+            r#"{"assets":{"user_uploads":"deny","max_rung":"tileset"}}"#,
+        )
+        .unwrap();
+        let policy = read_presentation_policy(&path).unwrap();
+        assert_eq!(
+            policy.assets.max_rung,
+            id_core::presentation_policy::Rung::Tileset
+        );
+
+        // A duplicated key, an unknown field and an unregistered shader
+        // format are each refused.
+        for bad in [
+            r#"{"assets":{"max_rung":"rich","max_rung":"glyph"}}"#,
+            r#"{"assets":{"uploads":"deny"}}"#,
+            r#"{"shaders":{"enabled":true,"formats":["made.up/v9"]}}"#,
+        ] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(read_presentation_policy(&path).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn an_execution_profile_with_a_duplicated_key_is_refused() {
@@ -2355,7 +2204,11 @@ mod tests {
 
     /// #818, updated for #807: every step kind is applied by `apply_steps`
     /// over the wire — module install and schedules included — so every
-    /// step counts toward the applied summary.
+    /// step counts toward the applied summary. The one exception is
+    /// `SetRoles` (#13237), the first reported-only step: it plans,
+    /// diffs, and model-applies, but the host serves no admin role
+    /// operation yet, so it never counts (see
+    /// `set_roles_is_reported_only`).
     #[test]
     fn every_step_kind_counts_as_applied() {
         use id_caps::world_manifest::ApplyStep;
@@ -2380,6 +2233,43 @@ mod tests {
         ];
         let applied = steps.iter().filter(|step| step_is_applied(step)).count();
         assert_eq!(applied, steps.len());
+    }
+
+    /// #13237: `SetRoles` is the first reported-only step — planned,
+    /// diffed, and model-applied, but with no admin role operation on
+    /// the host it must never count toward the applied summary, or an
+    /// `id world apply` would claim credit for roles it never touched.
+    #[test]
+    fn set_roles_is_reported_only() {
+        use id_caps::world_manifest::ApplyStep;
+        let step = ApplyStep::SetRoles {
+            roles: id_caps::role_config::starter_roles(),
+        };
+        assert_eq!(step.kind(), "set_roles");
+        assert!(!step_is_applied(&step));
+    }
+
+    /// #13237: declared configuration ranks with the profile, grants,
+    /// and ceiling — before the module install that runs under it —
+    /// even though the wire executor refuses the step until the admin
+    /// role path lands.
+    #[test]
+    fn set_roles_orders_with_declared_configuration() {
+        use id_caps::world_manifest::ApplyStep;
+        let steps = [
+            ApplyStep::InstallModule {
+                hash: Some("abc".to_owned()),
+                source: None,
+                seed: 0,
+            },
+            ApplyStep::SetRoles { roles: vec![] },
+            ApplyStep::SetGrants { grants: vec![] },
+        ];
+        let kinds: Vec<&str> = ordered_steps(&steps)
+            .iter()
+            .map(|step| step.kind())
+            .collect();
+        assert_eq!(kinds, ["set_grants", "set_roles", "install_module"]);
     }
 
     /// The execution order is what makes a plan reachable (#807): a
@@ -2408,7 +2298,7 @@ mod tests {
                 id: "old".to_owned(),
             },
         ];
-        let kinds: Vec<&str> = super::ordered_steps(&steps)
+        let kinds: Vec<&str> = ordered_steps(&steps)
             .iter()
             .map(|step| step.kind())
             .collect();
@@ -2435,7 +2325,7 @@ mod tests {
         std::fs::write(dir.join("main.roc"), "main").unwrap();
         std::fs::write(dir.join("Helper.roc"), "helper").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
-        let sources = super::read_compile_sources(&dir).unwrap();
+        let sources = read_compile_sources(&dir).unwrap();
         assert_eq!(
             sources,
             vec![
@@ -2443,7 +2333,7 @@ mod tests {
                 ("Helper.roc".to_owned(), "helper".to_owned()),
             ]
         );
-        let single = super::read_compile_sources(&dir.join("main.roc")).unwrap();
+        let single = read_compile_sources(&dir.join("main.roc")).unwrap();
         assert_eq!(single, vec![("main.roc".to_owned(), "main".to_owned())]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2585,9 +2475,17 @@ mod tests {
             r#"{"from": "server", "frame": {"type": "view", "sequence": 3, "data": "Harbor Controls", "view_revision": 3, "surface": {"kind": "widget", "version": 1, "title": "Harbor Controls", "controls": [{"kind": "toggle", "id": "lights", "label": "Lights", "action": "lights", "on": true}]}}}"#,
         ]
         .join("\n");
+        // Derive the expected contract version from the embedded
+        // contract, formatted the way check_contract formats it, so
+        // a contract revision bump cannot strand this expectation
+        // (#15330).
+        let contract = id_worlds::shell_contract::ShellContract::embedded().unwrap();
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.15"
+            format!(
+                "6 frames conform to shell contract v{}.{}",
+                contract.version, contract.revision
+            )
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

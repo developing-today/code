@@ -11,6 +11,9 @@
 // here and held against generated headers.
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
+import { actions } from "../src/actions.ts";
+import { Ops, latestApply, type RunResult } from "../src/ops.ts";
+import { Work } from "../src/work.ts";
 import {
   askAgainAt,
   directClasses,
@@ -18,15 +21,18 @@ import {
   directRead,
   drawsOn,
   edgeRun,
+  ANSWER_PIECE,
   githubMemory,
   type KeptAnswer,
+  mapStore,
+  type MemoryStore,
   type Outward,
   QUIET_MOST_MS,
   queueWrites,
   READ_FROM,
 } from "../edge/src/direct.ts";
 import type { Fetch } from "../src/ops.ts";
-import type { EdgeConfig } from "../src/edge-proto.ts";
+import { HOLDABLE, type EdgeConfig } from "../src/edge-proto.ts";
 import { asThePlatformFetch, letters, pick, rng } from "./support.ts";
 
 const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
@@ -166,6 +172,475 @@ describe("the edge's run: secrets and the laptop's verbs", () => {
   });
 });
 
+describe("the edge's run: the bridge through its binding", () => {
+  // The bridge Worker, standing in: every call recorded, its answer
+  // set by the test. The credential is a fixture, never a real one.
+  function bridgeHarness() {
+    const calls: { url: string; init: { method: string; headers: Record<string, string>; body?: string } }[] = [];
+    const answer: { ok: boolean; status: number; body: unknown } = {
+      ok: true,
+      status: 201,
+      body: { messages: [], fleet: [{ id: 7, agent: "felix-1" }] },
+    };
+    const bridgeFetch = (async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: string },
+    ) => {
+      calls.push({ url: String(url), init });
+      return { ok: answer.ok, status: answer.status, json: async () => answer.body };
+    }) as unknown as Fetch;
+    const seen: Outward[] = [];
+    const secrets = {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+      seen: (call: Outward) => seen.push(call),
+    };
+    const run = edgeRun(directConfig(edgeConfig), secrets, bridgeFetch);
+    return { calls, answer, run, seen, secrets, bridgeFetch };
+  }
+
+  test("a send becomes a POST to the bridge as pm-stack, the text on the body, never in the address", async () => {
+    const h = bridgeHarness();
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1,group:muse", "--command", "-"], {
+      stdin: "do the thing",
+    });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["felix-1", "group:muse"],
+      body: "do the thing",
+      kind: "command",
+    });
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual({ messages: [], fleet: [{ id: 7, agent: "felix-1" }] });
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 201 }]);
+  });
+
+  test("a send without --command is a message; agents and the log are reads of the same binding", async () => {
+    const h = bridgeHarness();
+    await h.run(["fleet", "bridge", "send", "--to", "all", "-"], { stdin: "hello" });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}").kind).toBe("message");
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1" }] };
+    const agents = await h.run(["fleet", "bridge", "agents"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/agents");
+    expect(h.calls[1].init.method).toBe("GET");
+    expect(JSON.parse(agents.stdout)).toEqual({ agents: [{ name: "felix-1" }] });
+    h.answer.body = { messages: [{ id: 3 }] };
+    const log = await h.run(["fleet", "bridge", "log", "--limit", "30", "--order", "desc"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=30&order=desc");
+    expect(JSON.parse(log.stdout)).toEqual({ messages: [{ id: 3 }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+      ["bridge", false, 200],
+    ]);
+  });
+
+  test("the composer's verbs cross the same binding: a limited send, a broaden, an offer, the offers list", async () => {
+    const h = bridgeHarness();
+    // A pattern send with a limit: the limit rides the body, and the
+    // bridge's match report comes back as the run's output.
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 1,
+    };
+    const sent = await h.run(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"], {
+      stdin: "do the thing",
+    });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "do the thing",
+      kind: "command",
+      limit: 1,
+    });
+    expect(JSON.parse(sent.stdout)).toMatchObject({ matched: 2, delivered: 1, remaining: 1 });
+    // A broaden names only the batch: no text, no targets.
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-2"],
+      remaining: 0,
+    };
+    await h.run(["fleet", "bridge", "send", "--broaden", "b9"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(h.calls[1].init.body ?? "{}")).toEqual({ agent: "pm-stack", broaden: "b9" });
+    // An offer posts to the offer route with its slots.
+    h.answer.body = { offer: { id: 7, state: "open" } };
+    await h.run(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"], {
+      stdin: "take the next task",
+    });
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/offer");
+    expect(JSON.parse(h.calls[2].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "take the next task",
+      kind: "command",
+      slots: 2,
+    });
+    // The offers list is a read of the same binding.
+    h.answer.status = 200;
+    h.answer.body = { offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] };
+    const offers = await h.run(["fleet", "bridge", "offers"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/offers");
+    expect(h.calls[3].init.method).toBe("GET");
+    expect(JSON.parse(offers.stdout)).toEqual({ offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+    ]);
+    // The classes run the same verbs through the same translation.
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    h.answer.status = 201;
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-2"],
+      remaining: 0,
+    };
+    const widened = await ops.broaden("b9");
+    expect(widened).toMatchObject({ matched: 2, delivered: 1, remaining: 0 });
+    h.answer.body = { offers: [{ id: 7, claims: [] }] };
+    expect(await ops.offers()).toEqual([{ id: 7, claims: [] }]);
+  });
+
+  test("a credential the bridge no longer knows is said plainly, as a failed call", async () => {
+    const h = bridgeHarness();
+    h.answer.ok = false;
+    h.answer.status = 404;
+    h.answer.body = null;
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1", "-"], { stdin: "hi" });
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain("turned the PM credential away (unknown or revoked)");
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 404 }]);
+  });
+
+  test("without the credential, or without the binding, the bridge is still a machine's", async () => {
+    const h = bridgeHarness();
+    const noToken = edgeRun(directConfig(edgeConfig), { bridgeFetch: h.bridgeFetch }, h.bridgeFetch);
+    await expect(noToken(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    const noBinding = edgeRun(directConfig(edgeConfig), { bridgeToken: "pm-cred-test" }, h.bridgeFetch);
+    await expect(noBinding(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    // And a bridge verb this side does not carry is a machine's too.
+    await expect(h.run(["fleet", "bridge", "inbox", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  test("the classes send and read through the bridge unchanged", async () => {
+    const h = bridgeHarness();
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    // A send's answer is the bridge's match report (#14375).
+    h.answer.body = {
+      batch: "b1",
+      messages: [],
+      unregistered: [],
+      matched: 1,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 0,
+    };
+    const sent = await ops.send(["agent:felix-1"], "hello there", true);
+    expect(sent).toEqual({
+      to: ["agent:felix-1"],
+      command: true,
+      batch: "b1",
+      matched: 1,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 0,
+      unregistered: [],
+    });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:felix-1"],
+      body: "hello there",
+      kind: "command",
+    });
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1", groups: [] }] };
+    expect(await ops.agents()).toEqual([{ name: "felix-1", groups: [] }]);
+    h.answer.body = { messages: [{ id: 1, body: "one" }] };
+    expect(await ops.messages(5)).toEqual([{ id: 1, body: "one" }]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=5&order=desc");
+  });
+
+  test("the unified views are reads of the same binding; a revoke is a machine's", async () => {
+    const h = bridgeHarness();
+    h.answer.status = 200;
+    h.answer.body = { messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] };
+    const feed = await h.run([
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--kind",
+      "command",
+      "--sender",
+      "felix-1",
+      "--unread",
+      "--limit",
+      "25",
+      "--order",
+      "desc",
+    ]);
+    expect(h.calls[0].url).toBe(
+      "https://bridge.internal/fleet/pm-cred-test/pipeline?kind=command&sender=felix-1&unread_only=true&limit=25&order=desc",
+    );
+    expect(JSON.parse(feed.stdout)).toEqual({ messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] });
+    await h.run(["fleet", "bridge", "directory"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/directory");
+    await h.run(["fleet", "bridge", "credentials"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/credentials");
+    expect(h.seen).toEqual([
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+    ]);
+    // Revoking is the owner's act through the owner token: the edge's
+    // read-scope credential never carries it, so the verb is refused
+    // here and the action is held for a machine instead.
+    await expect(h.run(["fleet", "bridge", "revoke", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "revoke", "--identity", "muse/felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(3);
+    // The provisioning state list is a read of the same binding
+    // (#14376); the mints and the enroll revoke are machines' verbs,
+    // refused here like the revoke above.
+    h.answer.body = { enroll_tokens: [{ agent: "new-1", state: "pending" }] };
+    const listed = await h.run(["fleet", "bridge", "enroll-tokens"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(JSON.parse(listed.stdout)).toEqual({ enroll_tokens: [{ agent: "new-1", state: "pending" }] });
+    await expect(h.run(["fleet", "bridge", "mint-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "mint-credential", "--agent", "felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(4);
+    // The wake hooks' list is a read of the same binding (#14544);
+    // setting and removing are owner-token acts, refused here like
+    // the revoke above (a remove is held for a machine instead).
+    h.answer.body = {
+      hooks: [
+        {
+          address: "agent:felix-1",
+          kind: "webhook",
+          host: "hooks.example",
+          has_token: true,
+          added: "2026-11-24T00:00:00.000Z",
+        },
+      ],
+    };
+    const hooks = await h.run(["fleet", "bridge", "wake-hooks"]);
+    expect(h.calls[4].url).toBe("https://bridge.internal/fleet/pm-cred-test/wake-hooks");
+    expect(JSON.parse(hooks.stdout)).toEqual({
+      hooks: [
+        {
+          address: "agent:felix-1",
+          kind: "webhook",
+          host: "hooks.example",
+          has_token: true,
+          added: "2026-11-24T00:00:00.000Z",
+        },
+      ],
+    });
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--set", "-"], { stdin: "{}" })).rejects.toThrow(
+      /needs a machine/,
+    );
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    expect(h.calls).toHaveLength(5);
+  });
+
+  test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {
+    // A bridge that answers each of the unified views with its own rows.
+    const byPath = (url: string) => {
+      if (url.includes("/pipeline")) {
+        return {
+          messages: [
+            {
+              surface: "connector",
+              id: 1,
+              kind: "instruction",
+              sender_addr: "user:drew",
+              receiver: "claude",
+              body: "owner instruction",
+            },
+            {
+              surface: "fleet",
+              id: 2,
+              kind: "command",
+              sender_addr: "agent:felix-1",
+              receiver: "agent:archer-1",
+              body: "agent command",
+            },
+            {
+              surface: "notes",
+              id: 3,
+              kind: "note",
+              sender_addr: "user:drew",
+              receiver: "muse/felix-1",
+              body: "a note",
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/directory")) {
+        return {
+          agents: [
+            {
+              surface: "fleet",
+              name: "felix-1",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 2,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout-1",
+              identity: "muse/scout-1",
+              scopes: { can_send: false, can_inbox: false },
+              presence: "none",
+              last_seen: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/credentials")) {
+        return {
+          credentials: [
+            {
+              agent: "felix-1",
+              state: "active",
+              scopes: ["inbox", "send"],
+              addr: null,
+              credentials: 1,
+              live: 1,
+              created: "2026-11-24T00:00:00Z",
+              revoked_at: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/enroll-tokens")) {
+        return {
+          enroll_tokens: [
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: null,
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected bridge fetch ${url}`);
+    };
+    const bridgeFetch = (async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => byPath(String(url)),
+    })) as unknown as Fetch;
+    const { ops } = directClasses(edgeConfig, {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+    } as never);
+    // The pipeline: rows from all three surfaces, real senders kept.
+    const feed = (await ops.pipelineFeed(new URLSearchParams({ kind: "command" }))) as { sender_addr: string }[];
+    expect(feed.map((m) => m.sender_addr)).toEqual(["user:drew", "agent:felix-1", "user:drew"]);
+    // The directory: the fleet row carries its credential state; the
+    // notes-only identity is present, presence none, and its revoked
+    // tokens read as a revoked credential.
+    const directory = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const felix = directory.find((a) => a.name === "felix-1");
+    expect(felix?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("revoked");
+    // And a revoke asked of the edge's classes is a machine's.
+    await expect(ops.revokeCredential("fleet", "felix-1")).rejects.toThrow(/needs a machine/);
+    // The enroll tokens' state is read through the bridge the same
+    // way (#14376), and taking tokens back is a machine's too.
+    const enrollTokens = (await ops.enrollTokens()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    await expect(ops.revokeEnrollTokens("new-1")).rejects.toThrow(/needs a machine/);
+    await expect(ops.mintEnrollToken({ agent: "new-2" })).rejects.toThrow(/needs a machine/);
+  });
+
+  test("the agents section is read by the class that reads it on the laptop", async () => {
+    const ops = { agents: async () => [{ name: "felix-1" }] };
+    expect(await directRead("agents", ops as never, {} as never)).toEqual([{ name: "felix-1" }]);
+  });
+
+  test("the pipeline section is the unread-instruction count, read the same way (#14377)", async () => {
+    const ops = { unreadInstructions: async () => ({ unreadInstructions: 2 }) };
+    expect(await directRead("pipeline", ops as never, {} as never)).toEqual({ unreadInstructions: 2 });
+  });
+
+  test("the questionSets section is read from the decision-events Worker reader (#13491)", async () => {
+    const discovery = { source: "decision-events", sets: [{ setId: "set-1" }] };
+    expect(await directRead("questionSets", {} as never, {} as never, async () => discovery as never)).toEqual(
+      discovery,
+    );
+    // With no Worker source held, the section is not this side's.
+    await expect(directRead("questionSets", {} as never, {} as never)).rejects.toThrow(
+      /decision-events Worker is not configured/,
+    );
+  });
+});
+
 describe("the direct classes", () => {
   test("the config the edge builds carries what the classes need and nothing it cannot use", () => {
     const config = directConfig(edgeConfig);
@@ -206,6 +681,91 @@ describe("the direct classes", () => {
     expect(rows).toEqual([{ n: 3 }]);
     expect(h.calls[0].url).toBe(`${cfg.queueDbUrl}/v2/pipeline`);
     expect(h.calls[0].init.headers.Authorization).toBe("Bearer queue-test");
+  });
+
+  test("the queue store has twenty seconds to answer, body and all: stopped then, the read fails saying so, and however it ends no timer is left running", async () => {
+    // The timers a call starts, held here instead of run: the test fires the deadline itself.
+    const real = { set: globalThis.setTimeout, clear: globalThis.clearTimeout };
+    const set: { fire: () => void; ms: number; cleared: boolean }[] = [];
+    globalThis.setTimeout = ((fire: () => void, ms: number) => set.push({ fire, ms, cleared: false })) as never;
+    globalThis.clearTimeout = ((id: number) => {
+      if (set[id - 1]) set[id - 1].cleared = true;
+    }) as never;
+    const started = async (count: number) => {
+      for (let turn = 0; turn < 100 && set.length < count; turn++) await Promise.resolve();
+      expect(set.length).toBe(count);
+    };
+    type Init = { signal: AbortSignal; headers: Record<string, string> };
+    const stopped = (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    const good = { results: [{ type: "ok", response: { result: { cols: [{ name: "n" }], rows: [[{ value: 3 }]] } } }] };
+    const classes = (fetchImpl: unknown) =>
+      directClasses(edgeConfig, { githubToken: "gh-test", queueToken: "queue-test", fetchImpl: fetchImpl as Fetch })
+        .ops;
+    const SQL = "SELECT count(*) AS n FROM tasks";
+    try {
+      // Answered: under a deadline that had not run out, and its timer cleared.
+      const fine = classes(
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: !init.signal.aborted,
+          status: 200,
+          json: async () => good,
+        })),
+      );
+      expect(await fine.sql(SQL, [])).toEqual([{ n: 3 }]);
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([[20_000, true]]);
+      // Never answered: stopped at the deadline, and the read says what happened.
+      const hung = classes(asThePlatformFetch((_url: string, init: Init) => stopped(init.signal)));
+      const waiting = hung.sql(SQL, []).catch((error: Error) => error.message);
+      await started(2);
+      set[1].fire();
+      expect(await waiting).toBe("the queue store did not answer within 20 seconds");
+      // Answered, with a body that never ends: the same.
+      const endless = classes(
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: true,
+          status: 200,
+          json: () => stopped(init.signal),
+        })),
+      );
+      const reading = endless.sql(SQL, []).catch((error: Error) => error.message);
+      await started(3);
+      set[2].fire();
+      expect(await reading).toBe("the queue store did not answer within 20 seconds");
+      // Refused: its answer's body is let go of, unread; and a failure that is not the
+      // deadline's is said as itself.
+      let letGo = 0;
+      const refused = classes(
+        asThePlatformFetch(async () => ({
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+          body: {
+            cancel: async () => {
+              letGo++;
+            },
+          },
+        })),
+      );
+      expect(await refused.sql(SQL, []).catch((error: Error) => error.message)).toBe("queue store answered http 500");
+      expect(letGo).toBe(1);
+      const down = classes(
+        asThePlatformFetch(async () => {
+          throw new Error("connection refused");
+        }),
+      );
+      expect(await down.sql(SQL, []).catch((error: Error) => error.message)).toBe("connection refused");
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+      ]);
+    } finally {
+      globalThis.setTimeout = real.set;
+      globalThis.clearTimeout = real.clear;
+    }
   });
 });
 
@@ -249,6 +809,89 @@ describe("a local run's stand-ins", () => {
       stdout: "",
       stderr: "GitHub could not be reached: connection refused",
     });
+  });
+
+  test("a call has twenty seconds for its answer and the body: stopped then, it fails with the reason, and however it ends it leaves no timer running", async () => {
+    // The timers a call starts, held here instead of run: the test fires the deadline itself.
+    const real = { set: globalThis.setTimeout, clear: globalThis.clearTimeout };
+    const set: { fire: () => void; ms: number; cleared: boolean }[] = [];
+    globalThis.setTimeout = ((fire: () => void, ms: number) => set.push({ fire, ms, cleared: false })) as never;
+    globalThis.clearTimeout = ((id: number) => {
+      if (set[id - 1]) set[id - 1].cleared = true;
+    }) as never;
+    const started = async (count: number) => {
+      for (let turn = 0; turn < 100 && set.length < count; turn++) await Promise.resolve();
+      expect(set.length).toBe(count);
+    };
+    type Init = { signal: AbortSignal };
+    const stopped = (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    const secrets = { githubToken: "gh-test" };
+    const call = ["fleet", "gh", "api", "repos/developing-today/code/pulls"];
+    try {
+      // Answered: the timer set for it is cleared.
+      const fine = edgeRun(
+        directConfig(edgeConfig),
+        secrets,
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: !init.signal.aborted,
+          status: 200,
+          headers: new Headers(),
+          json: async () => [1],
+        })) as unknown as Fetch,
+      );
+      expect(await fine(call)).toEqual({ code: 0, stdout: "[1]", stderr: "" });
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([[20_000, true]]);
+      // Never answered: at the deadline the call is stopped, and says why.
+      const hung = edgeRun(
+        directConfig(edgeConfig),
+        secrets,
+        asThePlatformFetch((_url: string, init: Init) => stopped(init.signal)) as unknown as Fetch,
+      );
+      const waiting = hung(call);
+      await started(2);
+      set[1].fire();
+      expect(await waiting).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: "GitHub could not be reached: The operation timed out.",
+      });
+      // Answered, with a body that never ends: stopped the same way, and (as with any body cut
+      // off part-way) the answer is an empty one this once.
+      const endless = edgeRun(
+        directConfig(edgeConfig),
+        secrets,
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: () => stopped(init.signal),
+        })) as unknown as Fetch,
+      );
+      const reading = endless(call);
+      await started(3);
+      expect(set[2].cleared).toBe(false);
+      set[2].fire();
+      expect(await reading).toEqual({ code: 0, stdout: "", stderr: "" });
+      // A failure of its own (out of reach) clears the timer too.
+      const down = edgeRun(
+        directConfig(edgeConfig),
+        secrets,
+        asThePlatformFetch(async () => {
+          throw new Error("connection refused");
+        }) as unknown as Fetch,
+      );
+      expect((await down(call)).code).toBe(1);
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+      ]);
+    } finally {
+      globalThis.setTimeout = real.set;
+      globalThis.clearTimeout = real.clear;
+    }
   });
 });
 
@@ -343,6 +986,11 @@ describe("what this side notes of each call it makes", () => {
       prs: ["github"],
       priorities: ["github"],
       asks: ["github", "queue"],
+      census: ["github"],
+      done: ["queue", "github"],
+      agents: ["bridge"],
+      pipeline: ["bridge"],
+      questionSets: ["worker"],
     });
   });
 });
@@ -355,12 +1003,20 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
   const lists: Record<string, { rev: number; body: unknown }> = {};
   const calls: { method: string; url: string; tag: string | null }[] = [];
   const seen: Outward[] = [];
-  const state: { limited: Record<string, string> | null; tags: boolean; status: number | null; cut: boolean } = {
+  const state: {
+    limited: Record<string, string> | null;
+    tags: boolean;
+    status: number | null;
+    cut: boolean;
+    bodiless: number;
+  } = {
     limited: null,
     tags: true,
     status: null,
     // The connection drops while a good answer's body is being read.
     cut: false,
+    // How often the body of a "not modified" answer, which has none, was asked for.
+    bodiless: 0,
   };
   const clock = { t: options.start ?? Date.UTC(2026, 10, 23, 17, 0, 0) };
   const fetchImpl = (async (url: string, init: { method: string; headers: Record<string, string> }) => {
@@ -381,7 +1037,15 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
     const list = lists[url];
     const etag = `W/"${list.rev}"`;
     if (state.tags && init.headers["if-none-match"] === etag) {
-      return { ok: false, status: 304, headers: new Headers({ etag }), json: async () => JSON.parse("") };
+      return {
+        ok: false,
+        status: 304,
+        headers: new Headers({ etag }),
+        json: async () => {
+          state.bodiless++;
+          return JSON.parse("");
+        },
+      };
     }
     return {
       ok: true,
@@ -393,7 +1057,8 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
       },
     };
   }) as unknown as Fetch;
-  const memory = options.memory === false ? undefined : githubMemory();
+  const store = mapStore();
+  const memory = options.memory === false ? undefined : githubMemory(store, { now: () => clock.t });
   const run = edgeRun(
     directConfig(edgeConfig),
     { githubToken: "gh-test", seen: (call) => seen.push(call), github: memory, now: () => clock.t },
@@ -403,13 +1068,45 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
   const change = (url: string, body: unknown) => {
     lists[url] = { rev: (lists[url]?.rev ?? 0) + 1, body };
   };
-  return { api, calls, seen, state, clock, memory, change };
+  /** The object put away and another started: nothing in memory, the same store. */
+  const again = () => {
+    const fresh = githubMemory(store, { now: () => clock.t });
+    const rerun = edgeRun(
+      directConfig(edgeConfig),
+      { githubToken: "gh-test", seen: (call) => seen.push(call), github: fresh, now: () => clock.t },
+      asThePlatformFetch(fetchImpl) as typeof fetchImpl,
+    );
+    return { memory: fresh, api: (...argv: string[]) => rerun(["fleet", "gh", "api", ...argv]) };
+  };
+  return { api, calls, seen, state, clock, memory, store, again, change };
 }
 
 describe("what the edge remembers of GitHub", () => {
   const PULLS = "repos/developing-today/code/pulls?state=open&per_page=60";
   const ISSUES = "repos/developing-today/code/issues?state=open";
   const at = (path: string) => `https://api.github.com/${path}`;
+
+  /** The index as the store holds it now, in the shape it had when one
+   * value held it all: the list of places in use, and each place's own
+   * line read back into one — what a starting object would see. */
+  const storedIndex = (kept: Map<string, unknown>) => {
+    type Line = { id: number; etag: string; pieces: number; size: number; at: number };
+    const entries: Record<string, Line> = {};
+    const ids = (kept.get("gh:index:ids") as number[] | undefined) ?? [];
+    for (const id of [...ids].sort((a, b) => a - b)) {
+      const record = kept.get(`gh:index:${id}`) as ({ u: string } & Line) | undefined;
+      if (record && !(record.u in entries)) {
+        entries[record.u] = {
+          id: record.id,
+          etag: record.etag,
+          pieces: record.pieces,
+          size: record.size,
+          at: record.at,
+        };
+      }
+    }
+    return { entries };
+  };
 
   test("a list asked for again is asked for by its tag, and one that has not changed is answered from what was kept", async () => {
     const g = tagging();
@@ -430,6 +1127,30 @@ describe("what the edge remembers of GitHub", () => {
     expect((await g.api(PULLS)).stdout).toBe('[{"number":1},{"number":2}]');
     expect(g.calls[3].tag).toBe('W/"2"');
     expect(g.seen.map((call) => call.status)).toEqual([200, 304, 200, 304]);
+    // "Not modified" has no body, and none was asked for.
+    expect(g.state.bodiless).toBe(0);
+  });
+
+  test("a question with a time in it is asked once and never the same again: its answer is not kept, and keeps nothing else out", async () => {
+    // The history behind the Trends screen asks "everything changed
+    // since <time>", a page at a time, each with a later time. Kept,
+    // a hundred such answers would push out the lists that are asked
+    // for again and again.
+    const g = tagging();
+    await g.api(PULLS);
+    const since = (time: string) =>
+      `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
+    const first = await g.api(since("2026-11-01T00:00:00Z"));
+    expect(first.code).toBe(0);
+    await g.api(since("2026-11-02T00:00:00Z"));
+    // Asked the same again, it is asked in full: no tag was kept for it.
+    await g.api(since("2026-11-01T00:00:00Z"));
+    expect(g.calls.slice(1).map((call) => call.tag)).toEqual([null, null, null]);
+    // One answer is kept: the list that is asked for again.
+    expect((await g.memory?.said())?.kept).toBe(1);
+    expect(await g.memory?.get(at(since("2026-11-01T00:00:00Z")))).toBeUndefined();
+    await g.api(PULLS);
+    expect(g.calls[g.calls.length - 1].tag).toBe('W/"1"');
   });
 
   test("each address has its own answer, and a write is never asked for by a tag", async () => {
@@ -454,7 +1175,7 @@ describe("what the edge remembers of GitHub", () => {
     ]);
     await g.api(PULLS);
     expect(g.calls[7].tag).toBe('W/"1"');
-    expect(g.memory?.size()).toBe(3);
+    expect((await g.memory?.said())?.kept).toBe(3);
   });
 
   test("an answer with no tag is not kept, one that is gone is let go, and with no memory every call is a full one", async () => {
@@ -465,20 +1186,20 @@ describe("what the edge remembers of GitHub", () => {
     await g.api(PULLS);
     await g.api(PULLS);
     expect(g.calls.map((call) => call.tag)).toEqual([null, 'W/"1"', null]);
-    expect(g.memory?.size()).toBe(0);
+    expect((await g.memory?.said())?.kept).toBe(0);
     // Gone from GitHub: what was kept under the address goes too.
     g.state.tags = true;
     await g.api(PULLS);
-    expect(g.memory?.size()).toBe(1);
+    expect((await g.memory?.said())?.kept).toBe(1);
     g.state.status = 404;
     expect((await g.api(PULLS)).code).toBe(1);
-    expect(g.memory?.size()).toBe(0);
+    expect((await g.memory?.said())?.kept).toBe(0);
     // A failure that says nothing of the list leaves what was kept alone.
     g.state.status = null;
     await g.api(PULLS);
     g.state.status = 502;
     expect(await g.api(PULLS)).toEqual({ code: 1, stdout: "", stderr: "GitHub answered http 502" });
-    expect(g.memory?.size()).toBe(1);
+    expect((await g.memory?.said())?.kept).toBe(1);
     // "Not modified" for something never kept is not an answer.
     g.state.status = 304;
     expect(await g.api(ISSUES)).toEqual({ code: 1, stdout: "", stderr: "GitHub answered http 304" });
@@ -499,7 +1220,7 @@ describe("what the edge remembers of GitHub", () => {
     g.change(at(PULLS), [{ number: 1 }, { number: 2 }]);
     g.state.cut = true;
     expect(await g.api(PULLS)).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(g.memory?.size()).toBe(0);
+    expect((await g.memory?.said())?.kept).toBe(0);
     // So the next read carries no tag, GitHub cannot say "not modified" of an answer this
     // side never had, and the list comes whole.
     g.state.cut = false;
@@ -566,7 +1287,7 @@ describe("what the edge remembers of GitHub", () => {
     g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String((start + 40_000) / 1000) };
     expect((await g.api(SEARCH)).code).toBe(1);
     g.state.limited = null;
-    expect(g.memory?.quiet).toEqual({
+    expect(await g.memory?.quiet()).toEqual({
       search: { until: start + 40_000, why: '{"message":"API rate limit exceeded for user ID 1."}' },
     });
     // The lists are asked for as before; another search is not.
@@ -592,7 +1313,7 @@ describe("what the edge remembers of GitHub", () => {
       "x-ratelimit-resource": "core",
     };
     await named.api(SEARCH);
-    expect(Object.keys(named.memory?.quiet ?? {})).toEqual(["core"]);
+    expect(Object.keys((await named.memory?.quiet()) ?? {})).toEqual(["core"]);
     // One it names that this side does not know is taken as the call's own.
     const other = tagging();
     other.state.limited = {
@@ -601,7 +1322,7 @@ describe("what the edge remembers of GitHub", () => {
       "x-ratelimit-resource": "code_search",
     };
     await other.api(SEARCH);
-    expect(Object.keys(other.memory?.quiet ?? {})).toEqual(["search"]);
+    expect(Object.keys((await other.memory?.quiet()) ?? {})).toEqual(["search"]);
     // Going too fast is said in seconds, of the caller: both are hushed, and a nearer time
     // never shortens a further one.
     const fast = tagging();
@@ -609,10 +1330,8 @@ describe("what the edge remembers of GitHub", () => {
     await fast.api(PULLS);
     fast.state.limited = { "retry-after": "60" };
     await fast.api(SEARCH);
-    expect([fast.memory?.quiet.core?.until, fast.memory?.quiet.search?.until]).toEqual([
-      fast.clock.t + 900_000,
-      fast.clock.t + 60_000,
-    ]);
+    const waits = await fast.memory?.quiet();
+    expect([waits?.core?.until, waits?.search?.until]).toEqual([fast.clock.t + 900_000, fast.clock.t + 60_000]);
   });
 
   test("an answer is an answer: one that says nothing is left of the hour hushes nothing, and neither does being turned away with no time", async () => {
@@ -633,14 +1352,14 @@ describe("what the edge remembers of GitHub", () => {
       })) as unknown as Fetch,
     );
     expect((await run(["fleet", "gh", "api", PULLS])).code).toBe(0);
-    expect(g.memory?.quiet).toEqual({});
+    expect(await g.memory?.quiet()).toEqual({});
     // Turned away with no time given: told as limited, and the next call is asked all the same.
     g.state.limited = {};
     expect((await g.api(ISSUES)).stderr).toBe('{"message":"API rate limit exceeded for user ID 1."}');
     expect(g.seen.at(-1)).toEqual({ to: "github", write: false, status: 403, limited: true });
     g.state.limited = null;
     expect((await g.api(ISSUES)).code).toBe(0);
-    expect(g.memory?.quiet).toEqual({});
+    expect(await g.memory?.quiet()).toEqual({});
   });
 
   test("when to ask again: the seconds GitHub gives, or the turn of the hour when nothing is left of it; never the past, never much over an hour", () => {
@@ -713,41 +1432,853 @@ describe("what the edge remembers of GitHub", () => {
     expect([none > 500, some > 500]).toEqual([true, true]);
   });
 
-  test("property: what is kept is what a plain list kept the same way would hold, within its room and its count", () => {
-    const next = rng(304);
+  test("what is kept outlives the object: another one over the same store asks by the same tag, keeps to the same wait and goes on counting", async () => {
+    const g = tagging();
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1}]');
+    expect(await g.memory?.said()).toEqual({ kept: 1, answers: 1, unchanged: 0, since: g.clock.t });
+    // The object is put away, as Cloudflare does with an idle one within seconds, and another
+    // starts with nothing in memory. The list is still asked for by its tag, and GitHub's
+    // "not modified" is still the answer that was kept.
+    const second = g.again();
+    expect((await second.api(PULLS)).stdout).toBe('[{"number":1}]');
+    expect(g.calls.map((call) => call.tag)).toEqual([null, 'W/"1"']);
+    expect(await second.memory.said()).toEqual({ kept: 1, answers: 2, unchanged: 1, since: g.clock.t });
+    // Turned away with a time: a third object, started during the wait, asks nothing.
+    const back = g.clock.t + 30 * 60_000;
+    g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    expect((await second.api(PULLS)).code).toBe(1);
+    g.state.limited = null;
+    const third = g.again();
+    g.clock.t += 10 * 60_000;
+    const asked = g.calls.length;
+    expect((await third.api(ISSUES)).stderr).toContain("not asked again since GitHub answered");
+    expect(g.calls.length).toBe(asked);
+    expect((await third.memory.quiet()).core?.until).toBe(back);
+    // "Try again now" is remembered too: a fourth object asks at once.
+    await third.memory.free();
+    const fourth = g.again();
+    expect((await fourth.api(ISSUES)).code).toBe(0);
+    expect(await fourth.memory.quiet()).toEqual({});
+    // What was turned away was an answer of GitHub's, and is counted; what was held back is not.
+    expect(await fourth.memory.said()).toMatchObject({ kept: 2, answers: 4, unchanged: 1 });
+  });
+
+  test("a long answer is kept in pieces and read back whole by another object", async () => {
+    const g = tagging();
+    const long = Array.from({ length: 30 }, (_, n) => ({ number: n, body: `${n}:${"é".repeat(60_000)}` }));
+    g.change(at(PULLS), long);
+    const first = await g.api(PULLS);
+    expect(first.stdout.length).toBeGreaterThan(2 * ANSWER_PIECE);
+    const pieces = [...g.store.kept.keys()].filter((key) => key.startsWith("gh:a:"));
+    expect(pieces.length).toBe(Math.ceil(first.stdout.length / ANSWER_PIECE));
+    for (const key of pieces) {
+      // Each piece says whose it is: the address, and the tag.
+      const piece = g.store.kept.get(key) as { u: string; e: string; t: string };
+      expect([piece.u, piece.e, piece.t.length <= ANSWER_PIECE]).toEqual([at(PULLS), 'W/"1"', true]);
+    }
+    const second = g.again();
+    const again = await second.api(PULLS);
+    expect(g.calls[1].tag).toBe('W/"1"');
+    expect(again.stdout === first.stdout).toBe(true);
+    // A shorter one in its place leaves no piece of the longer behind.
+    g.change(at(PULLS), [{ number: 1 }]);
+    await second.api(PULLS);
+    expect([...g.store.kept.keys()].filter((key) => key.startsWith("gh:a:"))).toHaveLength(1);
+    expect((await g.again().api(PULLS)).stdout).toBe('[{"number":1}]');
+    // Where a piece ends is counted in characters as the text holds them, and can fall inside
+    // one (the two halves of a character outside the first 65,536): the halves come back
+    // together, whichever side of an edge each was on.
+    const store = mapStore();
+    for (const piece of [1, 2, 3, 4, 5, 7]) {
+      const text = `a😀b😀😀c${"😀".repeat(9)}d`;
+      const answer = { etag: 'W/"halves"', text };
+      await githubMemory(store, { piece }).set("u", answer);
+      const stored = [...store.kept.entries()].filter(([key]) => key.startsWith("gh:a:"));
+      expect([piece, stored.length]).toEqual([piece, Math.ceil(text.length / piece)]);
+      expect([piece, await githubMemory(store, { piece }).get("u")]).toEqual([piece, answer]);
+    }
+  });
+
+  /** A store whose writes stop after so many, as when the object is put
+   * away with an answer half kept; and which can be made unreadable. */
+  function stopping(inner: MemoryStore) {
+    const state = { left: Number.POSITIVE_INFINITY, hit: false, unread: false, writes: 0 };
+    const gate = () => {
+      if (state.left <= 0) {
+        state.hit = true;
+        throw new Error("the object was put away");
+      }
+      state.left--;
+      state.writes++;
+    };
+    const store: MemoryStore = {
+      get: async (key) => {
+        if (state.unread) throw new Error("storage could not be read");
+        return inner.get(key);
+      },
+      put: async (key, value) => {
+        gate();
+        await inner.put(key, value);
+      },
+      delete: async (key) => {
+        gate();
+        await inner.delete(key);
+      },
+    };
+    return { state, store };
+  }
+
+  test("an answer half kept is never taken for one: it reads as nothing kept, and the read after it is a full one", async () => {
+    const inner = mapStore();
+    const s = stopping(inner);
+    const old = { etag: 'W/"old"', text: "a".repeat(ANSWER_PIECE + 10) };
+    const next = { etag: 'W/"new"', text: "b".repeat(2 * ANSWER_PIECE + 10) };
+    for (let writes = 0; writes <= 5; writes++) {
+      inner.kept.clear();
+      s.state.left = Number.POSITIVE_INFINITY;
+      await githubMemory(s.store).set("u", old);
+      // The new answer is three pieces and then the index: stopped after `writes` of them.
+      s.state.left = writes;
+      await githubMemory(s.store).set("u", next);
+      s.state.left = Number.POSITIVE_INFINITY;
+      const got = await githubMemory(s.store).get("u");
+      // Whole and its own, or nothing: never the old tag over the new words, nor a mixture.
+      if (writes === 0) expect([writes, got]).toEqual([writes, old]);
+      else if (writes < 4) expect([writes, got]).toEqual([writes, undefined]);
+      else expect([writes, got]).toEqual([writes, next]);
+      // And keeping it again afterwards works as if nothing had happened.
+      await githubMemory(s.store).set("u", next);
+      expect(await githubMemory(s.store).get("u")).toEqual(next);
+    }
+    // The other way: a short one over a long one, stopped at each of its writes (one piece,
+    // the two left of the longer taken away from the far end, the index).
+    for (let writes = 0; writes <= 5; writes++) {
+      inner.kept.clear();
+      s.state.left = Number.POSITIVE_INFINITY;
+      await githubMemory(s.store).set("u", next);
+      const short = { etag: 'W/"short"', text: "c" };
+      s.state.left = writes;
+      await githubMemory(s.store).set("u", short);
+      s.state.left = Number.POSITIVE_INFINITY;
+      const got = await githubMemory(s.store).get("u");
+      if (writes === 0) expect([writes, got]).toEqual([writes, next]);
+      else if (writes < 4) expect([writes, got]).toEqual([writes, undefined]);
+      else expect([writes, got]).toEqual([writes, short]);
+      // What is in the place is its first so many pieces with none missing, at every stop.
+      const ns = [...inner.kept.keys()].filter((key) => key.startsWith("gh:a:0:")).map((key) => Number(key.slice(7)));
+      expect([writes, ns.sort()]).toEqual([writes, ns.map((_, n) => n)]);
+    }
+  });
+
+  test("what a stopped write left in a place is cleared by whoever next writes there or empties it", async () => {
+    const pieces = (store: { kept: Map<string, unknown> }) =>
+      [...store.kept.keys()].filter((key) => key.startsWith("gh:a:")).sort();
+    const short = { etag: 'W/"short"', text: "ab" };
+    const long = { etag: 'W/"long"', text: "abcdefghijklmnopqrstu" };
+    // A long answer begun over a short one, the store stopping before the index: five pieces
+    // in the place, and an index that knows of one.
+    const begin = async () => {
+      const inner = mapStore();
+      const s = stopping(inner);
+      await githubMemory(s.store, { piece: 4 }).set("u", short);
+      s.state.left = 5;
+      await githubMemory(s.store, { piece: 4 }).set("u", long);
+      s.state.left = Number.POSITIVE_INFINITY;
+      expect([s.state.hit, pieces(inner)]).toEqual([true, [0, 1, 2, 3, 4].map((n) => `gh:a:0:${n}`)]);
+      return { inner, s };
+    };
+    // The next answer kept there is all there is in the place.
+    const kept = await begin();
+    await githubMemory(kept.s.store, { piece: 4 }).set("u", short);
+    expect(pieces(kept.inner)).toEqual(["gh:a:0:0"]);
+    expect(await githubMemory(kept.s.store, { piece: 4 }).get("u")).toEqual(short);
+    // Let go instead, nothing is left of it: not its pieces, and not its line in the index.
+    const gone = await begin();
+    await githubMemory(gone.s.store, { piece: 4 }).delete("u");
+    expect([pieces(gone.inner), await githubMemory(gone.s.store, { piece: 4 }).get("u")]).toEqual([[], undefined]);
+    expect((await githubMemory(gone.s.store, { piece: 4 }).said()).kept).toBe(0);
+    expect([storedIndex(gone.inner.kept), gone.inner.kept.get("gh:index:ids")]).toEqual([{ entries: {} }, []]);
+    // A place with a piece gone from its middle (nothing here leaves one so; a store that
+    // lost a value would) is still cleared of all the index knew it to hold.
+    const holed = mapStore();
+    await githubMemory(holed, { piece: 4 }).set("u", long);
+    expect(pieces(holed)).toHaveLength(6);
+    holed.kept.delete("gh:a:0:2");
+    await githubMemory(holed, { piece: 4 }).set("u", short);
+    expect(pieces(holed)).toEqual(["gh:a:0:0"]);
+    await githubMemory(holed, { piece: 4 }).set("u", long);
+    holed.kept.delete("gh:a:0:1");
+    await githubMemory(holed, { piece: 4 }).delete("u");
+    expect(pieces(holed)).toEqual([]);
+    // Too big to keep, the same.
+    const big = await begin();
+    await githubMemory(big.s.store, { piece: 4, one: 3 }).set("u", long);
+    expect(pieces(big.inner)).toEqual([]);
+    // And in a place no index names (a first answer whose keeping was stopped): the next
+    // address to take the place clears it.
+    const inner = mapStore();
+    const s = stopping(inner);
+    s.state.left = 4;
+    await githubMemory(s.store, { piece: 4 }).set("never", long);
+    s.state.left = Number.POSITIVE_INFINITY;
+    expect([s.state.hit, pieces(inner).length, inner.kept.has("gh:index")]).toEqual([true, 4, false]);
+    await githubMemory(s.store, { piece: 4 }).set("other", short);
+    expect(pieces(inner)).toEqual(["gh:a:0:0"]);
+    expect(await githubMemory(s.store, { piece: 4 }).get("other")).toEqual(short);
+  });
+
+  test("a place taken over by another address is not read as the first one's, though the tag and the length are the same", async () => {
+    const inner = mapStore();
+    const s = stopping(inner);
+    const memory = githubMemory(s.store, { most: 1 });
+    const first = { etag: 'W/"same"', text: "the first address's own." };
+    const other = { etag: 'W/"same"', text: "another's, as long as it" };
+    expect(other.text.length).toBe(first.text.length);
+    await memory.set("first", first);
+    const place = storedIndex(inner.kept).entries.first.id;
+    // Something else is kept, the first is let go to make room for it, and the store stops
+    // before the index says so. The first's place is free as far as this object knows.
+    s.state.left = 2;
+    await memory.set("between", { etag: 'W/"between"', text: "x" });
+    expect([s.state.hit, inner.kept.has(`gh:a:${place}:0`)]).toEqual([true, false]);
+    // Another address takes the place, and the store stops again before the index says that.
+    s.state.hit = false;
+    s.state.left = 1;
+    await memory.set("other", other);
+    s.state.left = Number.POSITIVE_INFINITY;
+    // What the store holds now: an index that still names the first address, and in its
+    // place the other's words, under the same tag and of the same length.
+    expect(s.state.hit).toBe(true);
+    expect(Object.keys(storedIndex(inner.kept).entries)).toEqual(["first"]);
+    expect((inner.kept.get(`gh:a:${place}:0`) as { u: string; e: string; t: string }).t).toBe(other.text);
+    // Another object, starting from the store, reads nothing for the first: not the other's.
+    expect(await githubMemory(s.store, { most: 1 }).get("first")).toBeUndefined();
+    expect(await githubMemory(s.store, { most: 1 }).get("other")).toBeUndefined();
+    // And the first kept again is the first's again.
+    const next = githubMemory(s.store, { most: 1 });
+    await next.set("first", first);
+    expect(await githubMemory(s.store, { most: 1 }).get("first")).toEqual(first);
+  });
+
+  test("two changes to one answer at once are made one after the other: what is kept is the later, whole", async () => {
+    const store = mapStore();
+    const memory = githubMemory(store, { piece: 4 });
+    const long = { etag: 'W/"long"', text: "l".repeat(30) };
+    const short = { etag: 'W/"short"', text: "s".repeat(6) };
+    for (const [one, two] of [
+      [long, short],
+      [short, long],
+    ]) {
+      const reads = await Promise.all([
+        memory.set("u", one),
+        memory.get("u"),
+        memory.set("u", two),
+        memory.get("u"),
+        memory.delete("gone"),
+      ]);
+      // A read made meanwhile is nothing, or one of them whole.
+      for (const got of [reads[1], reads[3]])
+        expect([undefined, one, two]).toContainEqual(got as KeptAnswer | undefined);
+      expect(await memory.get("u")).toEqual(two);
+      expect(await githubMemory(store, { piece: 4 }).get("u")).toEqual(two);
+      const pieces = [...store.kept.keys()].filter((key) => key.startsWith("gh:a:"));
+      expect(pieces).toHaveLength(Math.ceil(two.text.length / 4));
+    }
+  });
+
+  test("answers for several new addresses kept at once each get a place of their own", async () => {
+    // As when an object's first look reads every list side by side, none of them kept before.
+    const store = mapStore();
+    const memory = githubMemory(store, { piece: 4 });
+    const answers = Array.from({ length: 7 }, (_, n) => ({
+      url: `https://api.github.com/list/${n}`,
+      answer: { etag: `W/"${n}"`, text: String(n).repeat(3 + 5 * n) },
+    }));
+    await Promise.all(answers.map(({ url, answer }) => memory.set(url, answer)));
+    const places = Object.values(storedIndex(store.kept).entries).map((entry) => entry.id);
+    expect(places.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    const again = githubMemory(store, { piece: 4 });
+    for (const { url, answer } of answers) {
+      expect(await memory.get(url)).toEqual(answer);
+      expect(await again.get(url)).toEqual(answer);
+    }
+    // And kept again at once, one of them let go meanwhile: each is still its own.
+    await Promise.all([
+      ...answers.map(({ url, answer }) => memory.set(url, { ...answer, etag: `${answer.etag}b` })),
+      memory.delete(answers[3].url),
+    ]);
+    const after = githubMemory(store, { piece: 4 });
+    for (const [n, { url, answer }] of answers.entries()) {
+      expect([n, await after.get(url)]).toEqual([n, n === 3 ? undefined : { ...answer, etag: `${answer.etag}b` }]);
+    }
+  });
+
+  test("a store that cannot be read is a memory that forgot, and is not written over: when it can be read again, what it held is still there", async () => {
+    const inner = mapStore();
+    const s = stopping(inner);
+    const clock = { t: 1_000_000 };
+    const kept = { etag: 'W/"kept"', text: "kept before the trouble" };
+    const before = githubMemory(s.store, { now: () => clock.t });
+    await before.set("u", kept);
+    await before.hush(["search"], { until: 4_500_000, why: "searching too fast" });
+    await before.hush(["core"], { until: 4_000_000, why: "an earlier hour" });
+    await before.count(true);
+    const held = structuredClone([...inner.kept.entries()]);
+    // Another object starts while the store cannot be read. Nothing is kept as far as it can
+    // tell, and it does not write what it knows (which is nothing) over what is there.
+    s.state.unread = true;
+    const memory = githubMemory(s.store, { now: () => clock.t });
+    expect(await memory.get("u")).toBeUndefined();
+    expect(await memory.said()).toEqual({ kept: 0, answers: 0, unchanged: 0, since: clock.t });
+    await memory.set("v", { etag: 'W/"v"', text: "not kept" });
+    await memory.delete("u");
+    await memory.count(false);
+    await memory.free();
+    // GitHub's wait is kept to by this object all the same, in its own mind.
+    await memory.hush(["core"], { until: 4_800_000, why: "the hour is used up" });
+    expect(await memory.quiet()).toEqual({ core: { until: 4_800_000, why: "the hour is used up" } });
+    expect([s.state.hit, [...inner.kept.entries()]]).toEqual([false, held]);
+    // The store can be read again: the same object finds what was kept, and both waits (of
+    // two for one allowance, the later: what the store held does not shorten what was said since).
+    s.state.unread = false;
+    expect(await memory.get("u")).toEqual(kept);
+    expect(await memory.quiet()).toEqual({
+      core: { until: 4_800_000, why: "the hour is used up" },
+      search: { until: 4_500_000, why: "searching too fast" },
+    });
+    expect(await memory.said()).toMatchObject({ kept: 1, answers: 1, unchanged: 1 });
+    await memory.set("v", { etag: 'W/"v"', text: "kept now" });
+    expect(await githubMemory(s.store).get("v")).toEqual({ etag: 'W/"v"', text: "kept now" });
+    // A store that fails at everything fails no read of GitHub: the answer is GitHub's.
+    const broken = githubMemory({
+      get: async () => {
+        throw new Error("storage is down");
+      },
+      put: async () => {
+        throw new Error("storage is down");
+      },
+      delete: async () => {
+        throw new Error("storage is down");
+      },
+    });
+    const g = tagging();
+    const run = edgeRun(
+      directConfig(edgeConfig),
+      { githubToken: "gh-test", github: broken, now: () => g.clock.t },
+      asThePlatformFetch(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ etag: '"a"' }),
+        json: async () => [7],
+      })) as unknown as Fetch,
+    );
+    expect(await run(["fleet", "gh", "api", PULLS])).toEqual({ code: 0, stdout: "[7]", stderr: "" });
+    expect(await run(["fleet", "gh", "api", PULLS])).toEqual({ code: 0, stdout: "[7]", stderr: "" });
+    // What the store holds that is not what this writes (another's, or damaged) is nothing kept.
+    for (const value of [
+      null,
+      7,
+      "x",
+      [],
+      { entries: null },
+      { entries: { u: {} } },
+      // A line that names no pieces would be an empty answer under a tag: GitHub's "not
+      // modified" to that tag would then be answered with nothing.
+      { entries: { u: { id: 0, etag: 'W/"none"', pieces: 0, size: 0, at: 1 } } },
+      { entries: { u: { id: 0.5, etag: 'W/"half"', pieces: 1, size: 1, at: 1 } } },
+      { entries: { u: { id: 0, etag: 7, pieces: 1, size: 1, at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: "1", at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: 1 } } },
+      // More pieces than any answer kept here has, or longer than any is: what was read back
+      // would say how much to clear, and how much is held.
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 11, size: 1, at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: 6_000_001, at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: -1, at: 1 } } },
+    ]) {
+      const odd = mapStore(
+        new Map<string, unknown>([
+          ["gh:index", value],
+          ["gh:quiet", value],
+          ["gh:count", value],
+        ]),
+      );
+      const from = githubMemory(odd, { now: () => clock.t });
+      expect([value, await from.get("u"), await from.quiet(), await from.said()]).toEqual([
+        value,
+        undefined,
+        {},
+        { kept: 0, answers: 0, unchanged: 0, since: clock.t },
+      ]);
+    }
+    // A piece that says it is the answer's and is not as long as the index says the answer is.
+    const cut = mapStore();
+    await githubMemory(cut).set("u", kept);
+    const first = cut.kept.get("gh:a:0:0") as { u: string; e: string; t: string };
+    expect([first.u, first.e, first.t]).toEqual(["u", kept.etag, kept.text]);
+    first.t = first.t.slice(0, -1);
+    expect(await githubMemory(cut).get("u")).toBeUndefined();
+    // A wait read back that is further off than one can be set for is not GitHub's, and is not
+    // kept to: not by this object, and not by any after it. (One cut down to the longest wait
+    // would be cut down afresh by every object that started, and never end.) One that could
+    // have been set is kept to, to the minute.
+    const far = mapStore(
+      new Map<string, unknown>([
+        [
+          "gh:quiet",
+          {
+            core: { until: clock.t + 400 * 24 * 60 * 60_000, why: "a time that cannot be right" },
+            search: { until: clock.t + 65 * 60_000, why: "the longest there is" },
+          },
+        ],
+      ]),
+    );
+    const started = clock.t;
+    for (let object = 0; object < 4; object++) {
+      expect([object, await githubMemory(far, { now: () => clock.t }).quiet()]).toEqual([
+        object,
+        { search: { until: started + 65 * 60_000, why: "the longest there is" } },
+      ]);
+      clock.t += 20 * 60_000;
+    }
+    clock.t = started;
+    // The most an entry may say it has is what an answer of the longest kept would have.
+    const most = mapStore();
+    const full = { etag: 'W/"full"', text: "f".repeat(41) };
+    await githubMemory(most, { piece: 4, one: 41 }).set("u", full);
+    expect(storedIndex(most.kept).entries.u.pieces).toBe(11);
+    expect(await githubMemory(most, { piece: 4, one: 41 }).get("u")).toEqual(full);
+    // Two addresses the index gives one place: the place is the first's, and the other's is nothing.
+    const shared = mapStore();
+    await githubMemory(shared).set("u", kept);
+    shared.kept.set("gh:index:1", { u: "w", ...storedIndex(shared.kept).entries.u });
+    shared.kept.set("gh:index:ids", [0, 1]);
+    const both = githubMemory(shared);
+    expect([await both.get("u"), await both.get("w"), (await both.said()).kept]).toEqual([kept, undefined, 1]);
+  });
+
+  test("room is made by letting the oldest go, never the one just kept, and nothing of what went is left in the store", async () => {
+    const store = mapStore();
+    const clock = { t: 1_000_000 };
+    const memory = githubMemory(store, { now: () => clock.t, most: 3, room: 500, one: 300 });
+    const answer = (n: number, size = 20) => ({ etag: `W/"${n}"`, text: String(n % 10).repeat(size) });
+    for (let n = 0; n < 5; n++) {
+      clock.t += 1_000;
+      await memory.set(`u${n}`, answer(n));
+    }
+    // Three at most: the two oldest went.
+    expect(await Promise.all([0, 1, 2, 3, 4].map((n) => memory.get(`u${n}`)))).toEqual([
+      undefined,
+      undefined,
+      answer(2),
+      answer(3),
+      answer(4),
+    ]);
+    // One asked for a good while after it was kept is marked as still wanted, and is not the
+    // next to go; asked for sooner than that, it is not marked (a read is not a write).
+    const indexPuts = () => storedIndex(store.kept).entries;
+    clock.t += 5 * 60 * 60_000;
+    expect(await memory.get("u2")).toEqual(answer(2));
+    expect(indexPuts().u2.at).toBeLessThan(clock.t);
+    clock.t += 2 * 60 * 60_000;
+    expect(await memory.get("u2")).toEqual(answer(2));
+    expect(indexPuts().u2.at).toBe(clock.t);
+    clock.t += 1_000;
+    await memory.set("u5", answer(5));
+    expect(await Promise.all([2, 3, 4, 5].map((n) => memory.get(`u${n}`)))).toEqual([
+      answer(2),
+      undefined,
+      answer(4),
+      answer(5),
+    ]);
+    // Room in characters: a large one pushes out as many as it takes, but not itself.
+    clock.t += 1_000;
+    await memory.set("big", answer(6, 280));
+    expect((await memory.said()).kept).toBeLessThanOrEqual(3);
+    expect(await memory.get("big")).toEqual(answer(6, 280));
+    // One too big to keep is not kept, and what was kept under its address goes.
+    await memory.set("big", answer(7, 301));
+    expect(await memory.get("big")).toBeUndefined();
+    // The store holds the index, and the pieces of what the index names, and nothing else;
+    // and the places are few, each used again once it is free.
+    const index = storedIndex(store.kept);
+    const named = Object.values(index.entries).flatMap((e) =>
+      Array.from({ length: e.pieces }, (_, n) => `gh:a:${e.id}:${n}`),
+    );
+    expect([...store.kept.keys()].filter((key) => key.startsWith("gh:a:")).sort()).toEqual(named.sort());
+    for (let n = 10; n < 40; n++) await memory.set(`u${n}`, answer(n));
+    const places = Object.values(storedIndex(store.kept).entries).map((e) => e.id);
+    expect(Math.max(...places)).toBeLessThanOrEqual(3);
+    expect([...store.kept.keys()].filter((key) => key.startsWith("gh:a:"))).toHaveLength(3);
+  });
+
+  test("property: through any run of keeping, asking, letting go, starting again and being stopped part-way, what is read back is an answer that was kept or nothing, and a change that finishes leaves nothing behind it", async () => {
+    const next = rng(13570);
+    const seen = { wholes: 0, nothings: 0, stops: 0, carried: 0, long: 0, livedOn: 0, strict: 0 };
     for (let round = 0; round < 60; round++) {
-      const room = 40 + Math.floor(next() * 400);
-      const most = 1 + Math.floor(next() * 6);
-      const real = githubMemory(room, most);
-      // The model: [address, answer] pairs, the one asked for longest ago first.
-      let model: [string, KeptAnswer][] = [];
-      const cost = (url: string, answer: KeptAnswer) => url.length + answer.etag.length + answer.text.length;
-      const urls = Array.from({ length: 2 + Math.floor(next() * 8) }, (_, n) => `https://api.github.com/list/${n}`);
-      for (let step = 0; step < 300; step++) {
+      const inner = mapStore();
+      const s = stopping(inner);
+      const clock = { t: 1_000_000 };
+      // Every third round nothing is ever stopped: there, nothing at all may be left over.
+      const calm = round % 3 === 0;
+      const limits = {
+        most: 2 + Math.floor(next() * 5),
+        room: 60 + Math.floor(next() * 200),
+        one: 90,
+        piece: 1 + Math.floor(next() * 12),
+      };
+      const longest = Math.ceil(limits.one / limits.piece);
+      const start = () => githubMemory(s.store, { now: () => clock.t, ...limits });
+      let memory = start();
+      // Whether a change has been stopped under this object: what it has in mind may then be
+      // ahead of what the store holds, until another object starts from the store.
+      let shaken = false;
+      // The model. For each address: the answer last kept by a change that finished, and those
+      // whose keeping was stopped part-way since (each may or may not have got far enough to
+      // be read, and a later one that got nowhere leaves an earlier one as it was).
+      const kept = new Map<string, KeptAnswer>();
+      const begun = new Map<string, KeptAnswer[]>();
+      const urls = Array.from({ length: 2 + Math.floor(next() * 7) }, (_, n) => `https://api.github.com/list/${n}`);
+      let version = 0;
+      type Stored = { entries: Record<string, { id: number; pieces: number; size: number }> };
+      const index = () => storedIndex(inner.kept) as Stored;
+      const pieceKeys = () => [...inner.kept.keys()].filter((key) => key.startsWith("gh:a:"));
+      /** What is in the store that the index it holds does not name. */
+      const stray = () => {
+        const named = new Set(
+          Object.values(index().entries).flatMap((e) =>
+            Array.from({ length: e.pieces }, (_, n) => `gh:a:${e.id}:${n}`),
+          ),
+        );
+        return pieceKeys().filter((key) => !named.has(key));
+      };
+      const read = async (url: string, where: number[]) => {
+        const got = await memory.get(url);
+        if (got === undefined) {
+          seen.nothings++;
+          return got;
+        }
+        seen.wholes++;
+        const tried = begun.get(url) ?? [];
+        const fits = [kept.get(url), ...tried].some((a) => a?.etag === got.etag && a.text === got.text);
+        expect([...where, got.etag, fits]).toEqual([...where, got.etag, true]);
+        // One whose keeping was stopped and which can be read was kept after all, and what
+        // was begun before it is gone under it.
+        const which = tried.findIndex((a) => a.etag === got.etag);
+        if (which >= 0) {
+          kept.set(url, got);
+          begun.set(url, tried.slice(which + 1));
+        }
+        return got;
+      };
+      for (let step = 0; step < 220; step++) {
+        const where = [round, step];
+        clock.t += Math.floor(next() * 3 * 60 * 60_000);
         const url = pick(next, urls);
         const roll = next();
+        const strayBefore = stray().length;
+        s.state.hit = false;
+        if (!calm && roll < 0.9 && next() < 0.3) s.state.left = Math.floor(next() * next() * 30);
+        let answer: KeptAnswer | null = null;
         if (roll < 0.45) {
-          const answer = { etag: `W/"${step}"`, text: letters(next, "abc", 0, pick(next, [5, 30, 120, 500])) };
-          real.set(url, answer);
-          model = model.filter(([kept]) => kept !== url);
-          if (cost(url, answer) <= room) {
-            model.push([url, answer]);
-            while (model.length > most || model.reduce((sum, [u, a]) => sum + cost(u, a), 0) > room) model.shift();
-          }
+          const size = pick(
+            next,
+            [0, 1, limits.piece - 1, limits.piece, limits.piece + 1, 3 * limits.piece + 1, 60, 90, 91].filter(
+              (n) => n >= 0,
+            ),
+          );
+          answer = { etag: `W/"${++version}"`, text: letters(next, "abcdefgh", size, size) };
+          if (size > limits.piece && size <= limits.one) seen.long++;
+          await memory.set(url, answer);
+        } else if (roll < 0.8) {
+          await read(url, where);
         } else if (roll < 0.9) {
-          const want = model.find(([kept]) => kept === url);
-          expect([round, step, real.get(url)]).toEqual([round, step, want?.[1]]);
-          if (want) model = [...model.filter(([kept]) => kept !== url), want];
+          await memory.delete(url);
         } else {
-          real.delete(url);
-          model = model.filter(([kept]) => kept !== url);
+          // Another object over the same store. Nothing having been stopped under the one
+          // before, every address reads to it as it read to that one.
+          const was = shaken ? null : await Promise.all(urls.map((u) => memory.get(u)));
+          memory = start();
+          shaken = false;
+          if (was) expect([...where, await Promise.all(urls.map((u) => memory.get(u)))]).toEqual([...where, was]);
+          for (const u of urls) await read(u, where);
         }
-        const held = model.reduce((sum, [u, a]) => sum + cost(u, a), 0);
-        expect([round, step, real.size(), real.held()]).toEqual([round, step, model.length, held]);
-        expect([real.size() <= most, real.held() <= room]).toEqual([true, true]);
+        const stopped = s.state.hit;
+        s.state.left = Number.POSITIVE_INFINITY;
+        if (stopped) {
+          seen.stops++;
+          if (answer && answer.text.length <= limits.one) begun.set(url, [...(begun.get(url) ?? []), answer]);
+          // Stopped because the object was put away, as often as not; or the store failed
+          // under an object that lives on.
+          if (next() < 0.5) {
+            memory = start();
+            shaken = false;
+          } else {
+            seen.livedOn++;
+            shaken = true;
+          }
+        } else if (answer && answer.text.length > limits.one) {
+          kept.delete(url);
+          begun.delete(url);
+          expect([...where, await memory.get(url)]).toEqual([...where, undefined]);
+        } else if (answer) {
+          kept.set(url, answer);
+          begun.delete(url);
+          // The one just kept is there to be read, whatever went to make room for it: by this
+          // object, and by the next.
+          if (!shaken && next() < 0.3) {
+            memory = start();
+            seen.carried++;
+          }
+          expect([...where, await memory.get(url)]).toEqual([...where, answer]);
+          if (!shaken) {
+            // No more is kept than there is room for (the one just kept aside, if it is by
+            // itself more than the room), nor more answers than the most.
+            const sizes = Object.values(index().entries).map((e) => e.size);
+            const total = sizes.reduce((sum, size) => sum + size, 0);
+            expect([...where, total <= Math.max(limits.room, answer.text.length), sizes.length <= limits.most]).toEqual(
+              [...where, true, true],
+            );
+          }
+        } else if (roll >= 0.8 && roll < 0.9) {
+          kept.delete(url);
+          begun.delete(url);
+          expect([...where, await memory.get(url)]).toEqual([...where, undefined]);
+          if (!shaken && next() < 0.3) expect([...where, await start().get(url)]).toEqual([...where, undefined]);
+        }
+        // Whatever happened: each place holds its first so many pieces with none missing, a
+        // place holds no more than the longest answer has, and the places are few.
+        const places = new Map<number, number[]>();
+        for (const key of pieceKeys()) {
+          const [, id, n] = /^gh:a:(\d+):(\d+)$/.exec(key) ?? [];
+          places.set(Number(id), [...(places.get(Number(id)) ?? []), Number(n)]);
+        }
+        for (const [id, ns] of places) {
+          ns.sort((a, b) => a - b);
+          expect([...where, id, ns]).toEqual([...where, id, ns.map((_, n) => n)]);
+          expect([...where, id <= limits.most, ns.length <= longest]).toEqual([...where, true, true]);
+        }
+        // A change that finished, in an object nothing was stopped under, left nothing more
+        // behind than there was; and where nothing is ever stopped, nothing is ever left.
+        if (!stopped && !shaken) {
+          seen.strict++;
+          expect([...where, stray().length <= strayBefore]).toEqual([...where, true]);
+        }
+        if (calm) expect([...where, stray()]).toEqual([...where, []]);
       }
-      // What is left is exactly the model's, each under its own address.
-      for (const url of urls) expect(real.get(url)).toEqual(model.find(([kept]) => kept === url)?.[1]);
     }
+    // The run did read answers back, find nothing, stop changes part-way (under objects put
+    // away and under ones that lived on), carry answers to a new object, and keep long ones.
+    expect([
+      seen.wholes > 3_000,
+      seen.nothings > 3_000,
+      seen.stops > 400,
+      seen.livedOn > 200,
+      seen.carried > 700,
+      seen.long > 1_500,
+      seen.strict > 7_000,
+    ]).toEqual([true, true, true, true, true, true, true]);
+  });
+
+  /** A store that counts what is written to it, by key. */
+  function counting(inner: MemoryStore & { kept: Map<string, unknown> }) {
+    const puts = new Map<string, number>();
+    const deletes = new Map<string, number>();
+    const store: MemoryStore = {
+      get: (key) => inner.get(key),
+      put: async (key, value) => {
+        puts.set(key, (puts.get(key) ?? 0) + 1);
+        await inner.put(key, value);
+      },
+      delete: async (key) => {
+        deletes.set(key, (deletes.get(key) ?? 0) + 1);
+        await inner.delete(key);
+      },
+    };
+    return { store, puts, deletes, reset: () => (puts.clear(), deletes.clear()) };
+  }
+
+  test("a change writes the line it changes, and nothing else of the index", async () => {
+    const inner = mapStore();
+    const c = counting(inner);
+    const clock = { t: 1_000_000 };
+    const memory = githubMemory(c.store, { now: () => clock.t });
+    for (const n of [0, 1, 2]) await memory.set(`u${n}`, { etag: `W/"${n}"`, text: `answer ${n}` });
+    // Keeping another writes its pieces, its line, and the list of
+    // places (a place was taken) — and no other line, and never the
+    // one value the index was once kept in.
+    c.reset();
+    await memory.set("u3", { etag: 'W/"3"', text: "answer 3" });
+    expect([...c.puts.keys()].sort()).toEqual(["gh:a:3:0", "gh:index:3", "gh:index:ids"]);
+    expect(c.puts.has("gh:index")).toBe(false);
+    // Keeping over an answer already kept writes its pieces and its
+    // line only: no place was taken or let go, so the list stands.
+    c.reset();
+    await memory.set("u3", { etag: 'W/"3b"', text: "answer 3 again" });
+    expect([...c.puts.keys()].sort()).toEqual(["gh:a:3:0", "gh:index:3"]);
+    expect(c.deletes.size).toBe(0);
+    // Letting one go clears its pieces, lets its line go, and rewrites
+    // the list — and no other line.
+    c.reset();
+    await memory.delete("u3");
+    expect([...c.puts.keys()]).toEqual(["gh:index:ids"]);
+    expect([...c.deletes.keys()].sort()).toEqual(["gh:a:3:0", "gh:index:3"]);
+    // A read of a stale answer marks it still wanted, writing its
+    // line only: a read is one small write, not the whole index.
+    c.reset();
+    clock.t += 7 * 60 * 60_000;
+    expect(await memory.get("u0")).toEqual({ etag: 'W/"0"', text: "answer 0" });
+    expect([...c.puts.keys()]).toEqual(["gh:index:0"]);
+    expect(c.deletes.size).toBe(0);
+  });
+
+  test("a store still holding the index in one value is read from it, and its lines are written out in the new shape", async () => {
+    const inner = mapStore();
+    const kept = { etag: 'W/"kept"', text: "kept under the one value" };
+    await githubMemory(inner).set("u", kept);
+    await githubMemory(inner).set("v", { etag: 'W/"also"', text: "and another" });
+    // Put the store back as it was before the lines were kept apart:
+    // the lines and the list away, the one value in their place.
+    const whole = storedIndex(inner.kept);
+    inner.kept.delete("gh:index:ids");
+    for (const entry of Object.values(whole.entries)) inner.kept.delete(`gh:index:${entry.id}`);
+    inner.kept.set("gh:index", whole);
+    // Another object reads both answers from the one value — and the
+    // store now holds the lines apart and the list, and not the value.
+    const memory = githubMemory(inner);
+    expect(await memory.get("u")).toEqual(kept);
+    expect(await memory.get("v")).toEqual({ etag: 'W/"also"', text: "and another" });
+    expect(inner.kept.has("gh:index")).toBe(false);
+    expect(inner.kept.get("gh:index:ids")).toEqual([0, 1]);
+    expect(storedIndex(inner.kept).entries.u).toMatchObject({ etag: kept.etag, size: kept.text.length });
+    expect(await githubMemory(inner).get("u")).toEqual(kept);
+    // And a change from there writes lines, never the one value again.
+    await memory.delete("v");
+    expect(inner.kept.has("gh:index")).toBe(false);
+    expect(await githubMemory(inner).get("v")).toBeUndefined();
+  });
+});
+
+describe("the console's direct-mode setting", () => {
+  test("writes both direct-mode choices and dispatches the apply workflow, optionally refreshing tokens", async () => {
+    const state = { worker: { direct: "off" } };
+    const calls: { argv: string[]; stdin?: string }[] = [];
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async (argv, options) => {
+      calls.push({ argv, stdin: options?.stdin });
+      const path = argv.find((part) => part.includes("/contents/infra/pm-cloudflare/state.json"));
+      if (path && !argv.includes("-X")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ sha: "state-sha", content: btoa(JSON.stringify(state)) }),
+          stderr: "",
+        };
+      }
+      if (path && argv.includes("-X")) {
+        const body = JSON.parse(options?.stdin ?? "{}");
+        Object.assign(state.worker, JSON.parse(atob(body.content)).worker);
+      }
+      return { code: 0, stdout: "", stderr: "" } satisfies RunResult;
+    });
+    const table = actions(ops, new Work(ops));
+
+    expect(await ops.edgeDirect(true)).toEqual({ on: true, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("on");
+    expect(await ops.edgeDirect(false)).toEqual({ on: false, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("off");
+    expect(await ops.edgeDirect(true, true)).toEqual({ on: true, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("on");
+
+    const bodies = calls.map((call) => call.stdin && JSON.parse(call.stdin));
+    expect(bodies.filter(Boolean)).toEqual([
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "false" } },
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "false" } },
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "true" } },
+    ]);
+    expect(table["edge.direct"].audit({ on: true, refreshTokens: true })).toEqual({ on: true, refreshTokens: true });
+    expect(HOLDABLE.has("edge.direct")).toBe(false);
+    expect(calls.every((call) => !call.argv.includes("expose.py"))).toBe(true);
+
+    const invalid = await ops.edgeDirect(false, true).catch((error) => error);
+    expect(invalid.status).toBe(400);
+  });
+});
+
+describe("the console's Cloudflare apply provenance (#13495)", () => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const run = (over: Record<string, unknown>) => ({
+    name: "pm-console-cloudflare config",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    head_branch: "main",
+    head_sha: sha("a"),
+    updated_at: "2026-11-25T03:00:00Z",
+    html_url: "https://github.com/developing-today/code/actions/runs/1",
+    triggering_actor: { login: "dezren39" },
+    ...over,
+  });
+  // Newest first, as GitHub lists them: a still-running dispatch and a
+  // failed one sit above the latest success, and a successful push run
+  // (validation only — pushes never apply) above an older success.
+  const runs = [
+    run({ status: "in_progress", conclusion: null, updated_at: "2026-11-25T06:00:00Z", head_sha: sha("e") }),
+    run({ conclusion: "failure", updated_at: "2026-11-25T05:00:00Z", head_sha: sha("d") }),
+    run({
+      updated_at: "2026-11-25T04:00:00Z",
+      head_sha: sha("c"),
+      html_url: "https://github.com/developing-today/code/actions/runs/3",
+    }),
+    run({ event: "push", updated_at: "2026-11-25T04:30:00Z", head_sha: sha("b") }),
+    run({ updated_at: "2026-11-25T02:00:00Z", head_sha: sha("a") }),
+  ];
+
+  test("only the latest successful apply is shown, with its source, SHA, completion time and URL", async () => {
+    const calls: string[][] = [];
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async (argv) => {
+      calls.push(argv);
+      return { code: 0, stdout: JSON.stringify({ workflow_runs: runs }), stderr: "" } satisfies RunResult;
+    });
+    expect(await ops.cloudflareApply()).toEqual({
+      apply: {
+        source: "pm-console-cloudflare config, dispatched by dezren39",
+        commit: sha("c"),
+        at: "2026-11-25T04:00:00Z",
+        url: "https://github.com/developing-today/code/actions/runs/3",
+      },
+    });
+    // A read only: one runs query, no dispatch, no write, no secret read.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].join(" ")).toContain("actions/workflows/pm-cloudflare-config.yml/runs?");
+    expect(calls[0].join(" ")).toContain("event=workflow_dispatch");
+    expect(calls.flat()).not.toContain("-X");
+    expect(calls.flat().join(" ")).not.toContain("dispatches");
+    expect(calls.flat().join(" ")).not.toContain("secrets");
+  });
+
+  test("no successful apply on record reads back as provenance unavailable", async () => {
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        workflow_runs: [
+          run({ conclusion: "failure" }),
+          run({ status: "in_progress", conclusion: null }),
+          run({ event: "push" }),
+          run({ head_branch: "xaltha/some-branch" }),
+        ],
+      }),
+      stderr: "",
+    }));
+    expect(await ops.cloudflareApply()).toEqual({ apply: null });
+    expect(latestApply(null)).toBeNull();
+    expect(latestApply({ workflow_runs: "nope" })).toBeNull();
+    // A malformed success is passed over, not trusted.
+    expect(
+      latestApply({ workflow_runs: [run({ head_sha: "not-a-sha" }), run({ updated_at: "whenever" })] }),
+    ).toBeNull();
   });
 });

@@ -221,6 +221,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Typecheck = set.String("script.check")
 	lim.TypeCheckOnError = set.String("script.checkOnError")
 	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
+	lim.CheckJs = set.Bool("script.checkJs")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
 	lim.ImportsOnMissing = set.String("script.importsOnMissing")
@@ -336,6 +337,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("source is required"))
 		return
 	}
+	// The script's generated client is rendered from the cached catalogue;
+	// on a cold daemon that would be empty (same hazard as handleClient).
+	s.warmIfCold(r.Context())
 	// Before any run path below, so a script that reaches a server waiting for
 	// a secret is refused now and not after its first statement has run.
 	if refusal := s.refuseUnreadyScript(req); refusal != nil {

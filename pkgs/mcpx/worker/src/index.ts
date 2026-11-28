@@ -61,6 +61,10 @@ export interface Env extends OAuthEnv {
   // secret of the same name; canonical value in fleet secrets as
   // mcpx.machine-bearer.
   MACHINE_BEARER: string;
+  // The commit this deployment was built from, stamped per deploy as
+  // a plain-text var (#15793 criterion 1); absent/blank when the deploy
+  // was unstamped, in which case /version answers "unknown".
+  VERSION?: string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -68,6 +72,15 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** The #15793 criterion-1 answer: the deployed commit from the
+ * VERSION var (stamped per deploy), or "unknown" unstamped — the
+ * `version`-field shape the edge probe reads (commitOf in
+ * pm-stack/console/edge/src/worker-checks.ts). */
+export function versionAnswer(env: Env): { ok: true; service: string; version: string } {
+  const version = typeof env.VERSION === "string" ? env.VERSION.trim() : "";
+  return { ok: true, service: "mcpx", version: version || "unknown" };
 }
 
 async function isAuthorizedMcpCaller(request: Request, env: Env): Promise<boolean> {
@@ -84,6 +97,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // #15793 criterion 1: unauthenticated, ahead of every other
+    // route — it reads no state and no secret.
+    if (path === "/version") {
+      if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+      return json(versionAnswer(env));
+    }
 
     if (path === "/healthz") {
       return json({ ok: true, service: "mcpx" });

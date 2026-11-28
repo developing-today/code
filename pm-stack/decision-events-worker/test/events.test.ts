@@ -68,6 +68,45 @@ describe("auth helpers", () => {
   });
 });
 
+describe("health", () => {
+  test("reports the exact build version supplied by the deployment", async () => {
+    const deployedCommit = "0123456789abcdef0123456789abcdef01234567";
+    const env = {
+      VERSION: deployedCommit,
+      WEBHOOK_SECRET: "s3cr3t",
+      DB: {} as D1Database,
+      SET_EVENTS: {} as DurableObjectNamespace,
+    } as unknown as Env;
+
+    const response = await worker.fetch(new Request("https://worker/health"), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "decision-events",
+      webhookConfigured: true,
+      version: deployedCommit,
+    });
+  });
+
+  test("does not claim a commit when the deployment has not supplied one", async () => {
+    const env = {
+      WEBHOOK_SECRET: "s3cr3t",
+      DB: {} as D1Database,
+      SET_EVENTS: {} as DurableObjectNamespace,
+    } satisfies Env;
+
+    const response = await worker.fetch(new Request("https://worker/health"), env);
+
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "decision-events",
+      webhookConfigured: true,
+      version: "unknown",
+    });
+  });
+});
+
 describe("groupBySet", () => {
   test("groups preserving order", () => {
     const parsed = parseEventBatch([ev("e1"), ev("e2", "set-2"), ev("e3")]);
@@ -84,9 +123,37 @@ describe("DecisionSetEvents & POST /events fan-out retry", () => {
     const doStorage = new Map<string, unknown>();
     const doInstance = new DecisionSetEvents({
       storage: {
-        get: async <T>(k: string) => doStorage.get(k) as T | undefined,
-        put: async (k: string, v: unknown) => {
-          doStorage.set(k, v);
+        // Mirror the real Durable Object storage contract: a multi-key
+        // get returns a Map, put also accepts a record of entries, and
+        // delete/list exist. The per-id seen store (#14865) uses all of
+        // these, so a single-key-only fake silently breaks ingest.
+        get: async <T>(k: string | string[]) => {
+          if (Array.isArray(k)) {
+            const out = new Map<string, T>();
+            for (const key of k) if (doStorage.has(key)) out.set(key, doStorage.get(key) as T);
+            return out;
+          }
+          return doStorage.get(k) as T | undefined;
+        },
+        put: async (k: string | Record<string, unknown>, v?: unknown) => {
+          if (typeof k === "string") {
+            doStorage.set(k, v);
+          } else {
+            for (const [key, value] of Object.entries(k)) doStorage.set(key, value);
+          }
+        },
+        delete: async (k: string | string[]) => {
+          const keys = Array.isArray(k) ? k : [k];
+          let n = 0;
+          for (const key of keys) if (doStorage.delete(key)) n += 1;
+          return n;
+        },
+        list: async (options?: { prefix?: string }) => {
+          const out = new Map<string, unknown>();
+          for (const key of [...doStorage.keys()].sort()) {
+            if (!options?.prefix || key.startsWith(options.prefix)) out.set(key, doStorage.get(key));
+          }
+          return out;
         },
       },
       getWebSockets: () => [],

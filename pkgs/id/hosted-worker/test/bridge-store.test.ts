@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { BRIDGE_SCHEMA, BridgeStore, type WaitingLimits } from "../src/bridge-store.ts";
 import { importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 function fakeSql() {
   const db = new DatabaseSync(":memory:");
@@ -57,13 +57,19 @@ test("a chain is accepted in order; heads and canonical shape follow", async () 
   const store = makeStore();
   const events = await chainOf(key, 3);
   const outcomes = store.ingestBatch(events, NOW);
-  assert.deepEqual(outcomes.map((o) => o.kind), ["accepted", "accepted", "accepted"]);
+  assert.deepEqual(
+    outcomes.map((o) => o.kind),
+    ["accepted", "accepted", "accepted"],
+  );
   const chain = store.chainOf(key.publicHex);
   assert.equal(chain.next_seq, 3);
   assert.equal(chain.head, events[2].id);
   assert.equal(chain.frozen, false);
   const shape = store.canonical();
-  assert.deepEqual(shape.applied[key.publicHex], events.map((e) => e.id));
+  assert.deepEqual(
+    shape.applied[key.publicHex],
+    events.map((e) => e.id),
+  );
   assert.deepEqual(shape.waiting, []);
 });
 
@@ -84,7 +90,10 @@ test("out-of-order delivery waits, then releases in chain order", async () => {
   const store = makeStore();
   const [e0, e1, e2] = await chainOf(key, 3);
   const first = store.ingestBatch([e2, e1], NOW);
-  assert.deepEqual(first.map((o) => o.kind), ["waiting", "waiting"]);
+  assert.deepEqual(
+    first.map((o) => o.kind),
+    ["waiting", "waiting"],
+  );
   const second = store.ingestBatch([e0], NOW + 1);
   assert.equal(second[0].kind, "accepted");
   if (second[0].kind === "accepted") {
@@ -114,8 +123,18 @@ test("an equal-height fork freezes the chain at the fork point", async () => {
   const key = await importIdKey(new Uint8Array(32).fill(26));
   const store = makeStore();
   const [e0] = await chainOf(key, 1);
-  const a1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("a") });
-  const b1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("b") });
+  const a1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("a"),
+  });
+  const b1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("b"),
+  });
   store.ingestBatch([e0, a1], NOW);
   const forkOutcome = store.ingestBatch([b1], NOW + 1);
   assert.equal(forkOutcome[0].kind, "fork");
@@ -133,7 +152,12 @@ test("an equal-height fork freezes the chain at the fork point", async () => {
   if (refused[0].kind === "refused") assert.equal(refused[0].reason, "frozen");
   // A third rival at the fork point with a lower ID replaces the
   // proof (the two-lowest rule); with a higher ID it is refused.
-  const c1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("c") });
+  const c1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("c"),
+  });
   const third = store.ingestBatch([c1], NOW + 3);
   const expectedPair = [a1.id, b1.id, c1.id].sort().slice(0, 2);
   const pairChanged = expectedPair[0] !== first || expectedPair[1] !== second;
@@ -154,7 +178,12 @@ test("a held rival forks with the newcomer (proof from the pool)", async () => {
   const missing = new Uint8Array(32).fill(99);
   const a1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", after: [missing] });
   assert.equal(store.ingestBatch([a1], NOW)[0].kind, "waiting");
-  const b1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("b") });
+  const b1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("b"),
+  });
   const outcome = store.ingestBatch([b1], NOW + 1);
   assert.equal(outcome[0].kind, "fork");
   const [first, second] = [a1.id, b1.id].sort();
@@ -165,8 +194,18 @@ test("a fork proof header is present for dependencies and duplicates", async () 
   const key = await importIdKey(new Uint8Array(32).fill(28));
   const store = makeStore();
   const [e0] = await chainOf(key, 1);
-  const a1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("a") });
-  const b1 = await signEvent(key, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("b") });
+  const a1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("a"),
+  });
+  const b1 = await signEvent(key, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("b"),
+  });
   store.ingestBatch([e0, a1, b1], NOW);
   // Re-delivering a proof header is a duplicate.
   assert.equal(store.ingestBatch([a1], NOW + 1)[0].kind, "duplicate");
@@ -185,7 +224,10 @@ test("waiting caps refuse with waiting_full", async () => {
   for (const k of keys) {
     outcomes.push(store.ingestBatch([await signEvent(k, { seq: 0, kind: "message", after: [missing] })], NOW)[0]);
   }
-  assert.deepEqual(outcomes.map((o) => o.kind), ["waiting", "waiting", "waiting"]);
+  assert.deepEqual(
+    outcomes.map((o) => o.kind),
+    ["waiting", "waiting", "waiting"],
+  );
   // Per-author cap: a second author is fine, the capped author is not.
   const capped = makeStore({ perAuthor: 1, total: 100, maxAgeMs: 60_000 });
   const k1 = await importIdKey(new Uint8Array(32).fill(34));
@@ -230,7 +272,18 @@ function checkpointDraft(segmentSeq: bigint, prev: Uint8Array | null, headerFill
       [T("root"), B(new Uint8Array(32).fill(2))],
     ],
   };
-  return [["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment]] }]] as [string, CborValue][];
+  return [
+    [
+      "checkpoint",
+      {
+        kind: "map",
+        value: [
+          [T("header"), header],
+          [T("segment"), segment],
+        ],
+      },
+    ],
+  ] as [string, CborValue][];
 }
 
 test("checkpoint predecessors: accept the next segment, refuse a skip, wait on a gap", async () => {
@@ -238,22 +291,40 @@ test("checkpoint predecessors: accept the next segment, refuse a skip, wait on a
   const store = makeStore();
   const cp0 = await signEvent(key, { seq: 0, kind: "session.checkpoint", extra: checkpointDraft(0n, null) });
   assert.equal(store.ingestBatch([cp0], NOW)[0].kind, "accepted");
-  const cp1 = await signEvent(key, { seq: 1, backlink: cp0.idBytes, kind: "session.checkpoint", extra: checkpointDraft(1n, cp0.idBytes) });
+  const cp1 = await signEvent(key, {
+    seq: 1,
+    backlink: cp0.idBytes,
+    kind: "session.checkpoint",
+    extra: checkpointDraft(1n, cp0.idBytes),
+  });
   assert.equal(store.ingestBatch([cp1], NOW)[0].kind, "accepted");
   // Segment 5 naming cp1 as predecessor: not the previous segment.
-  const cpSkip = await signEvent(key, { seq: 2, backlink: cp1.idBytes, kind: "session.checkpoint", extra: checkpointDraft(5n, cp1.idBytes) });
+  const cpSkip = await signEvent(key, {
+    seq: 2,
+    backlink: cp1.idBytes,
+    kind: "session.checkpoint",
+    extra: checkpointDraft(5n, cp1.idBytes),
+  });
   const refused = store.ingestBatch([cpSkip], NOW)[0];
   assert.equal(refused.kind, "refused");
   if (refused.kind === "refused") assert.equal(refused.reason, "malformed");
   // A checkpoint naming an unknown predecessor waits.
   const other = await importIdKey(new Uint8Array(32).fill(37));
-  const orphan = await signEvent(other, { seq: 0, kind: "session.checkpoint", extra: checkpointDraft(1n, new Uint8Array(32).fill(55)) });
+  const orphan = await signEvent(other, {
+    seq: 0,
+    kind: "session.checkpoint",
+    extra: checkpointDraft(1n, new Uint8Array(32).fill(55)),
+  });
   assert.equal(store.ingestBatch([orphan], NOW)[0].kind, "waiting");
   // A checkpoint naming ANOTHER author's checkpoint as predecessor —
   // even with the same session header copied — is not the previous
   // segment of its own session chain: refused as malformed.
   const third = await importIdKey(new Uint8Array(32).fill(38));
-  const foreign = await signEvent(third, { seq: 0, kind: "session.checkpoint", extra: checkpointDraft(1n, cp0.idBytes) });
+  const foreign = await signEvent(third, {
+    seq: 0,
+    kind: "session.checkpoint",
+    extra: checkpointDraft(1n, cp0.idBytes),
+  });
   const foreignOutcome = store.ingestBatch([foreign], NOW)[0];
   assert.equal(foreignOutcome.kind, "refused");
   if (foreignOutcome.kind === "refused") assert.equal(foreignOutcome.reason, "malformed");

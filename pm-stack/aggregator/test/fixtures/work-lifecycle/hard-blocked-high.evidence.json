@@ -1,0 +1,79 @@
+{
+  "work": {
+    "authority_id": "fleet-authority",
+    "work_id": "9469"
+  },
+  "broker": {
+    "state": "present",
+    "value": {
+      "task_id": "task-9469",
+      "status": "queued",
+      "worker_id": null,
+      "lane_id": null,
+      "lease_until": null,
+      "attempts": 0,
+      "max_attempts": 3,
+      "manual_only": false,
+      "park": null,
+      "block": null,
+      "binding": {
+        "progress_session_id": null,
+        "ledger_session_id": "not_read"
+      },
+      "eligibility": {
+        "state": "ineligible",
+        "reason_codes": ["hard_blocker"],
+        "hard_blocker_refs": ["fleet://work/9"]
+      }
+    },
+    "source": "fleet_broker",
+    "observed_at": "2026-11-25T11:59:00Z"
+  },
+  "sessions": {
+    "state": "absent",
+    "reason": "not_sourced"
+  },
+  "remote": {
+    "state": "present",
+    "value": {
+      "issue_state": "open",
+      "prs": [],
+      "follow_ups": []
+    },
+    "source": "github",
+    "observed_at": "2026-11-25T11:59:00Z"
+  },
+  "project_status": {
+    "state": "absent",
+    "reason": "not_sourced"
+  },
+  "completion": {
+    "state": "present",
+    "value": {
+      "verified_terminal_receipt": false,
+      "receipt_ref": null
+    },
+    "source": "completion_policy",
+    "observed_at": "2026-11-25T11:59:00Z"
+  },
+  "policy": {
+    "high_or_above": {
+      "state": "present",
+      "value": true,
+      "source": "priority_policy",
+      "observed_at": "2026-11-25T11:59:00Z"
+    },
+    "explicitly_prepared": {
+      "state": "absent",
+      "reason": "not_sourced"
+    },
+    "owner_assigned": {
+      "state": "absent",
+      "reason": "not_sourced"
+    },
+    "triage_required": {
+      "state": "absent",
+      "reason": "not_sourced"
+    }
+  }
+}

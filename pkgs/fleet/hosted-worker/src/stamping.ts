@@ -15,10 +15,10 @@
 //     queue fields stamp null — the design §5 rule for work that is
 //     not queue-originated. A test (or #12589) injects a source
 //     behind this interface without touching the route.
-//   - MetadataStore: the metadata DB is #9074's deliverable (design
-//     §3.1: "the create path inserts the full record into the
-//     metadata database"); a Turso-backed store replaces the fixture
-//     behind this interface. Insert failure semantics live in the
+//   - MetadataStore: D1MetadataStore (#15456) persists the complete
+//     record JSON and extracted keys behind this interface when
+//     QUEUE_D1 is bound; the fixture is the local/dev fallback.
+//     Insert failure semantics live in the
 //     route: a failed insert never loses the GitHub item — ingestion
 //     (#12590, design §7.3) heals it.
 
@@ -96,6 +96,15 @@ export interface MetadataStore {
    * the same matcher the query surface applies to GitHub-fallback
    * candidates, so both sources answer a filter identically. */
   list(bindingId: string, filter: MetadataFilter): Promise<MetadataRecord[]>;
+  /** Every row stored for one repo, across tenancies (#14312).
+   * The divergence report's operator seam: orphan detection must
+   * see rows whose item has vanished from GitHub, including rows
+   * no tenancy list could attribute. This does NOT widen the
+   * query door — its per-tenancy `list` rule above stands; this
+   * seam is for the ingestion door's operator surfaces (backfill
+   * runs, divergence reports), which are service surfaces, not
+   * per-tenancy reads. */
+  listRepo(repo: string): Promise<MetadataRecord[]>;
 }
 
 /** A Metadata query filter (#12587; #9060 §13 query path, design
@@ -187,6 +196,15 @@ export class FixtureMetadataStore implements MetadataStore {
     for (const row of this.rows.values()) {
       if (row.bindingId !== bindingId) continue;
       if (!matchesMetadataFilter(row, filter)) continue;
+      out.push(cloneRecord(row));
+    }
+    return out;
+  }
+
+  async listRepo(repo: string): Promise<MetadataRecord[]> {
+    const out: MetadataRecord[] = [];
+    for (const row of this.rows.values()) {
+      if (row.repo !== repo) continue;
       out.push(cloneRecord(row));
     }
     return out;

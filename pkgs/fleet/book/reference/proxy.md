@@ -4,7 +4,7 @@ The session proxy is the broker every sandbox seat talks through to reach the la
 
 The broker's services map (port → service) is built in: 4799 laptop-agent, 4800 secrets-broker, 4801 queue-broker, 21118 rustdesk. The session broker socket defaults to `~/.cache/laptop-agent/broker.sock` (`FLEET_BROKER_SOCKET` / `[proxy] broker_socket`).
 
-The domain's argv0 alias is `laptop-agent-broker`. Capabilities: `proxy-serve` (serve), `proxy-connect` (connect/init/get/put/ssh — present in every build), `proxy-raw-splice` (splice).
+The domain's argv0 alias is `laptop-agent-broker`. Capabilities: `proxy-serve` (serve), `proxy-connect` (connect/init/get/put/copy/ssh — present in every build), `proxy-raw-splice` (splice).
 
 See also [fleet serve](serve.md) and [Proxy, sessions and recovery](../concepts/proxy.md).
 
@@ -214,6 +214,36 @@ $ fleet proxy put ./result.tar /home/user/build/result.tar
 ```
 
 Uploads the file in 2 MiB chunks; the destination only appears once its hash verifies.
+
+## fleet proxy copy
+
+```
+fleet proxy copy [--mode OCTAL] [--no-resume] <source> <destination>
+```
+
+| Flag          | Argument | Default          | Meaning                                                        |
+| ------------- | -------- | ---------------- | -------------------------------------------------------------- |
+| `--mode`      | `OCTAL`  | as `put` / `get` | File mode at the destination.                                  |
+| `--no-resume` | —        | off (resume on)  | Do not resume from an existing deterministic temp; start over. |
+
+### Behaviour
+
+Copies one file between any two hosts. Each side is a local path or `NAME:PATH`, parsed the scp way: a colon whose prefix is non-empty and holds no `/` makes the side remote, so `./odd:name` stays local. `local`, `localhost` and this host's own fleet location mean the local host; every other name must be a known remote (today `laptop`). Local to remote is a put and remote to local is a get, with the same hash-verified chunked transfer and atomic rename. Remote to remote relays through this host: it downloads into a local spool, uploads from it, checks that both hashes match and always removes the spool. Local to local is refused (use `cp`). Directories and stdin/stdout stay with `put -r`, `get -` and `put -`.
+
+### Exit codes
+
+- `0` — ok, hash verified and rename committed.
+- `2` — usage (including an unknown remote name or a missing or directory source).
+- `3` — transport.
+- `69` — capability unavailable.
+
+### Example
+
+```console
+$ fleet proxy copy sandbox:/home/hatch/t.txt laptop:/home/user/t.txt
+```
+
+Run on the sandbox, `sandbox` is this host, so this is a put to the laptop.
 
 ## fleet proxy splice
 

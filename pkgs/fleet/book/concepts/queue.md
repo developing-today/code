@@ -3,7 +3,11 @@
 The queue is the fleet's shared work queue: one queue of _tasks_ (units of
 repo work), served by the queue broker over a dedicated Turso store, with a
 GitHub-issue-comment fallback queue behind it. The client surface is
-`fleet queue` (argv0 alias `repo-queue`) with 32 verbs. Inside the binary,
+`fleet queue` (argv0 alias `repo-queue`) with 40 verbs. The count is one per
+dispatch arm of `run()` in the client, which is also the command list
+`fleet help queue` prints from the registry: `history` (an alias of
+`timeline`) counts as its own verb, and `dispatch`, `session` and
+`surfaces` count as three. Inside the binary,
 every per-verb usage string spells the program `repo-queue`; the two
 spellings are the same code path.
 
@@ -117,6 +121,25 @@ omitting it leaves such tasks unclaimed. No claimable task is
 `{"task": null}`, exit **5**, with counts (`queued`, `at_cap_queued`,
 `queued_not_yet_due`, `parked_due`) explaining why.
 
+A claim may instead name several tasks at once: `--tasks <id,id,...>`
+(#9178 §3) claims each named task for the claiming session in one
+operation and reports a per-task outcome — `claimed`,
+`already-owned-by-this-session`, `skipped-claimed`, `not-found`, or
+`failed` with a reason. Tasks claimed by another worker are skipped
+with their claims unchanged; `--take-over` transfers a named
+live-claimed task directly from its recorded holder session, with
+both sides of the transfer on the claimed event. Repeating
+`--task <id>` names the same batch. The named form
+never picks: it combines with neither a single `--task`, `--count`,
+`--from-session`, `--manual-override`, `--handoff`, nor `--bind`.
+
+An enqueue may set the task's top-level `manual_only` flag. It defaults to
+false and is persisted on the task row with the enqueue audit event. Automatic
+default and handoff picks always skip flagged tasks, regardless of priority or
+queue depth; an explicit by-ID claim can still take one. The task remains in
+listings with a `(manual-only)` status marker, distinct from parked or blocked
+work. Changes to this flag must be audit logged.
+
 ## Leases and heartbeat
 
 A _lease_ is the claim's expiry. Claim's default lease is **2700 s
@@ -124,9 +147,11 @@ A _lease_ is the claim's expiry. Claim's default lease is **2700 s
 lease is born expired. `fleet agent next` claims with a 14,400 s (4-hour)
 lease instead, because 45 minutes lapses mid-task.
 
-`heartbeat` extends the lease: `lease_until = now + extend_seconds`, default
-extend **900 s (15 minutes)**, range 1..=86400 — note the asymmetry: a
-heartbeat adds 900 s, not a fresh 2700 s, unless told otherwise. It may also
+`heartbeat` keeps the later of the current deadline and the time of the
+heartbeat plus `extend_seconds`. The default renewal window is **900 s
+(15 minutes)**, range 1..=86400. A heartbeat five minutes into a four-hour
+claim preserves the original four-hour deadline. A default heartbeat five
+minutes before expiry moves the deadline ten minutes later. It may also
 merge a progress value (`--progress` / `--progress-file`, mutually
 exclusive). `checkpoint` records progress plus a required `--stage` (the
 help line brackets it optional; the source requires it — missing `--stage`
@@ -334,6 +359,65 @@ verified pre-rebase tip), open PR, merge, mark landed, post the outcome note
 codes: 0 landed or idle, **4** a conflict was recorded `conflicted` and
 routed to its authoring lane, **3** any other step failure (the intent is
 left `replaying` and a later `replay` resumes it).
+
+## Journal checkpoints and handoffs
+
+Alongside the task-row model above, the queue crate carries a pure
+reference model for session resumption: the journal checkpoint and the
+handoff snapshot, in `crates/fleet-queue/src/work/journal.rs` (JRN-03
+of #9465, PR #14346; design §3.4 of the #9208
+typed-dependencies / notes / journal field-authority component). The
+module is a pure model — no I/O, no storage, no queue — and it is
+not the `checkpoint` verb: the verb records progress and a stage on a
+task row, while a journal checkpoint is the durable snapshot a later
+session resumes a work item from. It is not a transcript and not a
+completion claim.
+
+A checkpoint (wire schema `fleet.journal-checkpoint/v1`) carries the
+work reference and the per-work journal stream sequence it was taken
+at, the objective, the steps done and still outstanding, the important
+paths, the branch and head commit it was taken at, the test state at
+that moment, the hard blocker edges in force, the per-source activity
+cursor refs and the hydration ref it was hydrated from, and one
+suggested next action. Both halves of the commit identity are
+required — a snapshot that cannot name its commit cannot be resumed
+or audited. The test state's passed / pending / failed buckets are
+disjoint by validation: a test recorded in two buckets is a typed
+rejection, so a pending test is never shown passed. Cursor refs
+(#9207), hydration generations (#9207) and blocker-edge targets are
+carried as opaque typed references; their formats stay with their
+owners, and the lifecycle command that writes checkpoints is #9206's,
+not this module's.
+
+Checkpoints are private by construction: visibility is always
+`private`, validated rather than assumed, and a payload presenting any
+other visibility is rejected, never silently projected. Important
+paths are screened the same way — a path naming a secret-bearing
+location is a typed rejection. Every rejection is a typed
+`CheckpointError` (`invalid_schema`, `unsupported_version`,
+`non_private_visibility`, `secret_path`, `missing_commit_identity`,
+`conflicting_test_state`) that mutates nothing. Checkpoints are
+append-only: editing one produces a new checkpoint whose `supersedes`
+names the original, which stays addressable and unchanged.
+
+Freshness is explicit. A checkpoint is current only when nothing has
+superseded it and the journal stream has not moved past the sequence
+it was taken at; every other case projects as stale, carrying the
+checkpoint sequence, the current sequence and the superseding
+checkpoint, when one exists. The resume projection a new session
+starts from carries that freshness on its face, so a stale checkpoint
+never projects as current.
+
+A handoff (wire schema `fleet.journal-handoff/v1`) records an
+ownership transfer only: the work reference, the checkpoint the new
+owner resumes from, the previous and new owners, and the lease
+transfer result — released, takeover confirmed, or pending (neither
+release nor takeover confirmed). It deliberately has no completion
+field, and projecting it over a workflow state returns that state
+unchanged: a handoff never implies completion. This is a different
+record from the broker's handoff sink that `claim --handoff` picks
+from: the sink routes a task, the handoff reference attests a
+transfer.
 
 ## The Turso store
 

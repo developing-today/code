@@ -16,7 +16,14 @@
       "parent": { "type": "database_id", "database_id": "db-alpha" },
       "properties": {
         "Name": { "id": "title", "type": "title", "title": {} },
-        "Archived": { "id": "checkbox", "type": "checkbox", "checkbox": {} }
+        "Archived": { "id": "checkbox", "type": "checkbox", "checkbox": {} },
+        "Status": {
+          "id": "status",
+          "type": "select",
+          "select": {
+            "options": [{ "name": "Open", "color": "green" }, { "name": "Done", "color": "gray" }]
+          }
+        }
       }
     }
   ],

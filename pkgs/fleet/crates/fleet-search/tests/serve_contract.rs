@@ -167,6 +167,7 @@ fn start() -> Harness {
         limits: RuntimeLimits::default(),
         shards: None,
         shard_refresh: std::time::Duration::from_secs(60),
+        source_registry: None,
     };
     let handle = start_server(settings, engine).expect("service starts on loopback");
     Harness {

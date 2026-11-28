@@ -23,6 +23,18 @@
 //! the broker knows its own verified completions locally and
 //! absorbs the re-filing itself, no probe involved.
 //!
+//! One completed kind is not completed issue work (#16007,
+//! widened #16349): a triage task completes by filing its fix
+//! follow-on, so a completed triage row must NOT absorb a triage
+//! re-filing in either the dedupe-key check or the
+//! completed-identity check below — the fresh triage task is the
+//! reassessment an open labelled issue asks for, and `/coverage`
+//! (live rows only) must be able to see it afterwards. A re-triage
+//! re-serves no fix work: the follow-on it files carries the
+//! deterministic fix key, still absorbed by the #13091 done-fix
+//! rule, and a closed issue retires the revival at claim time
+//! (#10626).
+//!
 //! Only kinds that work one issue one way take part: small_fix,
 //! triage, and pr_shepherd (per PR set). ci_investigation,
 //! second_pass and feature_slice are recurring by design and file
@@ -42,12 +54,17 @@ pub struct WorkIdentity {
     pub repo: String,
     pub issue: i64,
     pub family: String,
+    /// Canonical prompt-store ID; set only for prompt tasks.
+    pub prompt_id: Option<String>,
     /// The shepherded PRs, sorted; empty for other families.
     pub prs: Vec<i64>,
 }
 
 impl WorkIdentity {
     pub fn key(&self) -> String {
+        if let Some(prompt_id) = &self.prompt_id {
+            return format!("{}#{}", self.repo, prompt_id);
+        }
         let mut key = format!("{}#{}:{}", self.repo, self.issue, self.family);
         if !self.prs.is_empty() {
             let prs: Vec<String> = self.prs.iter().map(i64::to_string).collect();
@@ -64,6 +81,7 @@ pub fn kind_family(kind: &str) -> Option<&'static str> {
         "small_fix" => Some("fix"),
         "triage" => Some("triage"),
         "pr_shepherd" => Some("pr_shepherd"),
+        "prompt" => Some("prompt"),
         _ => None,
     }
 }
@@ -78,11 +96,25 @@ pub fn work_identity(row: &Value) -> Option<WorkIdentity> {
     }
     let kind = payload.get("kind").and_then(|v| v.as_str())?;
     let family = kind_family(kind)?;
-    let issue = payload
-        .get("issue")
-        .and_then(|i| i.get("number"))
-        .and_then(|n| n.as_i64())
-        .filter(|n| *n > 0)?;
+    let prompt_id = if kind == "prompt" {
+        Some(
+            payload
+                .pointer("/prompt/id")
+                .and_then(Value::as_str)?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let issue = if kind == "prompt" {
+        0
+    } else {
+        payload
+            .get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(|n| n.as_i64())
+            .filter(|n| *n > 0)?
+    };
     let repo = task_repo_identity(row);
     if !repo.contains('/') {
         return None;
@@ -118,6 +150,7 @@ pub fn work_identity(row: &Value) -> Option<WorkIdentity> {
         repo,
         issue,
         family: family.to_string(),
+        prompt_id,
         prs,
     })
 }
@@ -165,17 +198,30 @@ pub(crate) fn live_identity_holder(
     identity: &WorkIdentity,
     kind: &str,
 ) -> Result<Option<Value>, TErr> {
-    let rows = t.query_objs(
-        &format!(
-            "SELECT {TASK_COLS} FROM tasks \
-             WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
-               AND json_extract(payload, '$.kind') = ? \
-               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
-             ORDER BY id ASC"
-        ),
-        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
-        &TASK_JSON_COLS,
-    )?;
+    let rows = if kind == "prompt" {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
+                   AND json_extract(payload, '$.kind') = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string())],
+            &TASK_JSON_COLS,
+        )?
+    } else {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
+                   AND json_extract(payload, '$.kind') = ? \
+                   AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+            &TASK_JSON_COLS,
+        )?
+    };
     Ok(rows.into_iter().find(|row| holds_identity(row, identity)))
 }
 
@@ -188,20 +234,69 @@ pub(crate) fn done_identity_holder(
     identity: &WorkIdentity,
     kind: &str,
 ) -> Result<Option<Value>, TErr> {
-    let rows = t.query_objs(
-        &format!(
-            "SELECT {TASK_COLS} FROM tasks \
-             WHERE status = 'done' \
-               AND json_extract(payload, '$.kind') = ? \
-               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
-             ORDER BY id ASC"
-        ),
-        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
-        &TASK_JSON_COLS,
-    )?;
+    let rows = if kind == "prompt" {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status = 'done' \
+                   AND json_extract(payload, '$.kind') = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string())],
+            &TASK_JSON_COLS,
+        )?
+    } else {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status = 'done' \
+                   AND json_extract(payload, '$.kind') = ? \
+                   AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+            &TASK_JSON_COLS,
+        )?
+    };
     Ok(rows
         .into_iter()
         .find(|row| holds_completed_identity(row, identity)))
+}
+
+/// The machine-readable report when an enqueue's dedupe key already
+/// names the returned row (#10627, fleet-monitor ask 2026-11-25): the
+/// filing was absorbed and nothing was created, and the reply must
+/// say so in a field of its own — a bare row reads as a successful
+/// filing, and a completed row returned this way left `queue/queued`
+/// issues holding no live task and no signal (the monitor sampled
+/// tasks 18037, 22316, 22051, 23610 returned for fresh filings).
+/// `terminal` separates the completed predecessor (the caller
+/// suffixes the key and re-files in the same pass) from a live hit
+/// (the caller attaches follow-ups to the holder).
+pub fn dedupe_match_detail(row: &Value, terminal: bool) -> Value {
+    let (rule, hint) = if terminal {
+        (
+            "dedupe_key_terminal",
+            "the dedupe key already belongs to a completed task; no new task was \
+             filed — suffix the dedupe key to file this work again, or file with \
+             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
+        )
+    } else {
+        (
+            "dedupe_key_live",
+            "the dedupe key already has a live task; no new task was filed — \
+             attach follow-ups to the existing task, or file with \
+             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
+        )
+    };
+    json!({
+        "rule": rule,
+        "task_id": row.get("id").cloned().unwrap_or(Value::Null),
+        "status": row.get("status").cloned().unwrap_or(Value::Null),
+        "queue": row.get("queue").cloned().unwrap_or(Value::Null),
+        "dedupe_key": row.get("dedupe_key").cloned().unwrap_or(Value::Null),
+        "hint": hint,
+    })
 }
 
 /// The machine-readable collision a deduped enqueue reports.
@@ -239,6 +334,40 @@ mod tests {
         // queue that names no owner/repo gives no identity (fail open).
         let bare = json!({"kind": "triage", "issue": {"number": 5}});
         assert!(work_identity(&task("queued", bare)).is_none());
+    }
+
+    #[test]
+    fn prompt_identity_uses_submission_id_not_source_issue() {
+        let prompt = |id: &str| {
+            json!({
+                "kind": "prompt", "repo": "developing-today/code",
+                "issue": {"number": 10032}, "prompt": {"id": id}
+            })
+        };
+        let first = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000001"),
+        ))
+        .unwrap();
+        let repeated = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000001"),
+        ))
+        .unwrap();
+        let distinct = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000002"),
+        ))
+        .unwrap();
+        assert_eq!(
+            first.key(),
+            "developing-today/code#prompt:00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(first, repeated, "same submission ID must dedupe");
+        assert_ne!(
+            first, distinct,
+            "different submission IDs remain distinct on the same issue"
+        );
     }
 
     #[test]
@@ -333,6 +462,48 @@ mod tests {
         assert_eq!(c["status"], "claimed");
         assert_eq!(c["identity"], "developing-today/code#5:fix");
         assert_eq!(c["rule"], "open_work_identity");
+    }
+
+    #[test]
+    fn dedupe_match_is_machine_readable() {
+        let done = json!({"id": 7, "status": "done", "queue": "q", "dedupe_key": "k"});
+        let m = dedupe_match_detail(&done, true);
+        assert_eq!(m["rule"], "dedupe_key_terminal");
+        assert_eq!(m["task_id"], 7);
+        assert_eq!(m["status"], "done");
+        assert_eq!(m["dedupe_key"], "k");
+        let live = json!({"id": 8, "status": "claimed", "queue": "q", "dedupe_key": "k"});
+        let m = dedupe_match_detail(&live, false);
+        assert_eq!(m["rule"], "dedupe_key_live");
+        assert_eq!(m["task_id"], 8);
+        assert_eq!(m["status"], "claimed");
+    }
+
+    #[test]
+    fn triage_refiling_is_never_absorbed_by_done_rows_16349() {
+        // #16349 oracle: a triage re-file is a reassessment, never
+        // re-served work, so NEITHER completed-work absorption in
+        // verb_enqueue consults anything before reviving it — no
+        // follow-on status check, no holder lookup. The same-key
+        // terminal hit and the done work-identity holder both skip
+        // kind triage unconditionally; every other kind keeps the
+        // #13091 absorption (both terminal reports remain in the
+        // enqueue body).
+        let src = include_str!("claim.rs");
+        let start = src.find("fn verb_enqueue(").unwrap();
+        let body = &src[start..];
+        assert!(
+            !body.contains("triage_recovery_filing("),
+            "triage revive is unconditional; the follow-on check is gone"
+        );
+        // Completed non-triage work still absorbs: both terminal
+        // reports remain in the enqueue body, each behind its own
+        // triage gate.
+        let key_branch = body.find("dedupe_match_detail(row, true)").unwrap();
+        let ident_branch = body.find("done_work_identity").unwrap();
+        assert_eq!(body.matches("kind != \"triage\"").count(), 2);
+        assert!(body[..key_branch].rfind("kind != \"triage\"").is_some());
+        assert!(body[..ident_branch].rfind("kind != \"triage\"").is_some());
     }
 
     #[test]

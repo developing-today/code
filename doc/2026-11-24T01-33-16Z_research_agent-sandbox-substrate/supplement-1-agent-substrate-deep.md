@@ -1,8 +1,8 @@
 # Supplement 1 — Agent Substrate deep-dive research note
 
-*Research lane note, 2026-11-23 (America/Chicago). Web research only. All
+_Research lane note, 2026-11-23 (America/Chicago). Web research only. All
 performance figures are vendor/project claims unless explicitly labelled
-independent. Primary sources preferred; secondary sources flagged.*
+independent. Primary sources preferred; secondary sources flagged._
 
 ## TL;DR
 
@@ -14,20 +14,20 @@ Isolation is **gVisor (`runsc`) or Cloud Hypervisor microVMs (via Kata) —
 plain containers are explicitly not supported**. It was accepted into the
 **CNCF Sandbox** in autumn 2026 and Google announced the donation,
 alongside gVisor and OpenRL, on **5 Nov 2026**, the same day **v1.0.0**
-shipped and **Agent Substrate on GKE** went GA. It is *not* an agent SDK
-and *not* the separate `kubernetes-sigs/agent-sandbox` project.
+shipped and **Agent Substrate on GKE** went GA. It is _not_ an agent SDK
+and _not_ the separate `kubernetes-sigs/agent-sandbox` project.
 
 ## 1. What it is, origin, CNCF status, licence
 
-| Fact | Detail |
-|---|---|
-| What | "Security-hardened, zero-trust runtime for sandboxed agents, engineered to safely run millions of agents and tools with 10x higher density than standard containers" — README. "A low-opinion runtime, not an agent SDK"; workloads need not literally be AI agents, but autonomous, untrusted, mostly-idle agents are the target. Runs standard OCI images; framework-agnostic (ADK, LangChain, Claude Code, Codex, Antigravity, MCP servers listed). |
-| Originator | Google. Public development / repo creation **13 May 2026** (GitHub repo metadata; CNCF page confirms first commit 13 May 2026). First introduced publicly May 2026 alongside Agent Sandbox on GKE. |
-| Repo | **https://github.com/agent-substrate/substrate** — org `agent-substrate`. Docs site: `ate.dev`; learning site: `learn.agentsubstrate.dev`. Language: Go. |
-| Licence | **Apache-2.0**. v1.0.0 release notes include: copyright changed to "The Agent Substrate Authors" on donation. |
-| CNCF status | **Sandbox**. Donated alongside **gVisor** and **OpenRL**, both also Sandbox; Google says gVisor is "on a path toward Incubation." |
+| Fact                        | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What                        | "Security-hardened, zero-trust runtime for sandboxed agents, engineered to safely run millions of agents and tools with 10x higher density than standard containers" — README. "A low-opinion runtime, not an agent SDK"; workloads need not literally be AI agents, but autonomous, untrusted, mostly-idle agents are the target. Runs standard OCI images; framework-agnostic (ADK, LangChain, Claude Code, Codex, Antigravity, MCP servers listed).                                                                                 |
+| Originator                  | Google. Public development / repo creation **13 May 2026** (GitHub repo metadata; CNCF page confirms first commit 13 May 2026). First introduced publicly May 2026 alongside Agent Sandbox on GKE.                                                                                                                                                                                                                                                                                                                                     |
+| Repo                        | **https://github.com/agent-substrate/substrate** — org `agent-substrate`. Docs site: `ate.dev`; learning site: `learn.agentsubstrate.dev`. Language: Go.                                                                                                                                                                                                                                                                                                                                                                               |
+| Licence                     | **Apache-2.0**. v1.0.0 release notes include: copyright changed to "The Agent Substrate Authors" on donation.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| CNCF status                 | **Sandbox**. Donated alongside **gVisor** and **OpenRL**, both also Sandbox; Google says gVisor is "on a path toward Incubation."                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Dates — discrepancy flagged | Google Cloud Blog (2026-11-05): donation announced "following their acceptance **last month** into the CNCF Sandbox," at KubeCon NA, Salt Lake City, Nov 9–12. Sandbox application is **cncf/sandbox#523** (gVisor #521, OpenRL #518). **CNCF's project page says "accepted to CNCF on September 28, 2026."** Secondary trackers say application created 2026-09-08, closed as accepted **2026-10-20**. Not reconcilable from a single primary source — "accepted Sept–Oct 2026, donation announced 5 Nov 2026" is the safe statement. |
-| Managed sibling | **Agent Substrate on GKE** GA 5 Nov 2026. Distinct again from Google's **Agent Compute Engine** (Titanium microVM service) and from **kubernetes-sigs/agent-sandbox**. Secondary coverage frequently conflates these three — do not. |
+| Managed sibling             | **Agent Substrate on GKE** GA 5 Nov 2026. Distinct again from Google's **Agent Compute Engine** (Titanium microVM service) and from **kubernetes-sigs/agent-sandbox**. Secondary coverage frequently conflates these three — do not.                                                                                                                                                                                                                                                                                                   |
 
 ## 2. Architecture
 
@@ -43,21 +43,23 @@ resources," and Pod startup (seconds) dwarfs agent turns (ms–low seconds).
 ### Components (from `docs/concepts/architecture.md` on `main`, and learn.agentsubstrate.dev/topology)
 
 **Control plane**
+
 - **`ate-api-server` / `ateapi`** — "the brain." gRPC API (mTLS :443);
   scheduler (claims a ready worker), workflow engine for
   Resume/Suspend/Revert/Delete; golden-snapshot reconciler. AuthN via
   mTLS + OIDC, per-atespace authZ with an embedded **OpenFGA** model.
 - **State store: PostgreSQL** — atespaces, ActorTemplates, Actors,
   Workers, ActorAssignments, tags, leases. Bundled StatefulSet by
-  default; BYO / Cloud SQL supported. *Docs-lag warning: older material
+  default; BYO / Cloud SQL supported. _Docs-lag warning: older material
   describes `ateapi` as backed by Redis/Valkey — current `main` says
-  PostgreSQL.*
+  PostgreSQL._
 - **`ate-controller`** — reconciles `WorkerPool` CRDs into worker
   Deployments; resolves/protects `SandboxConfig`s.
 - **`ate-idp-server`** — OIDC discovery / JWKS for actor JWTs.
 - **`podcertificate-controller`** — signs pod certificates / SPIFFE pod identity.
 
 **Data plane (per node / per worker)**
+
 - **`atelet`** — DaemonSet, mTLS gRPC :21998. Receives
   Run/Checkpoint/Restore, stages runtimes/images, drives the worker over
   a Unix socket, moves snapshots via its sidecar, keeps node-local
@@ -70,13 +72,14 @@ resources," and Pod startup (seconds) dwarfs agent turns (ms–low seconds).
   `CONNECT` tunnel to it (:8443), it forwards to the Actor over a private
   veth; also intercepts actor egress.
 - **`objectstore-plugin`** — sidecar to `atelet` and `ate-api-server`;
-  the *only* component holding object-storage credentials. Backends:
+  the _only_ component holding object-storage credentials. Backends:
   **GCS or S3**.
 
 **Networking (`atenet`)**
+
 - **`atenet-router`** — ingress gateway, Envoy (default) or AgentGateway.
   Client names the target in header **`ate-target-actor:
-  <atespace>/<actor>`**; it calls `ResumeActor`, **parks** the request
+<atespace>/<actor>`**; it calls `ResumeActor`, **parks** the request
   while the actor resumes, then tunnels it.
 - **`atenet-egress`** — egress gateway / policy enforcement point.
   Terminates `atunnel` CONNECT, identifies the actor, enforces
@@ -86,6 +89,7 @@ resources," and Pod startup (seconds) dwarfs agent turns (ms–low seconds).
   reachable" — architecture doc, verbatim limitation.
 
 **Security model (README)**
+
 - Every actor treated as untrusted / mutually hostile.
 - Per-actor short-lived **SPIFFE X.509** certificate by default; egress
   gateway can mint per-actor JWTs on demand.
@@ -95,14 +99,14 @@ resources," and Pod startup (seconds) dwarfs agent turns (ms–low seconds).
 
 ### Kubernetes integration — CRDs vs. API records
 
-| Resource | Where it lives |
-|---|---|
-| `WorkerPool` | **K8s CRD** — pool of warm worker pods; reconciled to a Deployment; selects a sandbox class |
-| `SandboxConfig` | **K8s CRD, cluster-scoped** — sandbox runtime versions/assets per class (`gvisor` or `microvm`); a memory restore requires a worker offering that runtime |
-| `CSIDriverConfig` | **K8s CRD** (per topology docs) |
-| `Atespace` | Substrate API / Postgres — logical grouping + identity scope; *not* a K8s namespace |
-| `ActorTemplate` | Substrate API / Postgres — immutable actor-version: OCI image (digest), CPU/memory, env, volumes, snapshot config |
-| `Actor`, `Worker`, `ActorAssignment` | Substrate API / Postgres — high-frequency dynamic state |
+| Resource                             | Where it lives                                                                                                                                            |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkerPool`                         | **K8s CRD** — pool of warm worker pods; reconciled to a Deployment; selects a sandbox class                                                               |
+| `SandboxConfig`                      | **K8s CRD, cluster-scoped** — sandbox runtime versions/assets per class (`gvisor` or `microvm`); a memory restore requires a worker offering that runtime |
+| `CSIDriverConfig`                    | **K8s CRD** (per topology docs)                                                                                                                           |
+| `Atespace`                           | Substrate API / Postgres — logical grouping + identity scope; _not_ a K8s namespace                                                                       |
+| `ActorTemplate`                      | Substrate API / Postgres — immutable actor-version: OCI image (digest), CPU/memory, env, volumes, snapshot config                                         |
+| `Actor`, `Worker`, `ActorAssignment` | Substrate API / Postgres — high-frequency dynamic state                                                                                                   |
 
 CLI: **`kubectl-ate`** plugin; installer: `ate-setup`. Supported K8s:
 **only latest stable + previous minor** (at Nov 2026: **1.37 / 1.36**);
@@ -115,7 +119,7 @@ Autopilot not supported** (secondary reporting of GKE docs).
    Pods, idle and waiting.
 2. Developer creates an `ActorTemplate` → Substrate boots it once and
    bakes a **"golden snapshot" (Version 0)**.
-3. `CreateActor` creates *only a Postgres record*, state `SUSPENDED`,
+3. `CreateActor` creates _only a Postgres record_, state `SUSPENDED`,
    pointing at the golden snapshot — no pod, no sandbox yet.
 4. Request → router parks it → control plane claims a worker →
    `atelet`/`ateworker` restores the golden (first run) or the actor's
@@ -133,7 +137,7 @@ Autopilot not supported** (secondary reporting of GKE docs).
 - **Not plain containers.** A WorkerPool is single-class, and **a gVisor
   checkpoint cannot be restored on a microVM worker and vice-versa**.
 - Each actor gets its own sandbox, cgroup, and network namespaces
-  *inside* a shared Worker Pod — a worker hosts *many* actors
+  _inside_ a shared Worker Pod — a worker hosts _many_ actors
   concurrently. Older v0.x-era write-ups saying "one actor per worker"
   are superseded.
 
@@ -147,7 +151,7 @@ An **Actor** = one agent session, holding:
 - **Filesystem state** — container rootfs writable overlay + durable volumes
 - **Environment** — env vars, filesystem, network rules from its template
 - **Discrete identity** — atespace/name, SPIFFE identity, egress policy —
-  held by Substrate/gateways, *not* by the pod and *not* (credentials)
+  held by Substrate/gateways, _not_ by the pod and _not_ (credentials)
   inside the sandbox
 
 Fidelity is tiered, via `snapshotConfig.preferredFidelity`:
@@ -158,13 +162,13 @@ Fidelity is tiered, via `snapshotConfig.preferredFidelity`:
 3. **`MEMORY`** (default) — `ROOTFS` + full process tree and RAM.
 
 Ties: `MEMORY`/`ROOTFS` state is tied to the `ActorTemplate` UID;
-`MEMORY` is *also* tied to the `sandboxRuntime` version. Changing
+`MEMORY` is _also_ tied to the `sandboxRuntime` version. Changing
 template while suspended keeps only `VOLUMES`; if no worker offers the
 snapshot's runtime version, resume **falls back to `ROOTFS` + cold boot**.
 
 State machine: `SUSPENDED → RESUMING → RUNNING → SUSPENDING → SUSPENDED`,
 plus `CRASHED`; `RevertActor` discards in-progress state and returns to
-the last *durable* snapshot.
+the last _durable_ snapshot.
 
 ### Decoupling, concretely
 
@@ -185,7 +189,7 @@ worker pods.
 
 **Technology verdict: NOT CRIU.** No primary source describes Substrate
 using CRIU. CRIU appears only in GitHub issue #121 (external proposal)
-asking for a pluggable backend *including* a hypothetical CRIU option.
+asking for a pluggable backend _including_ a hypothetical CRIU option.
 The real mechanisms:
 
 - **gVisor:** gVisor's **native `runsc` checkpoint/restore**
@@ -200,7 +204,7 @@ The real mechanisms:
   volume dirs as **tars** and cold-boot.
 - **Compression:** secondary sources consistently describe snapshots as
   **zstd-compressed**; not found in the primary architecture doc — treat
-  as *well-attested secondary, not primary-verified*.
+  as _well-attested secondary, not primary-verified_.
 
 **Suspend** (explicit/API-triggered per primary docs; no primary
 statement of an automatic idle-timeout value found):
@@ -224,14 +228,14 @@ statement of an automatic idle-timeout value found):
 2. `ate-api-server` scheduler claims a warm worker (Postgres records,
    atomic assignment).
 3. That node's `atelet` downloads the snapshot from object storage
-   *unless* the actor still has locality on that node, then calls
+   _unless_ the actor still has locality on that node, then calls
    `RestoreWorkload`: gVisor restore or microVM `userfaultfd` restore.
 4. `atelet` returns the worker pod IP; state → `RUNNING`; router opens
    mTLS CONNECT to that worker's `atunnel`, which forwards the parked
    request to the actor port.
 
 **Tags:** snapshots can be tagged per-atespace — an immutable
-alias/retention pin holding its *own copy* of the snapshot.
+alias/retention pin holding its _own copy_ of the snapshot.
 
 ### Known limitations
 
@@ -245,7 +249,7 @@ alias/retention pin holding its *own copy* of the snapshot.
   containers isn't supported"** and gVisor "can't snapshot live CUDA
   contexts" — inference must run outside the sandbox. NVIDIA's Substrate
   post says GPU support is being (re)built on **Dynamic Resource
-  Allocation (DRA)**. *Conflict noted:* Google's Nov 5 Cloud Blog says
+  Allocation (DRA)**. _Conflict noted:_ Google's Nov 5 Cloud Blog says
   gVisor in general "supports GPUs, TPUs, and checkpoint/restore
   natively." The Substrate-on-GKE limitation is the operative one today.
 - **Durability window (async default):** until background upload
@@ -255,7 +259,7 @@ alias/retention pin holding its *own copy* of the snapshot.
   exposure.
 - **Cross-node resume is expensive:** an actor with locality is
   effectively pinned; if its node has no free worker, upload then
-  download happen *in series, while the request waits* (5–10 s on fast
+  download happen _in series, while the request waits_ (5–10 s on fast
   disks, ~30 s p50 on a saturated default disk in the load test, vs <1 s
   local).
 - **Snapshot size / storage cost is the real price.** Cost ≈ snapshot
@@ -273,12 +277,12 @@ alias/retention pin holding its *own copy* of the snapshot.
 - **GKE-only constraints (managed path):** Standard clusters only, no
   Autopilot, ≥1.37, Dataplane V2, `c3-standard-4` or larger recommended —
   per secondary reporting of the GKE install guide; the GKE doc pages
-  were not fetched directly in this lane, so treat as *reported*.
+  were not fetched directly in this lane, so treat as _reported_.
 
 **Could NOT verify — do not assume:**
 
-- **Clocks:** No Substrate-specific clock documentation found. *gVisor
-  upstream* semantics (inherited on the default class):
+- **Clocks:** No Substrate-specific clock documentation found. _gVisor
+  upstream_ semantics (inherited on the default class):
   `CLOCK_MONOTONIC` does **not** count checkpointed time;
   `CLOCK_BOOTTIME` and `CLOCK_REALTIME` **jump forward** by the suspended
   duration, and timers that fell due during suspension expire on restore.
@@ -292,30 +296,30 @@ alias/retention pin holding its *own copy* of the snapshot.
 
 ## 4. Maturity
 
-| Signal | Value |
-|---|---|
-| Age | Repo created 13 May 2026 — ~6 months old at 1.0. |
-| Releases | **12 releases/tags**. Known sequence: v0.1.0 (2026-09-10, secondary tracker), v0.4.0 (13 Oct), v0.6.0 (25 Oct), v1.0.0-rc.1 (29 Oct), -rc.2 (4 Nov), -rc.3 (5 Nov), **v1.0.0 "Fully armed and operational" (5 Nov 2026**; incl. Envoy 1.39.5, Kata assets 4.3.1, gVisor 20261026.0), **v1.0.1 (20 Nov 2026** — per secondary trackers: `atenet-egress` hardening + Go 1.27.4; *release page not opened directly*). Pre-1.0 minors were **reinstall-only, no in-place upgrade**. |
-| 1.0 promise | README at 1.0: compatibility/stability commitment for public API, CLI, config. *Counter-signal:* NVIDIA's integration post reportedly warns APIs are still changing. |
-| Activity | **8,224 stars, 911 forks, 1,790 commits** at fetch (23 Nov). Growth: ~2.0k stars (Sept), ~5.4k (Oct), 6,610 (14 Nov), 8,224 (23 Nov). Very active. |
-| Contributors — discrepancy | Google (5 Nov): "**more than 100 contributors**"; secondary GitHub-API count ~**129** (14 Nov), "40+ organizations". **CNCF LFX Insights shows 1,088 total contributors / 217 organizations** — irreconcilable, almost certainly a different counting method. Use "~100–130 human contributors, Google + Solo.io led"; LFX number unverified. CNCF health score: 76. |
-| Maintainers/ecosystem | Google is steward; Solo.io co-maintains (per secondary) and shipped **kagent 1.0** rebuilt on Substrate; NVIDIA contributing upstream. Weekly Thursday community meeting, CNCF Slack `#substrate-users`/`#substrate-dev`. |
-| Production users — careful | **Substrate-specific, primary-sourced:** Nous Research — "early design partner… building Hermes Enterprise on it" (Google; *building*, not claimed in production); **SPIRITT** — building SPIRITT Workspace on Agent Substrate on GKE, CEO quote about running customer agents (strongest production-adjacent claim); **kagent** — "already powers other CNCF projects like kagent" (Google). **Warning:** Anthropic, OpenAI, Modal, Snowflake, Ant Group, Tencent, Northflank are cited by Google as **gVisor** production users, *not* Agent Substrate users. **No independent, named, direct-Substrate production deployment was verified.** |
-| Docs quality | Substantial for a 6-month project: full architecture concept doc, security guide + threat model, API/CLI references, demos, docs site (`ate.dev`) + learn site, benchmarking harness in-repo (`glutton` synthetic workload, `agentsession`/Locust scenario). **But:** fast churn leaves stale material (pre-1.0 READMEs still indexed by pkg.go.dev with different perf numbers; Redis-vs-Postgres contradiction in older docs; GKE limitations live in GKE docs, not launch posts). Docs are candid about trade-offs. No published external security audit found. |
+| Signal                     | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Age                        | Repo created 13 May 2026 — ~6 months old at 1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Releases                   | **12 releases/tags**. Known sequence: v0.1.0 (2026-09-10, secondary tracker), v0.4.0 (13 Oct), v0.6.0 (25 Oct), v1.0.0-rc.1 (29 Oct), -rc.2 (4 Nov), -rc.3 (5 Nov), **v1.0.0 "Fully armed and operational" (5 Nov 2026**; incl. Envoy 1.39.5, Kata assets 4.3.1, gVisor 20261026.0), **v1.0.1 (20 Nov 2026** — per secondary trackers: `atenet-egress` hardening + Go 1.27.4; _release page not opened directly_). Pre-1.0 minors were **reinstall-only, no in-place upgrade**.                                                                                                                                                                 |
+| 1.0 promise                | README at 1.0: compatibility/stability commitment for public API, CLI, config. _Counter-signal:_ NVIDIA's integration post reportedly warns APIs are still changing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Activity                   | **8,224 stars, 911 forks, 1,790 commits** at fetch (23 Nov). Growth: ~2.0k stars (Sept), ~5.4k (Oct), 6,610 (14 Nov), 8,224 (23 Nov). Very active.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Contributors — discrepancy | Google (5 Nov): "**more than 100 contributors**"; secondary GitHub-API count ~**129** (14 Nov), "40+ organizations". **CNCF LFX Insights shows 1,088 total contributors / 217 organizations** — irreconcilable, almost certainly a different counting method. Use "~100–130 human contributors, Google + Solo.io led"; LFX number unverified. CNCF health score: 76.                                                                                                                                                                                                                                                                            |
+| Maintainers/ecosystem      | Google is steward; Solo.io co-maintains (per secondary) and shipped **kagent 1.0** rebuilt on Substrate; NVIDIA contributing upstream. Weekly Thursday community meeting, CNCF Slack `#substrate-users`/`#substrate-dev`.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Production users — careful | **Substrate-specific, primary-sourced:** Nous Research — "early design partner… building Hermes Enterprise on it" (Google; _building_, not claimed in production); **SPIRITT** — building SPIRITT Workspace on Agent Substrate on GKE, CEO quote about running customer agents (strongest production-adjacent claim); **kagent** — "already powers other CNCF projects like kagent" (Google). **Warning:** Anthropic, OpenAI, Modal, Snowflake, Ant Group, Tencent, Northflank are cited by Google as **gVisor** production users, _not_ Agent Substrate users. **No independent, named, direct-Substrate production deployment was verified.** |
+| Docs quality               | Substantial for a 6-month project: full architecture concept doc, security guide + threat model, API/CLI references, demos, docs site (`ate.dev`) + learn site, benchmarking harness in-repo (`glutton` synthetic workload, `agentsession`/Locust scenario). **But:** fast churn leaves stale material (pre-1.0 READMEs still indexed by pkg.go.dev with different perf numbers; Redis-vs-Postgres contradiction in older docs; GKE limitations live in GKE docs, not launch posts). Docs are candid about trade-offs. No published external security audit found.                                                                              |
 
 ## 5. Performance numbers published
 
 ### Vendor/project claims (no independent verification, no published methodology in launch posts)
 
-| Claim | Source / wording |
-|---|---|
-| Resume **<500 ms** | Current README + both Google blogs. Scope (per Qovery's reading): restore of memory+disk onto an *already-warm* worker. |
-| **>500 activations/sec** | Current README + Google Cloud Blog: "more than 500 suspend and resume activations per second." A "200,000 agents" figure in one secondary summary could not be located in primary posts — unverified. |
-| **10× density** vs standard containers; **10×–30× oversubscription** | README; demo: ~250 actors on 8 pods. |
-| Cold-start baseline beaten: **>20 s** | Google Open Source Blog: scale-to-zero rebuild "climbs past 20 seconds." |
-| Idle premise: agents idle **90–95%** of the time | Google Open Source Blog. The entire density arithmetic depends on this. |
-| **Conflicting older numbers** | An older README snapshot still served by pkg.go.dev claims **<400 ms** resume and **>1,500 activations/sec**. Current `main` README says <500 ms / >500/sec. The project has *lowered* (or re-scoped) its headline numbers at 1.0 — cite only the current pair. |
-| North-star *targets* (not results) | Architecture doc: activation latency **100 ms p95**, throughput **1,000 wakeups/sec/cluster**, scale target **1 billion** actors/cluster — aspirations, explicitly labelled targets. |
+| Claim                                                                | Source / wording                                                                                                                                                                                                                                                |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Resume **<500 ms**                                                   | Current README + both Google blogs. Scope (per Qovery's reading): restore of memory+disk onto an _already-warm_ worker.                                                                                                                                         |
+| **>500 activations/sec**                                             | Current README + Google Cloud Blog: "more than 500 suspend and resume activations per second." A "200,000 agents" figure in one secondary summary could not be located in primary posts — unverified.                                                           |
+| **10× density** vs standard containers; **10×–30× oversubscription** | README; demo: ~250 actors on 8 pods.                                                                                                                                                                                                                            |
+| Cold-start baseline beaten: **>20 s**                                | Google Open Source Blog: scale-to-zero rebuild "climbs past 20 seconds."                                                                                                                                                                                        |
+| Idle premise: agents idle **90–95%** of the time                     | Google Open Source Blog. The entire density arithmetic depends on this.                                                                                                                                                                                         |
+| **Conflicting older numbers**                                        | An older README snapshot still served by pkg.go.dev claims **<400 ms** resume and **>1,500 activations/sec**. Current `main` README says <500 ms / >500/sec. The project has _lowered_ (or re-scoped) its headline numbers at 1.0 — cite only the current pair. |
+| North-star _targets_ (not results)                                   | Architecture doc: activation latency **100 ms p95**, throughput **1,000 wakeups/sec/cluster**, scale target **1 billion** actors/cluster — aspirations, explicitly labelled targets.                                                                            |
 
 ### Independent measurement (the only one found)
 
@@ -353,7 +357,7 @@ post-dates that and partially fills the gap for v0.6.0 only.
 2. v1.0.1 release contents (secondary trackers only) and the full
    12-release date list.
 3. Contributor count (100+ / ~129 / LFX 1,088 mutually inconsistent).
-4. Zstd as the snapshot codec from a *primary* source.
+4. Zstd as the snapshot codec from a _primary_ source.
 5. Any Substrate-specific statement on randomness/entropy across restore,
    or snapshot encryption at rest.
 6. GKE-docs limitations quoted verbatim from Google (reported consistently
@@ -365,6 +369,7 @@ post-dates that and partially fills the gap for v0.6.0 only.
 ## Sources
 
 **Primary**
+
 - Google Cloud Blog, "Open infrastructure for autonomous agents comes to
   CNCF" (2026-11-05):
   https://cloud.google.com/blog/products/containers-kubernetes/open-infrastructure-for-autonomous-agents-comes-to-cncf
@@ -387,6 +392,7 @@ post-dates that and partially fills the gap for v0.6.0 only.
   Agents at Scale": https://developer.nvidia.com/blog/?p=124728
 
 **Independent / secondary (labelled as such in text)**
+
 - Cofano, independent load test (v0.6.0, GKE):
   https://medium.com/google-cloud/from-20-to-120-agent-sessions-on-three-gke-nodes-tuning-agent-substrate-9979589a9da2
 - Qovery, primary-source roundup (2026-11-18):

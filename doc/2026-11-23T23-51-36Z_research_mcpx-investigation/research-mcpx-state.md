@@ -108,20 +108,20 @@ Anything not verified is labelled as such.
   replacing probe**. The pin's comment is a dated shrink log (#8467–#8474 chains,
   2026-11-17 → 2026-11-23).
 - **The exemption tail is exactly 8 settings** (pin = 8, verified 2026-11-23):
-  | Setting | Written reason (abridged) | Probe shape it needs |
-  |---|---|---|
-  | `daemon.inlineStartPoll` | lifecycle/timing: a bound/interval the isolated harness cannot vary deterministically | a harness that can observe inline-start readiness timing |
-  | `daemon.tsnet.hostname` | lifecycle/binding: a network identity the harness cannot vary | a tailnet the harness controls |
-  | `daemon.tsnetUpTimeout` | tsnet bring-up needs a tailnet the harness does not have | same |
-  | `http.streamBufferInit` | allocation-capacity hint only; allocation size is not a stable e2e behaviour oracle | an allocation-observing oracle, or a contract decision that the hint is probe-exempt by kind |
-  | `embeddings.wasmPath` | needs a compiled wasm model fixture the harness does not provide; no embed-exporting model ships with the repo | a small embed-exporting wasm fixture model in-tree |
-  | `plugin.instructions` | read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host | JS-host e2e probes (the #8472 pattern that cleared 11 sibling plugin.* exemptions on 2026-11-23) |
-  | `plugin.disabledTools` | same | same |
-  | `protoTasks.cancelGrace` | task-store cancellation timing; covered by internal/tasks store tests, not a settings with/without probe | a settings-level cancel-timing probe |
-  The last three are **flag-held** (Drew's item-specific approvals, recorded
-  2026-11-23): #8472's `plugin.disabledTools` + `plugin.instructions` remainders and
-  #8473's `protoTasks.cancelGrace` (the last exemption in #8473 — landing it empties
-  that issue's list). The first five are unheld and unclaimed.
+  | Setting                                                                            | Written reason (abridged)                                                                                      | Probe shape it needs                                                                             |
+  | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `daemon.inlineStartPoll`                                                           | lifecycle/timing: a bound/interval the isolated harness cannot vary deterministically                          | a harness that can observe inline-start readiness timing                                         |
+  | `daemon.tsnet.hostname`                                                            | lifecycle/binding: a network identity the harness cannot vary                                                  | a tailnet the harness controls                                                                   |
+  | `daemon.tsnetUpTimeout`                                                            | tsnet bring-up needs a tailnet the harness does not have                                                       | same                                                                                             |
+  | `http.streamBufferInit`                                                            | allocation-capacity hint only; allocation size is not a stable e2e behaviour oracle                            | an allocation-observing oracle, or a contract decision that the hint is probe-exempt by kind     |
+  | `embeddings.wasmPath`                                                              | needs a compiled wasm model fixture the harness does not provide; no embed-exporting model ships with the repo | a small embed-exporting wasm fixture model in-tree                                               |
+  | `plugin.instructions`                                                              | read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host                  | JS-host e2e probes (the #8472 pattern that cleared 11 sibling plugin.* exemptions on 2026-11-23) |
+  | `plugin.disabledTools`                                                             | same                                                                                                           | same                                                                                             |
+  | `protoTasks.cancelGrace`                                                           | task-store cancellation timing; covered by internal/tasks store tests, not a settings with/without probe       | a settings-level cancel-timing probe                                                             |
+  | The last three are **flag-held** (Drew's item-specific approvals, recorded         |
+  | 2026-11-23): #8472's `plugin.disabledTools` + `plugin.instructions` remainders and |
+  | #8473's `protoTasks.cancelGrace` (the last exemption in #8473 — landing it empties |
+  | that issue's list). The first five are unheld and unclaimed.                       |
 - Coverage burn-down tracking homes (open): #8465 (CLI commands, running group),
   #8469 (settings http-transport family, blocked), #8471 (settings model-ai family,
   parked), #8472 (settings plugin family, in-review), #8473 (settings proto family).

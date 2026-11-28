@@ -6,25 +6,11 @@
 // keys produced by the binding ceremony or any real signer, and any
 // key whose signature does not verify is refused either way.
 
-export function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+import { base64UrlToBytes, bytesToHex, hexToBytes } from "../../../hosted-primitives/src/encoding.ts";
 
-export function hexToBytes(hex: string): Uint8Array {
-  if (!/^(?:[0-9a-f]{2})*$/.test(hex)) throw new Error("not lowercase hex");
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-function b64urlToBytes(text: string): Uint8Array {
-  const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
+// Single-implementation re-exports (G2 of #9085): the canonical hex
+// helpers live in hosted-primitives; existing import sites keep working.
+export { bytesToHex, hexToBytes };
 
 const keyCache = new Map<string, Promise<CryptoKey>>();
 
@@ -32,9 +18,7 @@ function importVerifyKey(publicRaw: Uint8Array): Promise<CryptoKey> {
   const cacheKey = bytesToHex(publicRaw);
   let cached = keyCache.get(cacheKey);
   if (!cached) {
-    cached = crypto.subtle.importKey("raw", publicRaw as BufferSource, "Ed25519", false, [
-      "verify",
-    ]);
+    cached = crypto.subtle.importKey("raw", publicRaw as BufferSource, "Ed25519", false, ["verify"]);
     keyCache.set(cacheKey, cached);
   }
   return cached;
@@ -76,12 +60,10 @@ export async function importIdKey(seed: Uint8Array): Promise<IdKey> {
   const pkcs8 = new Uint8Array(PKCS8_SEED_PREFIX.length + 32);
   pkcs8.set(PKCS8_SEED_PREFIX);
   pkcs8.set(seed, PKCS8_SEED_PREFIX.length);
-  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8 as BufferSource, "Ed25519", true, [
-    "sign",
-  ]);
+  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8 as BufferSource, "Ed25519", true, ["sign"]);
   const jwk = await crypto.subtle.exportKey("jwk", privateKey);
   if (!jwk.x) throw new Error("exported key has no public component");
-  const publicRaw = b64urlToBytes(jwk.x);
+  const publicRaw = base64UrlToBytes(jwk.x);
   return {
     publicRaw,
     publicHex: bytesToHex(publicRaw),

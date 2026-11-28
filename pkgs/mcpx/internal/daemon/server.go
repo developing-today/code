@@ -37,6 +37,86 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
+type toolCeilingDenied struct {
+	ceiling string
+	tool    string
+	reason  string
+}
+
+func (e toolCeilingDenied) Error() string {
+	return fmt.Sprintf("tool %q refused by capability ceiling %q: %s", e.tool, e.ceiling, e.reason)
+}
+
+type configuredToolCeiling struct {
+	Name  string   `json:"name"`
+	Tools []string `json:"tools"`
+}
+
+// authorizeToolCall applies the authenticated key's configured upstream
+// tool allowlist. Anonymous callers retain the pre-ceiling behavior; keyed
+// callers fail closed when their ceiling or its policy cannot be resolved.
+func (r *Registry) authorizeToolCall(ctx context.Context, namespace, tool string) error {
+	identity, keyed := KeyIdentityFrom(ctx)
+	if !keyed {
+		return nil
+	}
+	toolRef := namespace + ":" + tool
+	deny := func(reason string) error {
+		return toolCeilingDenied{ceiling: identity.Ceiling, tool: toolRef, reason: reason}
+	}
+	if r == nil || r.set == nil {
+		return deny("configured tool policy is unavailable")
+	}
+	if identity.Ceiling == "" {
+		return deny("the key has no ceiling name")
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(r.set.String("auth.capabilityCeilings")))
+	decoder.DisallowUnknownFields()
+	var ceilings []configuredToolCeiling
+	if err := decoder.Decode(&ceilings); err != nil {
+		return deny("configured tool policy is malformed")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return deny("configured tool policy has trailing data")
+	}
+
+	found := false
+	allowed := false
+	seen := make(map[string]struct{}, len(ceilings))
+	for _, ceiling := range ceilings {
+		name := strings.TrimSpace(ceiling.Name)
+		if name == "" {
+			return deny("configured tool policy contains an unnamed ceiling")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return deny("configured tool policy contains duplicate ceiling names")
+		}
+		seen[name] = struct{}{}
+		if name != identity.Ceiling {
+			continue
+		}
+		found = true
+		for _, candidate := range ceiling.Tools {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				return deny("configured tool policy contains an empty tool name")
+			}
+			if candidate == "*" || candidate == toolRef {
+				allowed = true
+			}
+		}
+	}
+	if !found {
+		return deny("the key references an unknown ceiling")
+	}
+	if !allowed {
+		return deny("the tool is not in the configured allowlist")
+	}
+	return nil
+}
+
 // Server is the local HTTP API.
 //
 // It listens on a unix socket (for the CLI, no port to collide with) and on a
@@ -185,6 +265,9 @@ type Server struct {
 	calls    *execsvc.CallRegistry
 
 	tokenStore *logstore.TokenStore
+	// keys is the per-user key store (#13659), consulted per request
+	// when auth.mode is permissive or required.
+	keys *KeyStore
 
 	// consumer holds the policy and the schema history behind the things
 	// mcpx asks for itself. See internal/daemon/consumer.go.
@@ -284,6 +367,7 @@ func NewServer(opts Options) (*Server, error) {
 		Events:        events.New(opts.Settings.Int("events.history")),
 		httpErr:       make(chan error, 4),
 		handedOff:     make(chan struct{}),
+		keys:          OpenKeyStore(opts.Paths.State),
 	}
 	// The broker is optional: a daemon whose state directory cannot hold a
 	// database still serves tools, and answers every server question with
@@ -878,16 +962,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST /v1/elicit/{id}/{action}", s.handleElicitAnswer)
 	s.route(mux, "POST /v1/log", s.handleLogRecord)
 	s.route(mux, "GET /v1/resource-templates", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resourceTemplates": s.reg.ResourceTemplates(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
 	s.route(mux, "GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"prompts": s.reg.Prompts(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
 	s.route(mux, "GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resources": s.reg.Resources(splitCSV(r.URL.Query().Get("ns"))),
 		})
@@ -925,6 +1012,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
+	s.route(mux, "POST /v1/session/kill", s.handleKill)
 	s.route(mux, "POST /v1/refresh", s.handleRefresh)
 	s.route(mux, "POST /v1/reload", s.handleReload)
 	s.route(mux, "POST /v1/restart", s.handleRestart)
@@ -1024,15 +1112,22 @@ func profileOf(r *http.Request) config.Profile {
 }
 
 func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
+	// Enumeration route: same cold-cache hazard as handleTypes.
+	s.warmIfCold(r.Context())
 	writeJSON(w, 200, s.reg.Namespaces(profileOf(r)))
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
+	// Same cold-enumeration hazard as handleTypes: warm first.
+	s.warmIfCold(r.Context())
 	ns := splitCSV(r.URL.Query().Get("ns"))
 	writeJSON(w, 200, s.reg.Tools(ns))
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// Search reads the cached catalogue; on a cold cache it would answer
+	// "no matching tools" as if authoritative (#15689).
+	s.warmIfCold(r.Context())
 	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
 	if !ok {
 		return
@@ -1063,6 +1158,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
+	// Enumeration, not a call: a cold cache would publish an empty
+	// catalogue as authoritative (discover/tools-list/catalog cluster,
+	// #15689). The CLI's run/exec path no longer waits for schemas
+	// (background refresh), so this route waits when nothing is cached yet.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1077,6 +1177,8 @@ func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	// Same cold-enumeration hazard as handleTypes below: warm first.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1109,6 +1211,10 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Local mcpx run/exec fetch the generated client here and enumerate it
+	// on the script's first lines, so a cold cache must be read now rather
+	// than in the background (TestExamples/discover, #15689).
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1131,6 +1237,8 @@ func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Generated-client route: same cold-cache hazard as handleClient.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1243,6 +1351,10 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.reg.authorizeToolCall(r.Context(), req.Server, req.Tool); err != nil {
+		writeErr(w, failureStatus(err), err)
+		return
+	}
 
 	// A caller that asked for a task gets a handle immediately and collects
 	// from /v1/tasks, rather than holding this request open for however long
@@ -1274,7 +1386,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 	reply := writeJSON
 	if req.Relay != nil {
 		rw := &relayWriter{w: w}
@@ -1400,7 +1512,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cc := callContext(r, req.Context, req.Session)
-	ctx := withRun(withCallSettings(withClientCaps(r.Context(), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	ctx := withRun(withCallSettings(withFleetCtx(withClientCaps(r.Context(), r), r), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 
 	results := make([]map[string]any, len(req.Calls))
 
@@ -1415,6 +1527,16 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 				"error":   "server and tool are required",
 				"isError": true,
 			}, errors.New("server and tool are required")
+		}
+		if err := s.reg.authorizeToolCall(ctx, server, tool); err != nil {
+			return map[string]any{
+				"index":   i,
+				"server":  server,
+				"tool":    tool,
+				"status":  "error",
+				"error":   err.Error(),
+				"isError": true,
+			}, err
 		}
 
 		rawArgs := item.Args
@@ -1549,6 +1671,31 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		req.Session = r.Header.Get("X-Mcpx-Session")
 	}
 	writeJSON(w, 200, map[string]any{"released": s.reg.ReleaseCaller(req.Session)})
+}
+
+// handleKill ends the instances a caller session created, even when busy
+// (#1931 slice 2). The address is the caller session handle, the same lease
+// key release takes: release detaches and stops only what is already idle,
+// kill ends every owned instance. An unknown handle is a typed refusal, so
+// a caller cannot mistake a misspelled session for an empty success.
+func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
+	if req.Session == "" {
+		req.Session = r.Header.Get("X-Mcpx-Session")
+	}
+	if req.Session == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("session is required"))
+		return
+	}
+	killed, found := s.reg.KillCaller(req.Session)
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("unknown session %q", req.Session))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"killed": killed})
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -2006,6 +2153,39 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSessio
 		}
 		if callerSession != "" {
 			attrs["caller_session"] = callerSession
+		}
+		if identity, ok := KeyIdentityFrom(ctx); ok {
+			if identity.KeyID != "" {
+				attrs["key_id"] = identity.KeyID
+			}
+			if identity.User != "" {
+				attrs["user"] = identity.User
+			}
+			if identity.Label != "" {
+				attrs["key_label"] = identity.Label
+			}
+			if identity.CapabilityRef != "" {
+				attrs["capability_ref"] = identity.CapabilityRef
+			}
+		}
+		// Fleet attribution (build 4/5, #14190): the originating queue
+		// task id rides the ledger frame, resolved ctx-first with the
+		// process env as fallback (the stdio/no-header path). Absent
+		// stamps nothing, never an error.
+		if f := mcpclient.FleetCtxFrom(ctx); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
+		} else if f := mcpclient.FleetCtxFromEnv(); !f.Empty() {
+			if f.TaskID != "" {
+				attrs["fleet_task_id"] = f.TaskID
+			}
+			if f.TaskName != "" {
+				attrs["fleet_task_name"] = f.TaskName
+			}
 		}
 		s.callLedger.Write(logging.Record{Time: time.Now(), Msg: "tool_call", Attrs: attrs}, nil)
 		now := time.Now()

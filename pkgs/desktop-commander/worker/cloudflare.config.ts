@@ -19,6 +19,12 @@ export default defineConfig({
       // Audience of the Access app scoped to /authorize.
       ACCESS_AUD: bindings.text("c6ddf0a5c0ba8742c0a3c74d12495bf5c4fe9bf6f01f604d62583cb2ed353879"),
       OAUTH_KV: bindings.kv({ id: "ea675d3c7d5b4f3b9f1cecae82e57d1b" }),
+      // The deployed commit the /version route names (#15793). This
+      // config runs at build time in the publish workflow, whose
+      // upload path sets GITHUB_SHA (upload-version.mjs), so each
+      // uploaded version names the commit it was built from; a build
+      // without it answers "unknown", honestly.
+      VERSION: bindings.text(process.env.GITHUB_SHA ?? "unknown"),
     },
   },
 });

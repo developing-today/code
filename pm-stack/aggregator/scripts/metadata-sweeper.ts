@@ -30,20 +30,29 @@
 //     [--db <path>] [--limit <n>] [--triage-queue <name>]
 //     [--write-back] [--forward-triage] [--dry-run] [--help]
 // Env: METADATA_SWEEP_REPOS (comma-separated default repos),
-//   PM_METADATA_DB_PATH (default DB), FLEET_BIN (default `fleet`).
+//   FLEET_METADATA_DB (Fleet's shared DB override), FLEET_BIN (default `fleet`).
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import {
+  buildEpicSlugMap,
   buildTriagePacket,
+  collectPrimaryParentViolations,
+  isConfirmedParentAbsent,
+  itemRefKey,
   openMetadataStore,
+  parseNativeParentResponse,
+  primaryParentLabels,
   runMetadataCheck,
   storeOutcome,
   type EpicSlugMap,
   type IngestionItem,
+  type NativeParentLookup,
+  type PrimaryParentViolation,
 } from "../src/metadata-ingestion.ts";
+import { fleetMetadataDbPath } from "../src/metadata-db.ts";
 
 const USAGE =
   "metadata-sweeper: usage: bun run scripts/metadata-sweeper.ts --repo <owner/name> [--repo ...] " +
@@ -78,7 +87,7 @@ function takeValue(args: string[], index: number, flag: string): string {
 function parseArgs(argv: string[]): Options {
   const repos: string[] = [];
   const only: { kind: "issue" | "pr"; number: number }[] = [];
-  let dbPath = process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  let dbPath = fleetMetadataDbPath();
   let limit = 50;
   let triageQueue = "repo-health-code-pilot";
   let writeBack = false;
@@ -272,25 +281,18 @@ async function fetchEpicSlugs(repo: string): Promise<EpicSlugMap> {
   ]);
   const parsed: unknown = JSON.parse(stdout);
   if (!Array.isArray(parsed)) throw new Error(`unexpected epic list shape for ${repo}`);
-  const slugs: EpicSlugMap = new Map();
-  for (const row of parsed as { number?: unknown; labels?: (string | GhLabel)[] }[]) {
-    if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
-    for (const label of labelNames(row.labels)) {
-      const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
-      if (slug && !slugs.has(slug)) slugs.set(slug, { repo, number: row.number as number });
-    }
-  }
-  return slugs;
+  return buildEpicSlugMap(parsed as { number?: unknown; labels?: (string | { name?: unknown })[] }[], repo);
 }
 
 /** Native (sub-issue) parent lookup: the parent when found, null when the
  * item has none, undefined when the lookup itself failed. Callers must
  * not finalize a label-resolved parent on undefined — the next sweep
- * retries — because a failed lookup proves nothing about the item. */
-async function fetchNativeParent(
-  repo: string,
-  number: number,
-): Promise<{ repo: string; number: number; kind: string } | null | undefined> {
+ * retries — because a failed lookup proves nothing about the item.
+ *
+ * On the shared contract (#16011) a confirmed 404 for an existing item
+ * means "no native parent" (null: label resolution may proceed); every
+ * other failure stays retryable (undefined). */
+async function fetchNativeParent(repo: string, number: number): Promise<NativeParentLookup> {
   let stdout: string;
   try {
     stdout = await runFleet([
@@ -300,18 +302,10 @@ async function fetchNativeParent(
       "--jq",
       "{number: .number, repo_url: .repository_url}",
     ]);
-  } catch {
-    return undefined;
+  } catch (error) {
+    return isConfirmedParentAbsent(error) ? null : undefined;
   }
-  try {
-    const parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
-    if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") return null;
-    const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
-    if (!match?.[1]) return null;
-    return { repo: match[1], number: parsed.number as number, kind: "sub-issue" };
-  } catch {
-    return undefined;
-  }
+  return parseNativeParentResponse(stdout);
 }
 
 interface SweepCounts {
@@ -321,7 +315,38 @@ interface SweepCounts {
   writtenBack: number;
   needsTriage: number;
   forwarded: number;
+  primaryParentViolations: number;
   errors: number;
+}
+
+/** Ancestor chain of a native parent, as `repo#number` keys, for the
+ * primary-parent ancestor rule (design §3). Returns null when the chain
+ * could not be read: an unreadable chain never manufactures a finding. */
+async function fetchAncestorRefs(repo: string, parent: { repo: string; number: number }): Promise<Set<string> | null> {
+  const refs = new Set<string>();
+  let cursor = { repo: parent.repo, number: parent.number };
+  try {
+    // GitHub's hierarchy is shallow in practice; 10 bounds a cycle or a
+    // pathological chain without silently truncating a realistic one.
+    for (let depth = 0; depth < 10; depth++) {
+      refs.add(itemRefKey(cursor));
+      const stdout = await runFleet([
+        "gh",
+        "api",
+        `repos/${cursor.repo}/issues/${cursor.number}/parent`,
+        "--jq",
+        "{number: .number, repo_url: .repository_url}",
+      ]);
+      const parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
+      if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") break;
+      const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
+      if (!match?.[1]) break;
+      cursor = { repo: match[1], number: parsed.number as number };
+    }
+    return refs;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchOne(repo: string, kind: "issue" | "pr", number: number): Promise<IngestionItem | null> {
@@ -346,7 +371,7 @@ async function main(): Promise<void> {
   const db = openMetadataStore(options.dryRun ? ":memory:" : options.dbPath, (path) => new Database(path));
   try {
     const scratch = await mkdtemp(join(tmpdir(), "metadata-sweeper-"));
-    const summary: Record<string, SweepCounts & { dbRows: number }> = {};
+    const summary: Record<string, SweepCounts & { dbRows: number; violations: PrimaryParentViolation[] }> = {};
     try {
       for (const repo of options.repos) {
         const counts: SweepCounts = {
@@ -356,8 +381,10 @@ async function main(): Promise<void> {
           writtenBack: 0,
           needsTriage: 0,
           forwarded: 0,
+          primaryParentViolations: 0,
           errors: 0,
         };
+        const violations: PrimaryParentViolation[] = [];
         try {
           const [issues, prs] = await Promise.all([
             listItems(repo, "issue", options.limit),
@@ -375,14 +402,10 @@ async function main(): Promise<void> {
             console.error(
               `metadata-sweeper: repo ${repo}: epic catalog fetch failed (${(error as Error).message}); falling back to scanned issues`,
             );
-            epicSlugs = new Map();
-            for (const issue of issues) {
-              if (!issue.labels.includes("kind/epic")) continue;
-              for (const label of issue.labels) {
-                const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
-                if (slug && !epicSlugs.has(slug)) epicSlugs.set(slug, { repo, number: issue.number });
-              }
-            }
+            epicSlugs = buildEpicSlugMap(
+              issues as { number?: unknown; labels?: (string | { name?: unknown })[] }[],
+              repo,
+            );
           }
           const scanned = [...issues, ...prs];
           const items: IngestionItem[] = options.only.length > 0 ? [] : scanned;
@@ -397,6 +420,7 @@ async function main(): Promise<void> {
           for (const item of items) {
             counts.scanned++;
             try {
+              let checked = item;
               let outcome = runMetadataCheck(item, { epicSlugs, ingestedBy: "metadata-sweeper" });
               // Native parent is authoritative (see resolveAscertainedParent):
               // consult it before finalizing any ascertained outcome, not
@@ -409,10 +433,8 @@ async function main(): Promise<void> {
               if (item.kind === "issue" && !item.nativeParent && outcome.kind !== "current") {
                 const parent = await fetchNativeParent(repo, item.number);
                 if (parent) {
-                  outcome = runMetadataCheck(
-                    { ...item, nativeParent: parent },
-                    { epicSlugs, ingestedBy: "metadata-sweeper" },
-                  );
+                  checked = { ...item, nativeParent: parent };
+                  outcome = runMetadataCheck(checked, { epicSlugs, ingestedBy: "metadata-sweeper" });
                 } else if (parent === undefined) {
                   counts.errors++;
                   console.error(
@@ -420,6 +442,24 @@ async function main(): Promise<void> {
                   );
                   continue;
                 }
+              }
+
+              // Primary-parent convention (design §3): validate and report
+              // violations in the audit output, never resolve them here.
+              let ancestorRefs: Set<string> | undefined;
+              if (checked.kind === "issue" && checked.nativeParent && primaryParentLabels(checked.labels).length > 0) {
+                const chain = await fetchAncestorRefs(repo, checked.nativeParent);
+                if (chain === null) {
+                  console.error(
+                    `metadata-sweeper: ${repo}#${checked.number}: ancestor chain unread; ancestor rule not checked`,
+                  );
+                } else {
+                  ancestorRefs = chain;
+                }
+              }
+              for (const violation of collectPrimaryParentViolations(checked, epicSlugs, ancestorRefs)) {
+                counts.primaryParentViolations++;
+                violations.push(violation);
               }
               if (outcome.kind === "needs-triage") {
                 counts.needsTriage++;
@@ -476,7 +516,7 @@ async function main(): Promise<void> {
           console.error(`metadata-sweeper: repo ${repo}: ${(error as Error).message}`);
         }
         const row = db.query("SELECT COUNT(*) AS count FROM pm_metadata_items").get() as { count: number };
-        summary[repo] = { ...counts, dbRows: Number(row.count) };
+        summary[repo] = { ...counts, dbRows: Number(row.count), violations };
       }
     } finally {
       await rm(scratch, { recursive: true, force: true });

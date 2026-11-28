@@ -1,35 +1,35 @@
 # Backup, restore and data directories
 
-A node's whole state lives in its data directory. This chapter names every part of that directory, states which parts are the record and which parts can be derived again, and gives the restore shape that follows from the code. One limit runs through the chapter and is stated here, not buried: **there is no backup verb and no restore verb for a whole node in the `id` CLI.** The two exceptions are narrow and are named where they belong: `id world journal backup <DIR> <OUT>` for one world's journal, and the key export commands in [Groups, documents, claims and keys](../reference/cli-groups-identity.md). Everything else in this chapter is file copying done by the operator, and each step that the surveys could not verify against code is marked unverified.
+A node's whole state lives in its data directory. This chapter names every part of that directory, states which parts are the record and which parts can be derived again, and gives the restore shape that follows from the code. One limit runs through the chapter and is stated here, not buried: **there is no backup verb and no restore verb for a whole node in the `id` CLI.** The exceptions are narrow and are named where they belong: `id world journal backup <DIR> <OUT>` for one world's journal, `id host export` and `id host import` for one world under a world host (see [Moving one hosted world: export and import](#moving-one-hosted-world-export-and-import)), and the key export commands in [Groups, documents, claims and keys](../reference/cli-groups-identity.md). Everything else in this chapter is file copying done by the operator, and each step that the surveys could not verify against code is marked unverified.
 
 The store formats themselves are in [Data stores and schemas](../reference/data-stores.md). Running the node is in [Running a node: serve, worlds and the hosted edition](services.md).
 
 ## Where the data directory is
 
-| How the node was started | Data directory |
-|---|---|
-| No global flags | The current working directory. |
-| `--data-dir <DIR>` | `<DIR>`, created if missing. |
-| `--new [<NAME>]` | `.iroh/<NAME>/` under the current directory; a random 8-hex name when `<NAME>` is omitted. |
+| How the node was started   | Data directory                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| No global flags            | The current working directory.                                                             |
+| `--data-dir <DIR>`         | `<DIR>`, created if missing.                                                               |
+| `--new [<NAME>]`           | `.iroh/<NAME>/` under the current directory; a random 8-hex name when `<NAME>` is omitted. |
 | `--ephemeral` (serve only) | No store on disk. The store is in memory and is lost at exit. There is nothing to back up. |
 
 All paths below are relative to the data directory, because the process changes directory into it at startup.
 
 ## The directory, item by item
 
-| Path | What it is | Back it up? |
-|---|---|---|
-| `.iroh-store/` | The blob and name store: iroh-blobs `FsStore` (redb plus data files). The iroh-docs store sits under `.iroh-store/docs/`. This is the content-addressed store: a name points at an immutable blob hash, and the blob bytes are the file content. | Yes. This is the record for stored files. |
-| `.iroh-key` | The node key file. The keypair for this node's identity. A second file, `.iroh-key-client`, holds the client key where a client identity exists. | Yes. Losing the key loses the identity; the store without the key is content under a name nobody can prove is theirs. Keep the copy access-controlled; this book never prints a key value. |
-| `.iroh-serve.lock` | The serve lock, present while a serve process owns the directory. Constant `SERVE_LOCK` in `id-core`. | No. It is runtime state, recreated by the next serve. Do not copy it into a backup as a record, and do not expect it in a restored directory. |
-| `.iroh-allowed` | Optional plain-text file, one node ID per line, naming nodes allowed to write the store in addition to `--allow-node <IDS>` and this machine's own keys. | Yes, if present. It is operator configuration that exists nowhere else. |
-| `groups.jsonl` | The default group log for the `group`, `delegate` and `revoke` commands. The global flag `--groups-log <FILE>` moves it; a relative path is relative to the data directory. | Yes. Group membership and delegation history live here. |
-| `events/` | The default event-store directory for the `doc`, `claim` and `writer-sets` commands. The global flag `--event-store <DIR>` moves it; a relative path is relative to the data directory. Inside it, the event store file is `events.redb`, format marker `id.events.store.v9`. | Yes. Documents, claims and writer sets live here. |
-| `.iroh-meta/registry.json` | The tag registry: namespace records for the tag store (global, node-private and custom paired namespaces) plus a one-time migration marker. Registry format version `1`. | Yes. Tags themselves live in the iroh-docs namespaces under `.iroh-store/docs/`; the registry records which namespaces exist. Back it up together with `.iroh-store/`, never instead of it. |
-| `.id-worlds/<NAME>/` | One directory per hosted world, named by `--world-name <NAME>` (default world name `lobby`). Holds the world's journal and its checkpoints: the signed, ordered record of world inputs and the folded state snapshots the host trims to every `--world-checkpoint-every <N>` events (default `1000`; `0` never trims). | Yes, for every world the node hosts. A world's journal is its record; see below. |
-| `.id-keyset.jsonl`, `.id-keyset-client.jsonl` | Keyset records: device enrolment, guardians, rotation and recovery state for the account keyset. | Yes, if present. |
-| `directory.jsonl` | The directory journal: one JSON `DirectoryEntry` per line. **Unverified location detail:** the survey records its location as the directory that holds the server-config file given to `--server-config <FILE>`, not as a fixed data-directory path. Back up the copy that sits next to the server-config file the node actually loads. | Yes, if the node runs with a server config. |
-| Gallery directory (`--gallery-dir <DIR>`, or `ID_GALLERY_DIR`) | Verified `<content-hash>.idpb` bundle files plus an `operator/` subdirectory holding collections, tags and admission decisions. The directory is wherever the operator put it; it is not inside the data directory by default. | Yes, if the node serves a gallery. Back up the directory the flag points at. |
+| Path                                                           | What it is                                                                                                                                                                                                                                                                                                                              | Back it up?                                                                                                                                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.iroh-store/`                                                 | The blob and name store: iroh-blobs `FsStore` (redb plus data files). The iroh-docs store sits under `.iroh-store/docs/`. This is the content-addressed store: a name points at an immutable blob hash, and the blob bytes are the file content.                                                                                        | Yes. This is the record for stored files.                                                                                                                                                   |
+| `.iroh-key`                                                    | The node key file. The keypair for this node's identity. A second file, `.iroh-key-client`, holds the client key where a client identity exists.                                                                                                                                                                                        | Yes. Losing the key loses the identity; the store without the key is content under a name nobody can prove is theirs. Keep the copy access-controlled; this book never prints a key value.  |
+| `.iroh-serve.lock`                                             | The serve lock, present while a serve process owns the directory. Constant `SERVE_LOCK` in `id-core`.                                                                                                                                                                                                                                   | No. It is runtime state, recreated by the next serve. Do not copy it into a backup as a record, and do not expect it in a restored directory.                                               |
+| `.iroh-allowed`                                                | Optional plain-text file, one node ID per line, naming nodes allowed to write the store in addition to `--allow-node <IDS>` and this machine's own keys.                                                                                                                                                                                | Yes, if present. It is operator configuration that exists nowhere else.                                                                                                                     |
+| `groups.jsonl`                                                 | The default group log for the `group`, `delegate` and `revoke` commands. The global flag `--groups-log <FILE>` moves it; a relative path is relative to the data directory.                                                                                                                                                             | Yes. Group membership and delegation history live here.                                                                                                                                     |
+| `events/`                                                      | The default event-store directory for the `doc`, `claim` and `writer-sets` commands. The global flag `--event-store <DIR>` moves it; a relative path is relative to the data directory. Inside it, the event store file is `events.redb`, format marker `id.events.store.v9`.                                                           | Yes. Documents, claims and writer sets live here.                                                                                                                                           |
+| `.iroh-meta/registry.json`                                     | The tag registry: namespace records for the tag store (global, node-private and custom paired namespaces) plus a one-time migration marker. Registry format version `1`.                                                                                                                                                                | Yes. Tags themselves live in the iroh-docs namespaces under `.iroh-store/docs/`; the registry records which namespaces exist. Back it up together with `.iroh-store/`, never instead of it. |
+| `.id-worlds/<NAME>/`                                           | One directory per hosted world, named by `--world-name <NAME>` (default world name `lobby`). Holds the world's journal and its checkpoints: the signed, ordered record of world inputs and the folded state snapshots the host trims to every `--world-checkpoint-every <N>` events (default `1000`; `0` never trims).                  | Yes, for every world the node hosts. A world's journal is its record; see below.                                                                                                            |
+| `.id-keyset.jsonl`, `.id-keyset-client.jsonl`                  | Keyset records: device enrolment, guardians, rotation and recovery state for the account keyset.                                                                                                                                                                                                                                        | Yes, if present.                                                                                                                                                                            |
+| `directory.jsonl`                                              | The directory journal: one JSON `DirectoryEntry` per line. **Unverified location detail:** the survey records its location as the directory that holds the server-config file given to `--server-config <FILE>`, not as a fixed data-directory path. Back up the copy that sits next to the server-config file the node actually loads. | Yes, if the node runs with a server config.                                                                                                                                                 |
+| Gallery directory (`--gallery-dir <DIR>`, or `ID_GALLERY_DIR`) | Verified `<content-hash>.idpb` bundle files plus an `operator/` subdirectory holding collections, tags and admission decisions. The directory is wherever the operator put it; it is not inside the data directory by default.                                                                                                          | Yes, if the node serves a gallery. Back up the directory the flag points at.                                                                                                                |
 
 Files a node writes outside the data directory, and therefore outside a data-directory backup: the log file named by `ID_LOG_FILE` (operator logging, not node state), the compiled-world cache named by `ID_WORLD_COMPILE_CACHE_DIR` (derivable; see below), and the gallery directory above.
 
@@ -88,6 +88,41 @@ id --data-dir toy-node-restored serve --web
 5. Check the restore before declaring it done: `id --data-dir <DIR> list` names the stored files, `id world journal check <DIR>` passes for each hosted world directory the node must serve, and a known file fetched by name matches the content the operator expects. A serve that starts is not, by itself, proof that the right directory was restored.
 
 Restoring a single world journal backup made by `id world journal backup <DIR> <OUT>` into a world directory is **unverified**: the surveys record the backup verb and the check verb, and no restore or import verb for a journal backup file. This book does not invent one.
+
+## Moving one hosted world: export and import
+
+A world host (`id host`) can write one world to a single signed file and restore that file into another host root. This is the one restore path for a world journal that the code ships. It covers one world at a time, not a whole node.
+
+1. On the source host, print the host's signing key with `id host key <ROOT>`. The key is created on first use as `<ROOT>/host.key`, readable by its owner only. Keep the printed hex: the restore checks every file against it.
+2. With the host running (`id host run <ROOT>`, or a node serving the root with `id serve --world-host`, whose root is `.id-worlds` under its data directory), start the world, because only a world the host holds live can be exported: `id host start <ROOT> <WORLD>`.
+3. Write the export: `id host export <ROOT> <WORLD> <FILE>`. The command refuses a `<FILE>` that already exists, writes to a hidden partial file first and renames it into place only when the whole export is on disk.
+4. Copy `<FILE>` to the machine that will host the world.
+5. Restore it: `id host import <NEW_ROOT> <FILE> --source <KEY_HEX>`, with the hex from step 1. The import refuses a file signed by another key, a file with a changed or missing byte, a cut file, and a world name already recorded in `<NEW_ROOT>`. Nothing is written into the root unless every check passes; a failed import leaves no world directory behind.
+6. Run a host on the new root (`id host run <NEW_ROOT>`), start the restored world with `id host start <NEW_ROOT> <WORLD>` and run `id host inspect <NEW_ROOT> <WORLD>` to confirm it opens.
+
+```text
+id host key hosts/a
+id host run hosts/a          # in its own terminal
+id host start hosts/a alpha
+id host export hosts/a alpha alpha.idworld
+id host import hosts/b alpha.idworld --source <KEY_HEX>
+id host run hosts/b          # in its own terminal
+id host start hosts/b alpha
+```
+
+`export` talks to the running host through its control socket. `import` uses the socket when a host is running on the target root and writes the root directly when none is. The restored world carries its journal, its directory and its module files, and its journal bytes are identical to the source's.
+
+## Scheduled snapshots of hosted worlds
+
+A running world host can take these exports on a schedule and prune old ones. Scheduled snapshots are off until you set a policy.
+
+- **Host-wide default:** `id host snapshots <ROOT> --every 6h --keep 7` takes a set of every live world every six hours and keeps the newest seven. Add `--max-age 30d` to also drop sets older than thirty days. The newest set is always kept.
+- **One world:** `id host snapshots <ROOT> --world <WORLD> --every 1h --keep 24` gives that world its own policy. `--off` turns its snapshots off, and `--inherit` makes it follow the host default again.
+- **Show:** `id host snapshots <ROOT>` prints the host default; add `--world <WORLD>` to see that world's policy and the sets on disk.
+
+The command reaches the running host through its control socket, or edits the host file when no host is running. A host checks once a minute which live worlds are due. It needs its signing key (`id host key`), as a manual export does.
+
+Sets live in `<ROOT>/.snapshots/<WORLD>/`, or under the `snapshot_dir` the host file names, which must be an absolute path such as another disk. Each set is one export file named `<unix seconds>-<journal entries>.idexport`, so it restores with `id host import` exactly as above. Only live worlds get new sets: an asleep or archived world cannot change, so its newest set stays current. When a world's journal has not grown since its newest set, the new set replaces that one instead of adding a copy. Pruning removes whole set files and never touches a journal. `id host list` shows each world's set count and bytes (`snapshots=<sets>:<bytes>`) and adds the bytes to each lifecycle state's total.
 
 ## The hosted edition
 

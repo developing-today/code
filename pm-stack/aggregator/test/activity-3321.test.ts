@@ -4,7 +4,7 @@
 // backfill flips. GitHub coverage is limited to retained #2072 hot-list
 // rows; pre-hot-list history and missed upstream deliveries stay explicit.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -237,9 +237,9 @@ describe("ingestion store (#3321)", () => {
     const { events, store } = tmpStores();
     const deliveries = watchdogDeliveries([watchdogItem("watchdog:fleet-feed", 120_000)]);
     const first = await store.ingest(events, deliveries);
-    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
+    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
     const second = await store.ingest(events, deliveries);
-    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
+    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
     const stream = await events.list();
     expect(stream).toHaveLength(1);
     expect(stream[0]?.kind).toBe("watchdog-event");
@@ -247,6 +247,97 @@ describe("ingestion store (#3321)", () => {
     expect(cp?.deliveries).toBe(1);
     expect(cp?.duplicates).toBe(1);
     expect(cp?.lastSourceId).toBe(deliveries[0]?.sourceId);
+  });
+
+  test("seen-id retention evicts the oldest id so it can be replayed", async () => {
+    const { store } = tmpStores();
+    const deliveries: ActivityDelivery[] = Array.from({ length: 2001 }, (_, i) => ({
+      source: "github",
+      sourceId: `event-${i}`,
+      at: iso(0),
+      kind: "github-event",
+      ref: "developing-today/code",
+      summary: `event ${i}`,
+    }));
+    const events: Pick<EventsStore, "record"> = {
+      record: async () => ({}) as Awaited<ReturnType<EventsStore["record"]>>,
+    };
+
+    // Oracle: the documented 2000-id FIFO window. Eviction must take effect
+    // within this same call, not only when a fresh lookup index is built.
+    const initial = await store.ingest(events, [...deliveries, deliveries[0]!, deliveries[0]!]);
+    expect(initial.ingested).toBe(2002);
+    expect(initial.duplicates).toBe(1);
+    expect(await store.seenIds("github")).toHaveLength(2000);
+
+    // Re-adding event-0 evicted event-1; a subsequent call must see that too.
+    const replay = await store.ingest(events, [deliveries[1]!]);
+    expect(replay.ingested).toBe(1);
+    expect(replay.duplicates).toBe(0);
+  });
+
+  test("loaded repeated ids remain seen until their last copy is evicted", async () => {
+    const { activityFile, store } = tmpStores();
+    const initial = validIngestionFile();
+    initial.seen.kaneo = ["repeat", "repeat", ...Array.from({ length: 1998 }, (_, i) => `old-${i}`)];
+    writeFileSync(activityFile, JSON.stringify(initial));
+    const appended: string[] = [];
+    const events: Pick<EventsStore, "record"> = {
+      record: async (event) => {
+        appended.push(event.id!);
+        return {} as Awaited<ReturnType<EventsStore["record"]>>;
+      },
+    };
+    const batch = ["new-1", "repeat", "new-2", "repeat"].map(
+      (sourceId): ActivityDelivery => ({
+        source: "kaneo",
+        sourceId,
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+      }),
+    );
+    // Oracle: Array.includes on the bounded FIFO still sees the second copy
+    // after new-1, but neither copy after new-2.
+    expect(await store.ingest(events, batch)).toEqual({
+      ingested: 3,
+      duplicates: 1,
+      failed: 0,
+      failedIds: [],
+      rejectedLinkIds: [],
+    });
+    expect(appended).toEqual(["activity:kaneo:new-1", "activity:kaneo:new-2", "activity:kaneo:repeat"]);
+  });
+
+  test("same-batch retries and equal ids in different sources stay independent", async () => {
+    const { store } = tmpStores();
+    let attempts = 0;
+    const events: Pick<EventsStore, "record"> = {
+      record: async () => {
+        if (++attempts === 1) throw new Error("transient append failure");
+        return {} as Awaited<ReturnType<EventsStore["record"]>>;
+      },
+    };
+    const batch = ["kaneo", "watchdog", "kaneo", "kaneo", "watchdog"].map(
+      (source): ActivityDelivery => ({
+        source: source as ActivityDelivery["source"],
+        sourceId: "same-id",
+        at: iso(0),
+        kind: "activity",
+        ref: "card",
+        summary: "changed",
+      }),
+    );
+    // Oracle: failed appends stay retryable; each source accepts the id once.
+    expect(await store.ingest(events, batch)).toEqual({
+      ingested: 2,
+      duplicates: 2,
+      failed: 1,
+      failedIds: ["same-id"],
+      rejectedLinkIds: [],
+    });
+    expect(attempts).toBe(3);
   });
 
   test("restart resumes from the persisted checkpoint: replay stays duplicate", async () => {
@@ -267,7 +358,7 @@ describe("ingestion store (#3321)", () => {
     const store2 = new IngestionStore(activityFile);
     const events2 = new EventsStore(eventsFile);
     const replay = await store2.ingest(events2, deliveries);
-    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
+    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
     expect(await events2.list()).toHaveLength(1);
     const cp = await store2.checkpoint("kaneo");
     expect(cp?.deliveries).toBe(1);
@@ -283,9 +374,81 @@ describe("ingestion store (#3321)", () => {
       },
     };
     const first = await store.ingest(failing, deliveries);
-    expect(first).toEqual({ ingested: 0, duplicates: 0, failed: 1, failedIds: [deliveries[0]!.sourceId] });
+    expect(first).toEqual({
+      ingested: 0,
+      duplicates: 0,
+      failed: 1,
+      failedIds: [deliveries[0]!.sourceId],
+      rejectedLinkIds: [],
+    });
     const retry = await store.ingest(events, deliveries);
-    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
+    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
+  });
+
+  test("a 500-char source.link is ingested verbatim (#16069)", async () => {
+    const { events, store } = tmpStores();
+    const link = `https://example.invalid/${"x".repeat(500 - "https://example.invalid/".length)}`;
+    expect(link).toHaveLength(500);
+    const deliveries: ActivityDelivery[] = [
+      {
+        source: "kaneo",
+        sourceId: "card-boundary",
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+        link,
+      },
+    ];
+    // Oracle: the schema maximum itself is a valid link.
+    const report = await store.ingest(events, deliveries);
+    expect(report).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] });
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.source?.link).toBe(link);
+  });
+
+  test("an over-limit source.link is rejected while the event is preserved (#16069)", async () => {
+    const { eventsFile, events, store } = tmpStores();
+    const link = `https://example.invalid/${"x".repeat(501 - "https://example.invalid/".length)}`;
+    expect(link).toHaveLength(501);
+    const deliveries: ActivityDelivery[] = [
+      {
+        source: "kaneo",
+        sourceId: "card-overlong",
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+        link,
+      },
+    ];
+    // Oracle: the event ingests (no invalid journal record, no
+    // retryable failure), the link is rejected, and the rejection is
+    // visible in the report.
+    const report = await store.ingest(events, deliveries);
+    expect(report).toEqual({
+      ingested: 1,
+      duplicates: 0,
+      failed: 0,
+      failedIds: [],
+      rejectedLinkIds: ["card-overlong"],
+    });
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.source?.identity).toBe("pm-stack/aggregator/activity/kaneo");
+    expect(stream[0]?.source?.link).toBeUndefined();
+    // The rest of the event is preserved: kind, ref, and the
+    // (separately capped) summary still describe the delivery.
+    expect(stream[0]?.kind).toBe("kaneo-change");
+    expect(stream[0]?.ref).toBe("card");
+    // The journal stays replayable: a fresh store over the same
+    // files lists the event, and re-ingesting the batch is a clean
+    // duplicate no-op instead of a failure retry loop.
+    const events2 = new EventsStore(eventsFile);
+    expect(await events2.list()).toHaveLength(1);
+    const replay = await store.ingest(events2, deliveries);
+    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
   });
 
   test("gap lifecycle end-to-end: outage opens a rendered hole, backfill flips it", async () => {

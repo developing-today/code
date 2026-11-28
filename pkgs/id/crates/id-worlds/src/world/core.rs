@@ -13,6 +13,10 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use id_core::boundary::EnforcementPoint;
+use id_core::boundary_surfaces::FrameworkOutcome;
+use id_directory::directory::BoundaryGate;
+
 mod checkpoint_parts;
 mod operations;
 
@@ -25,6 +29,21 @@ mod admin_history;
 
 pub(crate) use admin_history::AdminHistoryByteLedger;
 use admin_history::{admin_history_bytes, admin_history_event_bytes};
+
+#[derive(Clone)]
+pub(crate) struct WorldBoundaryGateHandle(Arc<dyn BoundaryGate>);
+
+impl WorldBoundaryGateHandle {
+    pub(crate) fn check(&self, point: EnforcementPoint, subject: &str) -> FrameworkOutcome {
+        self.0.check(point, subject)
+    }
+}
+
+impl std::fmt::Debug for WorldBoundaryGateHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WorldBoundaryGateHandle(..)")
+    }
+}
 
 fn presence_after(events: &[WorldEvent]) -> BTreeSet<u64> {
     let mut present = BTreeSet::new();
@@ -101,6 +120,10 @@ pub struct WorldCore {
     /// journaled before its result is delivered, and replay rebuilds
     /// the store from the journal.
     pub(crate) kv: BTreeMap<String, String>,
+    /// D5 template role definitions, without membership or access-control
+    /// policy. Re-emitted by checkpoints so durable template metadata survives
+    /// journal compaction.
+    pub(crate) template_roles: Vec<crate::world_template::RoleDefinition>,
     /// The world's blob set (#1062): content address (the blob's
     /// iroh-blobs hash as lowercase hex) to content bytes. Bounded
     /// by the `MAX_BLOB_*` caps; every mutation is journaled before
@@ -133,6 +156,10 @@ pub struct WorldCore {
     /// source retry is answered from (#1355 part 2).
     pub(crate) schedule_receipts: BTreeSet<(String, String, u64)>,
     pub(crate) isolation: Isolation,
+    /// The world's presentation policy (#14731 slice 2b), restored from
+    /// `PresentationPolicy` journal entries. The default denies user
+    /// shaders and disguise-class filters.
+    pub(crate) presentation: id_core::presentation_policy::PresentationPolicy,
     pub(crate) cross_world_write: bool,
     pub(crate) cross_world_forced: bool,
     pub(crate) file_scope: FileScope,
@@ -161,6 +188,10 @@ pub struct WorldCore {
     /// restore can deliver one leave for sessions lost with the process.
     pub(crate) open_presence: BTreeSet<u64>,
     pub(crate) directory: crate::directory::Directory,
+    /// Runtime boundary gate for world membership and blob operations.
+    /// Like the directory's signup/login gate, this is reinstalled by the
+    /// serving app after journal restore and is never persisted.
+    pub(crate) world_boundary_gate: Option<WorldBoundaryGateHandle>,
     pub(crate) petnames: crate::petname::Petnames,
     /// Active region-seam handoffs this world is a side of (#3870 phase 1,
     /// design #2818 §3): export fences/payloads and import receipts,
@@ -408,6 +439,7 @@ impl WorldCore {
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             kv: BTreeMap::new(),
+            template_roles: Vec::new(),
             blobs: BTreeMap::new(),
             http_fetch_attempts: VecDeque::new(),
             notify_attempts: VecDeque::new(),
@@ -415,6 +447,7 @@ impl WorldCore {
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
+            presentation: id_core::presentation_policy::PresentationPolicy::default(),
             cross_world_write: false,
             cross_world_forced: false,
             file_scope: FileScope::default(),
@@ -429,6 +462,7 @@ impl WorldCore {
             admin_history_ledger: AdminHistoryByteLedger::default(),
             open_presence: BTreeSet::new(),
             directory: crate::directory::Directory::new(),
+            world_boundary_gate: None,
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
             write_lease: WriteLease::bootstrap(),
@@ -945,6 +979,22 @@ impl WorldCore {
                     core.execution_profile = profile;
                 }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
+                JournalEntry::PresentationPolicy { policy } => {
+                    policy
+                        .validate()
+                        .context("invalid presentation policy in journal")?;
+                    core.presentation = policy;
+                }
+                JournalEntry::TemplateRolesSet { roles } => {
+                    let mut names = BTreeSet::new();
+                    ensure!(
+                        roles
+                            .iter()
+                            .all(|role| !role.name.is_empty() && names.insert(&role.name)),
+                        "journal template roles have an empty or duplicate name"
+                    );
+                    core.template_roles = roles;
+                }
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
                     if !enabled {
@@ -1228,18 +1278,20 @@ impl WorldCore {
                     holder,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                        .apply_grant(&holder, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseRenewed {
                     holder,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                        .apply_renew(&holder, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseHandedOff {
@@ -1247,18 +1299,20 @@ impl WorldCore {
                     to,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                        .apply_handoff(&from, &to, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseRevoked {
                     former_holder,
                     epoch,
                     reason,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_revoke(&former_holder, epoch, &reason)?;
+                        .apply_revoke(&former_holder, epoch, &reason, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseWriteRejected {
@@ -1268,6 +1322,7 @@ impl WorldCore {
                     observed_epoch,
                     reason,
                     received_at_ms,
+                    position,
                 } => {
                     core.write_lease.apply_rejection(LeaseWriteRejection {
                         writer,
@@ -1276,6 +1331,7 @@ impl WorldCore {
                         observed_epoch,
                         reason,
                         received_at_ms,
+                        position,
                     })?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
@@ -1830,6 +1886,16 @@ impl WorldCore {
         if self.isolation != Isolation::default() {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
+            });
+        }
+        if self.presentation != id_core::presentation_policy::PresentationPolicy::default() {
+            entries.push(JournalEntry::PresentationPolicy {
+                policy: self.presentation.clone(),
+            });
+        }
+        if !self.template_roles.is_empty() {
+            entries.push(JournalEntry::TemplateRolesSet {
+                roles: self.template_roles.clone(),
             });
         }
         if self.cross_world_forced {

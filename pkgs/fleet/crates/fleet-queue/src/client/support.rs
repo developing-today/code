@@ -188,31 +188,40 @@ usage: repo-queue <verb> ...\n\
 \n\
 Run `repo-queue <verb> --help` for flags:\n\
   validate <packet-path>\n\
-  enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\
-  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--json]\n\
-  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
-  release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\
+  enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\
+  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\
+  meta <get|set|unset|keys> ...\n\
+  staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
+  needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
+  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>]... [--tasks <id,id,...>] [--take-over] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
+  release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
   heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
   checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\
+  reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\
   park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
   block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\
   unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
+  time-recheck [--task <id>] [--limit <n>]\n\
   repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
-  cancel <task-id> [--worker <id>] --reason <text>\n\
+  resolution-backfill\n\
+  cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\
-  complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>]\n\
+  complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\
   verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   show <task-id> [--limit <n>] [--json]\n\
+  note <add|list|edit|remove> ...\n\
+  link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
+  placement-load [--worker <id>] [--json]\n\
   signal [--queue <name>] [--reason <text>]\n\
   fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
@@ -228,16 +237,25 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue validate <packet-path>\n\nValidates a task packet without enqueuing it."
         }
         "enqueue" => {
-            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet."
+            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\nEnqueues a task packet with optional metadata."
         }
         "list" => {
-            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--json]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work. With --json, --queue and --task are required together: one scoped broker read printed as a single JSON record (result found / not_found / partial / unknown, with the mode and route used); no other list flag applies in that form."
+            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\nLists tasks; repeat --meta for ANDed JSON equality filters. --label filters on cached GitHub labels (a trailing * matches a prefix, e.g. user/*). A bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked."
+        }
+        "meta" => {
+            "usage: repo-queue meta get <task-id> [key] | set <task-id> <key> <json-value> | set <task-id> [--json '{...}'] | unset <task-id> <key> | keys\n\nReads or merge-patches queue metadata. Null values delete keys; metadata writes are audited in task history."
+        }
+        "staleness" => {
+            "usage: repo-queue staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\nThe stewardship staleness read: one broker query returns actionable tasks whose last task_history transition is older than --older-than-seconds (default 86400), oldest first, plus claimed tasks whose lease expires within --lease-cap-seconds (default 900). Tasks with no history row fall back to their updated_at and report a null last_history_id."
+        }
+        "needs-user" => {
+            "usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\nThe stewardship needs-user read: blocked/parked tasks carrying a question metadata entry, oldest last transition first, with the question object and a blocked-by count read from the blocked_deps cache (superseded by task_deps counts when Q6 lands)."
         }
         "claim" => {
-            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
+            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>]... [--tasks <id,id,...>] [--take-over] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch. With --tasks <id,id,...> (#9178 §3), claims several named tasks for this session in one operation and reports a per-task outcome (claimed / already-owned-by-this-session / skipped-claimed / not-found / failed); --take-over transfers named live-claimed tasks from their recorded holder session instead of skipping them. --tasks combines with neither a single --task, --count, --from-session, --manual-override, --handoff, nor --bind; repeating --task <id> names the same batch as --tasks."
         }
         "release" => {
-            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\nReleases a held claim."
+            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
         }
         "lane" => {
             "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."
@@ -250,6 +268,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "checkpoint" => {
             "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+        }
+        "reprioritize" => {
+            "usage: repo-queue reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\nChanges a live task priority (one of 10, 20, 30, 40, 50, 70, 90) and synchronizes its linked issue category."
         }
         "park" => {
             "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\nParks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
@@ -269,11 +290,17 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "quarantine-recheck" => {
             "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
         }
+        "time-recheck" => {
+            "usage: repo-queue time-recheck [--task <id>] [--limit <n>]\n\nRechecks tasks blocked until a time; requeues the ones whose time has passed."
+        }
         "repair" => {
             "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
         }
+        "resolution-backfill" => {
+            "usage: repo-queue resolution-backfill\n\nRuns the idempotent Q2 terminal-resolution backfill and prints the terminal census, proven rows, and unresolved rows. Only verdicts evidenced by existing result data or a unique dedupe twin are written."
+        }
         "cancel" => {
-            "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text>\n\nCancels a task. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
+            "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\nCancels a task with a required redirection or rejection resolution. Rejections require a reason; redirections require a reference. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
         }
         "revive" => {
             "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task."
@@ -282,7 +309,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\nFails a task. --reason-class is one of transient (the default), deterministic, blocked."
         }
         "complete" => {
-            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>]\n\nCompletes a task."
+            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\nCompletes a task. Defaults to resolution done/unverified; a verified disposition readback stamps done/verified."
         }
         "verify-disposition" => {
             "usage: repo-queue verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\nReads the issue and its linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it."
@@ -296,10 +323,40 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "show" => {
             "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
         }
+        "note" => {
+            "usage: repo-queue note <add|list|edit|remove> ...\n\nA task's notes: an append-only, authored stream (#14170 Q4). Run `repo-queue note <sub> --help` for flags."
+        }
+        "link" => {
+            "usage: repo-queue link <add|remove|list> ...\n\nManages normalized relationships for a queue task."
+        }
+        "link add" => {
+            "usage: repo-queue link add <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nAdds an issue, pull request, or task relationship. Exactly one target option is required."
+        }
+        "link remove" => {
+            "usage: repo-queue link remove <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nSoft-removes a relationship. Exactly one target option is required."
+        }
+        "link list" => {
+            "usage: repo-queue link list <task-id> [--include-removed] [--json]\n\nLists a task's relationships."
+        }
+        "note add" => {
+            "usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nAppends a note to a task. The worker is the author. The body is at most 4096 characters. Without marks, a note by the task's claim holder copies the claim's session and model."
+        }
+        "note list" => {
+            "usage: repo-queue note list <task-id> [--latest <n>] [--include-removed] [--json]\n\nLists a task's notes, oldest first, with the count of live notes. --latest keeps the newest n."
+        }
+        "note edit" => {
+            "usage: repo-queue note edit <note-id> --text <text> [--worker <id>]\n\nReplaces a note's body. Only the note's author may edit it; the old body is kept in the task's history."
+        }
+        "note remove" => {
+            "usage: repo-queue note remove <note-id> [--worker <id>]\n\nRemoves a note. The removal is soft: the row stays, hidden from list unless --include-removed. Only the note's author may remove it."
+        }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
         }
         "health" => "usage: repo-queue health [--queue <name>] [--worker <id>]\n\nBroker health.",
+        "placement-load" => {
+            "usage: repo-queue placement-load [--worker <id>] [--json]\n\nThe placement coordinator's true load view (broker /placement-load): per owner, the GitHub running/queued counts the sweep last read, active coordinator claims, occupancy against cap, and the read's time and source. Read-only; a down or disabled coordinator exits 3 naming the unavailability instead of printing an empty view."
+        }
         "signal" => {
             "usage: repo-queue signal [--queue <name>] [--reason <text>]\n\nSends a queue signal."
         }
@@ -390,11 +447,26 @@ pub(super) fn usage_error(verb: &str, msg: &str) -> ! {
 /// duplicate flag, flag without its value) prints the error plus
 /// the verb's usage and exits 2.
 pub(super) fn parse_verb_args(verb: &str, rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
+    parse_verb_args_multi(verb, rest, flags, bools, &[])
+}
+
+/// `parse_verb_args` with repeatable value flags (#9178 §3, ported
+/// from PR #16396): a flag named in `repeatable` may appear several
+/// times (`--task 1 --task 2`) and its values accumulate
+/// comma-joined, so `Args::get_list` reads every occurrence. Any
+/// other duplicate stays a usage error.
+pub(super) fn parse_verb_args_multi(
+    verb: &str,
+    rest: &[String],
+    flags: &[&str],
+    bools: &[&str],
+    repeatable: &[&str],
+) -> Args {
     if wants_help(rest, flags) {
         println!("{}", usage(verb));
         exit(0);
     }
-    match parse_args_inner(rest, flags, bools) {
+    match parse_args_inner_multi(rest, flags, bools, repeatable) {
         Ok(args) => args,
         Err(msg) => usage_error(verb, &msg),
     }
@@ -416,6 +488,19 @@ pub(super) fn parse_args_inner(
     flags: &[&str],
     bools: &[&str],
 ) -> Result<Args, String> {
+    parse_args_inner_multi(rest, flags, bools, &[])
+}
+
+/// Pure core of `parse_verb_args_multi`: `repeatable` names the
+/// value flags whose repeats accumulate comma-joined instead of
+/// erroring as duplicates (#9178 §3 `--task`). A repeated boolean,
+/// or a repeat naming an unknown flag, stays a usage error.
+pub(super) fn parse_args_inner_multi(
+    rest: &[String],
+    flags: &[&str],
+    bools: &[&str],
+    repeatable: &[&str],
+) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
     let mut i = 0;
@@ -427,7 +512,29 @@ pub(super) fn parse_args_inner(
                 None => (long.to_string(), None),
             };
             if opts.contains_key(&name) {
-                return Err(format!("argument --{name}: duplicate flag"));
+                if !repeatable.contains(&name.as_str())
+                    || !flags.contains(&name.as_str())
+                    || bools.contains(&name.as_str())
+                {
+                    return Err(format!("argument --{name}: duplicate flag"));
+                }
+                let v = if let Some(v) = inline {
+                    v
+                } else if i + 1 < rest.len() && !rest[i + 1].starts_with("--") {
+                    let v = rest[i + 1].clone();
+                    i += 1;
+                    v
+                } else {
+                    return Err(format!("argument --{name}: expected one argument"));
+                };
+                let prev = opts
+                    .get(&name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                opts.insert(name, Value::String(format!("{prev},{v}")));
+                i += 1;
+                continue;
             }
             if bools.contains(&name.as_str()) {
                 if let Some(v) = inline {
@@ -459,6 +566,9 @@ pub(super) fn parse_args_inner(
 }
 
 impl Args {
+    pub(super) fn pos(&self, idx: usize) -> Option<String> {
+        self.pos.get(idx).cloned()
+    }
     pub(super) fn get(&self, name: &str) -> Option<String> {
         self.opts
             .get(name)
@@ -467,6 +577,20 @@ impl Args {
     }
     pub(super) fn has(&self, name: &str) -> bool {
         self.opts.contains_key(name)
+    }
+    /// Every value of a (possibly repeated) flag: the raw
+    /// comma-joined value split on commas, trimmed, empties dropped
+    /// (#9178 §3: `--task 1 --task 2` and `--task 1,2` read alike).
+    pub(super) fn get_list(&self, name: &str) -> Vec<String> {
+        match self.opts.get(name).and_then(|v| v.as_str()) {
+            None => Vec::new(),
+            Some(raw) => raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect(),
+        }
     }
     pub(super) fn get_i64(&self, name: &str) -> Option<i64> {
         match self.get(name) {
@@ -768,8 +892,9 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
     if queue_scope.is_some() || args.has("handoff") || args.has("bind") {
         return None;
     }
-    const INTENT_FLAGS: [&str; 10] = [
+    const INTENT_FLAGS: [&str; 12] = [
         "task",
+        "tasks",
         "filter",
         "queue",
         "count",
@@ -779,6 +904,7 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
         "pool",
         "platform",
         "from-session",
+        "manual-override",
     ];
     if INTENT_FLAGS.iter().any(|name| args.get(name).is_some()) {
         return None;
@@ -1315,7 +1441,11 @@ pub(super) fn session_declared_pool(session: &Value) -> Option<String> {
 /// (there is no cost readout to source it from, so it stays null).
 ///
 /// - `model`: the claim stamp's serving leaf, else the session
-///   record's serving leaf.
+///   record's serving leaf. A claim stamped through the route
+///   provider names the pool (route id) in `claim_model`, not a
+///   leaf — that alias is skipped, exactly as
+///   `session_model_stamp` refuses it, so the session leaf or an
+///   honest null supplies the model instead.
 /// - `effort`: the claim stamp's variant (a real one — the server
 ///   writes "default" when none was chosen), else the session
 ///   record's variant.
@@ -1331,7 +1461,18 @@ pub(super) fn derive_completion_telemetry(
     session: Option<&Value>,
 ) -> Map<String, Value> {
     let leaf: Option<(String, String, Option<String>)> = session.and_then(session_model_stamp);
-    let model = nonempty_str(claim, "claim_model")
+    // #4919: a route-provider claim stamp (the transfer path stamps
+    // the session's declared route) holds the route id in
+    // claim_model — the pool, not a serving leaf. Recording it as
+    // the completion's model would write the alias this derivation
+    // exists to avoid (measured on real rows: result.model =
+    // "workhorse"), so skip it and let the session leaf — or null —
+    // speak.
+    let claim_model = match nonempty_str(claim, "claim_provider") {
+        Some(p) if p == ROUTE_PROVIDER => None,
+        _ => nonempty_str(claim, "claim_model"),
+    };
+    let model = claim_model
         .map(str::to_string)
         .or_else(|| leaf.as_ref().map(|s| s.1.clone()));
     let effort = nonempty_str(claim, "claim_variant")

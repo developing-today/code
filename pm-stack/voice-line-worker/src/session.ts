@@ -24,6 +24,9 @@ export interface Env {
   VOICE_SESSIONS: DurableObjectNamespace;
   TURSO_URL: string;
   TURSO_TOKEN: string;
+  /** Deployed commit stamped as a var at build time (#15793); absent
+   * in local dev, where /version answers "unknown". */
+  VERSION?: string;
 }
 
 export const STT_MODEL = "@cf/openai/whisper-large-v3-turbo";

@@ -29,7 +29,10 @@ name: pm-console-edge deploy
 # itself, or are published by the host. Three secrets are optional, put
 # there by the host's scripts/expose.py --edge-direct (off by default):
 # GITHUB_TOKEN and QUEUE_TOKEN, which let it act itself while the laptop
-# is away, and EDGE_DIRECT, the opt-in that must read `on`. It has no
+# is away, and EDGE_DIRECT, the opt-in that must read `on`. A fourth,
+# BRIDGE_TOKEN, is uploaded in the same pass when the vault holds it:
+# the PM stack's own bridge credential, which the Worker presents to
+# the message-bridge Worker over its service binding (#14373). It has no
 # route here either. The host's pm-stack/console/scripts/expose.py sends
 # the hostname through it once it answers its health check, and
 # `expose.py --edge off` takes the hostname off it again, which is the
@@ -204,7 +207,11 @@ jobs:
             # as a version, puts it at 100%, and puts the previous
             # version back if this one does not answer.
             node release.mjs --sha "$GITHUB_SHA"
-            echo "Deployed pm-console-edge from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+            # Version uploads do not apply Cron Triggers. Without this,
+            # the scheduled health probes never run on an existing Worker.
+            # No routes are declared here: expose.py still owns the hostname.
+            npx wrangler triggers deploy
+            echo "Deployed pm-console-edge and its triggers from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Check the deployed Worker answers
         if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''
@@ -218,14 +225,14 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["subdomain"])')"
           url="https://pm-console-edge.${sub}.workers.dev/console/health"
-          want="${GITHUB_SHA::12}"
+          want="$GITHUB_SHA"
           for _ in $(seq 1 20); do
-            got="$(curl -fsS --max-time 10 "$url" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version") if d.get("ok") and d.get("edge") else "")' 2>/dev/null || true)"
+            got="$(curl -fsS --max-time 10 "$url" | python3 pm-stack/console/scripts/check-deployed.py "$want" 2>/dev/null || true)"
             if [ "$got" = "$want" ]; then
-              echo "pm-console-edge answers as ${want}." >> "$GITHUB_STEP_SUMMARY"
+              echo "pm-console-edge answers as ${want} with a truthful deployed age." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 6
           done
-          echo "the deployed Worker did not answer its health check as ${want} (last answer: ${got:-none})" >&2
+          echo "the deployed Worker did not answer its health check as ${want} with a truthful age (last answer: ${got:-none})" >&2
           exit 1

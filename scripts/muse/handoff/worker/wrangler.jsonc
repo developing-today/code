@@ -5,6 +5,12 @@
   "compatibility_date": "2026-11-21",
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    // Deployed commit named by GET /version (#15793); real deploys stamp
+    // it at build time (cloudflare.config.ts), this keeps local dev and
+    // unstamped builds honest.
+    "VERSION": "unknown"
+  },
   "observability": { "enabled": false },
   "durable_objects": {
     "bindings": [{ "name": "HANDOFFS", "class_name": "Handoff" }]

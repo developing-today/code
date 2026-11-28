@@ -132,12 +132,20 @@ func callHeader(set *settings.Set) string {
 // authorize attaches the configured daemon bearer token to a request
 // (#1975): the same transport.bearerToken setting the daemon checks,
 // resolved from this client's own settings (environment or config), so
-// a caller and its daemon agree by construction. Unset, no header --
-// the request is byte-for-byte what it was before the setting existed.
+// a caller and its daemon agree by construction. A daemon-authenticated
+// /mcp request can carry its validated key for a nested local call, keeping
+// the caller's ceiling across that boundary. Unset, no header -- the
+// request is byte-for-byte what it was before the setting existed.
 func (c *Client) authorize(req *http.Request) {
 	tok := daemon.BearerToken(c.set)
 	if c.authResolved {
 		tok = c.authToken
+	}
+	if delegated, ok := daemon.KeyCredentialFrom(req.Context()); ok {
+		// A keyed /mcp request that calls back through this local daemon
+		// client must keep the same identity; otherwise the nested /v1
+		// request would inherit the daemon's broader transport token.
+		tok = delegated
 	}
 	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -993,6 +1001,16 @@ func (c *Client) CallReporting(ctx context.Context, server, tool string, cc conf
 // ReleaseCaller frees instances a finished caller created.
 func (c *Client) ReleaseCaller(ctx context.Context, callID string) error {
 	_, err := c.do(ctx, http.MethodPost, "/v1/session/release", map[string]string{"session": callID})
+	return err
+}
+
+// KillCaller ends the instances a session created, even when they are busy
+// (#1931 slice 2). Release detaches and stops only what is already idle;
+// kill is the force path for the same session handle. The operation is
+// declared destructive, so MCP clients scope it through destructiveHint and
+// the caller's confirmation policy like every other destructive operation.
+func (c *Client) KillCaller(ctx context.Context, callID string) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/session/kill", map[string]string{"session": callID})
 	return err
 }
 

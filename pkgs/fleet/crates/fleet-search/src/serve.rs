@@ -370,11 +370,20 @@ fn run_settings(settings: ServeSettings) -> i32 {
             Ok(s) => s,
             Err(e) => return fail(EXIT_FAILURE, &e.to_string()),
         };
-        let backend = atlas_core::shards::ShardedBackend::new(backend, set).with_refresh(
+        let mut backend = atlas_core::shards::ShardedBackend::new(backend, set).with_refresh(
             spec.clone(),
             ceiling,
             settings.shard_refresh,
         );
+        // #3125 slice 7: attach the catalog/source-registry so served
+        // get-chunk occurrence rows carry `root_id` for registered
+        // locators; mirrors atlas-search `cmd_serve`.
+        if let Some(path) = &settings.source_registry {
+            match atlas_core::source_registry::open_source_registry(path) {
+                Ok(conn) => backend = backend.with_source_registry(conn),
+                Err(e) => return fail(EXIT_FAILURE, &e.to_string()),
+            }
+        }
         let engine = build_engine(backend, Arc::new(LazyEmbedder::new()));
         return match server::serve_forever(settings, engine) {
             Ok(()) => EXIT_FAILURE,
@@ -411,4 +420,270 @@ pub fn run(args: &[String]) -> i32 {
 /// Used by tests and tooling: the default config path the role reads.
 pub fn default_config_path() -> PathBuf {
     server::default_service_config_path()
+}
+
+#[cfg(test)]
+mod parity_regression_tests {
+    // #15653: Fleet mirrors of the Atlas service behaviors that drifted.
+    // Oracles: Atlas `server.rs` (load_service_settings /
+    // resolve_service_config_path / SearchEngine::chunk contract) and
+    // atlas-core `run_get_chunk_with_context` (occurrences bounded by
+    // grant ∩ context).
+    use super::*;
+    use atlas_core::shards::{Tier, TierCeiling};
+    use atlas_core::types::{BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow};
+    use atlas_core::{ChunkOccurrence, DisclosureContext, SearchBackend};
+    use atlas_proto::Sensitivity as ProtoSensitivity;
+
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_config(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+
+    fn service_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-serve-parity-15653-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ceiling_alias_private_is_accepted_like_atlas() {
+        // Oracle: Atlas `Sensitivity::from_ceiling_name`: legacy
+        // "public/internal/private/sensitive" map onto the four rungs;
+        // Fleet's service config must accept them too (old code used
+        // strict `from_name` and rejected all four).
+        let dir = service_dir("alias");
+        let path = write_config(
+            &dir,
+            "alias.json",
+            r#"{"clients": [{"name": "probe", "token": "tok", "ceiling_cap": "private"}]}"#,
+        );
+        let settings =
+            server::load_service_settings(&path, server::ServeOverrides::default()).unwrap();
+        assert_eq!(settings.clients.len(), 1);
+        assert_eq!(
+            settings.clients[0].ceiling_cap,
+            ProtoSensitivity::LocalOnly,
+            "private must map to local-only exactly like Atlas"
+        );
+        let path = write_config(
+            &dir,
+            "alias-internal.json",
+            r#"{"clients": [{"name": "probe", "token": "tok", "ceiling_cap": "internal"}]}"#,
+        );
+        let settings =
+            server::load_service_settings(&path, server::ServeOverrides::default()).unwrap();
+        assert_eq!(settings.clients[0].ceiling_cap, ProtoSensitivity::Personal);
+    }
+
+    #[test]
+    fn empty_config_flag_counts_as_absent_like_atlas() {
+        // Oracle: Atlas `resolve_service_config_path` filters an empty
+        // flag value (same reasoning as `service::base_url`).
+        let old = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG").ok();
+        unsafe {
+            std::env::remove_var("ATLAS_SEARCH_SERVICE_CONFIG");
+        }
+        let got = server::resolve_service_config_path(Some(std::path::Path::new("")));
+        assert_eq!(got, server::default_service_config_path());
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("ATLAS_SEARCH_SERVICE_CONFIG", v);
+            }
+        }
+    }
+
+    #[test]
+    fn source_registry_config_is_validated_like_atlas() {
+        // Oracle: Atlas `load_service_settings` validation strings for
+        // `source_registry` (requires shards; path must not be empty).
+        let dir = service_dir("registry");
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write_config(
+            &dir,
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings =
+            server::load_service_settings(&wired, server::ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write_config(
+            &dir,
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err =
+            server::load_service_settings(&orphan, server::ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write_config(
+            &dir,
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err =
+            server::load_service_settings(&empty, server::ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
+        );
+    }
+
+    struct CeilingStub;
+
+    fn personal_detail() -> ChunkDetail {
+        ChunkDetail {
+            chunk_id: 7,
+            text: "personal chunk with secret provenance".to_string(),
+            chunk_idx: 0,
+            message_id: "m7".to_string(),
+            m_role: Some("user".to_string()),
+            session_id: "s7".to_string(),
+            s_title: Some("stub".to_string()),
+            s_client: Some("stub".to_string()),
+            s_created_at: Some("2026-11-26T00:00:00Z".to_string()),
+            l_kind: Some("chat".to_string()),
+            l_topics: Some("[]".to_string()),
+            l_projects: Some("[]".to_string()),
+            eff_sensitivity: Some("personal".to_string()),
+        }
+    }
+
+    fn secret_occurrence() -> ChunkOccurrence {
+        ChunkOccurrence {
+            shard: "atlas-core-secret-x-00".to_string(),
+            tier: Tier::Secret,
+            canonical_hash: "deadbeef".to_string(),
+            source: "repo@commit:path".to_string(),
+            span_start: 0,
+            span_end: 4,
+            observed_at: "2026-11-26T00:00:00Z".to_string(),
+            root_id: Some("root-1".to_string()),
+        }
+    }
+
+    impl SearchBackend for CeilingStub {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn vec_table(&self) -> &str {
+            atlas_core::DEFAULT_VEC_TABLE
+        }
+        fn notes(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn branch_pools(
+            &self,
+            _q: &BranchQuery,
+            _f: &atlas_core::Filters,
+        ) -> Result<BranchPools, atlas_core::Error> {
+            Ok(BranchPools::default())
+        }
+        fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>, atlas_core::Error> {
+            Ok(ids
+                .iter()
+                .filter_map(|id| (*id == 7).then(personal_detail))
+                .collect())
+        }
+        fn neighbors(
+            &self,
+            _message_id: &str,
+            _chunk_idx: i64,
+            _n: i64,
+        ) -> Result<Vec<NeighborRow>, atlas_core::Error> {
+            Ok(Vec::new())
+        }
+        fn message(&self, _id: &str) -> Result<Option<MessageRow>, atlas_core::Error> {
+            Ok(None)
+        }
+        fn occurrences(
+            &self,
+            _canonical_hash: &str,
+            _tier_ceiling: TierCeiling,
+            caller_ceiling: atlas_core::Sensitivity,
+        ) -> Result<Vec<ChunkOccurrence>, atlas_core::Error> {
+            // Emulate the shard fan-out's ceiling gate: the secret-tier
+            // locator is visible only to a secret-bearing caller.
+            if caller_ceiling >= atlas_core::Sensitivity::SecretBearing {
+                Ok(vec![secret_occurrence()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    struct FixedEmbedder;
+
+    impl atlas_core::QueryEmbedder for FixedEmbedder {
+        fn embed_query(&self, _text: &str, _trunc: usize) -> Result<Vec<f32>, atlas_core::Error> {
+            Err(atlas_core::Error::fatal("no embedder in test"))
+        }
+    }
+
+    fn engine() -> server::CoreSearchEngine<CeilingStub, FixedEmbedder> {
+        use std::sync::Arc;
+        let state: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(|| "test".to_string());
+        server::CoreSearchEngine::new(Arc::new(CeilingStub), Arc::new(FixedEmbedder), state)
+    }
+
+    #[test]
+    fn personal_caller_get_chunk_hides_secret_provenance() {
+        // Oracle: `SearchEngine::chunk` is ceiling-checked and Fleet
+        // threads the caller's ceiling into
+        // `run_get_chunk_with_context`, whose occurrences are bounded
+        // by grant ∩ context. A personal caller asking for a personal
+        // chunk whose registry row is secret-tier must see no
+        // secret-tier provenance; a secret caller sees it.
+        use crate::server::SearchEngine;
+        let engine = engine();
+        let personal = engine.chunk(7, 0, ProtoSensitivity::Personal).unwrap();
+        let leaked = personal
+            .get("occurrences")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|o| {
+                    o.get("tier").and_then(|t| t.as_str()) == Some(Tier::Secret.name())
+                        || o.get("source").and_then(|s| s.as_str()) == Some("repo@commit:path")
+                })
+            })
+            .unwrap_or(false);
+        assert!(
+            !leaked,
+            "personal caller must not receive secret-tier occurrence provenance: {personal}"
+        );
+        let secret = engine.chunk(7, 0, ProtoSensitivity::SecretBearing).unwrap();
+        let seen = secret
+            .get("occurrences")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .any(|o| o.get("source").and_then(|s| s.as_str()) == Some("repo@commit:path"))
+            })
+            .unwrap_or(false);
+        assert!(
+            seen,
+            "secret caller must still receive its own provenance: {secret}"
+        );
+        // The disclosure context import is load-bearing: the engine
+        // path must stay on LocalOwner + caller ceiling, never the
+        // standalone secret-bearing default alone.
+        let _ = DisclosureContext::LocalOwner;
+    }
 }

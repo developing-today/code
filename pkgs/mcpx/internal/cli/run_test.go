@@ -33,6 +33,77 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestReportFinalResultNamesSelectedRuntime(t *testing.T) {
+	// The notice is for a person at a terminal in the default text
+	// rendering; the terminal question is faked, so this pins the human
+	// case without needing a tty in the test runner.
+	oldTTY := stderrIsTerminal
+	stderrIsTerminal = func() bool { return true }
+	defer func() { stderrIsTerminal = oldTTY }()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	(&App{}).reportFinalResult(&execsvc.Result{Runtime: "bun"})
+	os.Stderr = old
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "mcpx: JavaScript runtime: bun\n"; string(got) != want {
+		t.Fatalf("runtime notice = %q, want %q", got, want)
+	}
+}
+
+// The runtime notice stays off for machine-readable renderings and when
+// stderr is not a terminal, so a caller reading combined output parses
+// only the run's answer (nix e2e failures, run 46042116668).
+func TestReportFinalResultKeepsMachineOutputClean(t *testing.T) {
+	oldTTY := stderrIsTerminal
+	defer func() { stderrIsTerminal = oldTTY }()
+
+	for _, tc := range []struct {
+		name string
+		tty  bool
+		json bool
+		mach bool
+	}{
+		{name: "piped stderr", tty: false},
+		{name: "json flag", tty: true, json: true},
+		{name: "machine log format", tty: true, mach: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stderrIsTerminal = func() bool { return tc.tty }
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := os.Stderr
+			os.Stderr = w
+			(&App{JSON: tc.json, machineOutput: tc.mach}).reportFinalResult(&execsvc.Result{Runtime: "bun"})
+			os.Stderr = old
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(r)
+			_ = r.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("runtime notice should be suppressed, got %q", got)
+			}
+		})
+	}
+}
+
 func TestRunGlobalFlagThenVersion(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{"--json", "--version"}, Env{}, Stdio{Out: &out, Err: &errOut})

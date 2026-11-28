@@ -741,7 +741,8 @@ let
         name: recipe: !(recipe.private or false) && name != "default"
       ) justRecipes.recipes;
 
-      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      # The standalone flake package is the explicit checked build target.
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { doCheck = true; };
       mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
         wrapWithRuntimes = false;
         doCheck = false;
@@ -839,18 +840,25 @@ let
       cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
         inherit cfContainerHello;
       };
-      queueTransportAlert = pkgs.callPackage ../pkgs/queue-transport-alert/worker/package.nix { };
-      queueTransportAlertDeploy = pkgs.callPackage ../pkgs/queue-transport-alert/worker/deploy.nix {
-        inherit queueTransportAlert;
-        cf = pkgs.callPackage ../pkgs/cf { };
-        wrangler = pkgs.callPackage ../pkgs/wrangler { };
-      };
       messageBridge = pkgs.callPackage ../pkgs/message-bridge/worker/package.nix { };
       messageBridgeDeploy = pkgs.callPackage ../pkgs/message-bridge/worker/deploy.nix {
         inherit messageBridge;
         cf = pkgs.callPackage ../pkgs/cf { };
         wrangler = pkgs.callPackage ../pkgs/wrangler { };
       };
+      # Turso -> D1 move (2026-11-25): Turso-protocol endpoint over D1.
+      d1Gateway = pkgs.callPackage ../pkgs/d1-gateway/worker/package.nix { };
+      d1GatewayDeploy = pkgs.callPackage ../pkgs/d1-gateway/worker/deploy.nix {
+        inherit d1Gateway;
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
+      # Issue #5767, external-Worker slice: the hatch-personal Workers'
+      # deploy apps (pinned rev staged at deploy time).
+      agentInboxDeploy = pkgs.callPackage ../pkgs/external-workers/agent-inbox-deploy.nix { };
+      webhookGatewayDeploy = pkgs.callPackage ../pkgs/external-workers/webhook-gateway-deploy.nix { };
+      webhookGatewaySinkDeploy =
+        pkgs.callPackage ../pkgs/external-workers/webhook-gateway-sink-deploy.nix
+          { };
     in
     {
       packages = {
@@ -866,10 +874,13 @@ let
           labOpsHubDeploy
           cfContainerHello
           cfContainerHelloDeploy
-          queueTransportAlert
-          queueTransportAlertDeploy
           messageBridge
           messageBridgeDeploy
+          d1Gateway
+          d1GatewayDeploy
+          agentInboxDeploy
+          webhookGatewayDeploy
+          webhookGatewaySinkDeploy
           ;
         mcpx-docs = mcpxDocs;
         fleet-docs = fleetDocs;
@@ -956,8 +967,11 @@ let
         cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
         lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
-        queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
         message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";
+        d1-gateway-deploy = mkApp d1GatewayDeploy "Deploy the d1-gateway Worker (Turso-protocol endpoint over D1) through the wrangler versions flow; --deploy-version <id> rolls back (needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)";
+        agent-inbox-deploy = mkApp agentInboxDeploy "Deploy the agent-inbox Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-deploy = mkApp webhookGatewayDeploy "Deploy the webhook-gateway Worker from the pinned dezren39/hatch-personal source — deploy the sink first on a fresh account (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-sink-deploy = mkApp webhookGatewaySinkDeploy "Deploy the webhook-gateway-sink Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -990,6 +1004,7 @@ let
               # Root NixOS runtime output; the ID flake's named test
               # checks remain available and run through id-check CI.
               checkRuntimePackages = false;
+              inherit (inputs) crane;
             }
           );
         in
@@ -1422,6 +1437,7 @@ let
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
+        "stable-entrypoints"
         "laptop-untracked-review"
         "openclaw-backup"
         "oc-password-sync"
@@ -1575,6 +1591,9 @@ let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       deployPkgs = pkgs.callPackage ../pkgs/deploy {
         sourceRev = inputs.self.rev or "dirty";
+        # nixpkgs attr name has a hyphen, so callPackage cannot
+        # auto-fill it into pkgs/deploy's irohRelayPkg argument.
+        irohRelayPkg = pkgs.iroh-relay;
       };
       badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
         builtins.toJSON {
@@ -1696,19 +1715,66 @@ let
               grep -q "cold-store-rehydrator" list.txt
               grep -q "lab-ops-hub" list.txt
               grep -q "cf-container-hello" list.txt
-              grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
+              grep -q "agent-inbox" list.txt
+              grep -q "webhook-gateway" list.txt
+              grep -q "webhook-gateway-sink" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "pm-aggregator" list.txt
               grep -q "pm-projector" list.txt
               grep -q "pm-tunnel" list.txt
-              grep -q "ready-for-agent" list.txt
+              grep -q "iroh-relay" list.txt
+              ${
+                if deployPkgs.deployReadyForAgentSupported then
+                  ''grep -q "ready-for-agent" list.txt''
+                else
+                  ''
+                    if grep -q "ready-for-agent" list.txt; then
+                      echo "ready-for-agent listed on an unsupported system (${system})" >&2
+                      exit 1
+                    fi''
+              }
               grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt
               grep -q "laptop" list.txt
               mkdir -p $out
               cp list.txt $out/list.txt
+            '';
+        # Issue #16063 regression check: the ready-for-agent target is
+        # in the registry exactly on the systems its x86-only payload
+        # supports (today: x86_64-linux, per the package's
+        # meta.platforms), and the gate agrees with that declaration.
+        deploy-ready-for-agent-platform =
+          pkgs.runCommandLocal "check-deploy-ready-for-agent-platform"
+            {
+              nativeBuildInputs = [ pkgs.gnugrep ];
+            }
+            ''
+              ${
+                if
+                  deployPkgs.deployReadyForAgentSupported != pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform (
+                    pkgs.callPackage ../pkgs/ready-for-agent/package.nix { }
+                  )
+                then
+                  ''
+                    echo "deployReadyForAgentSupported disagrees with ready-for-agent meta.platforms on ${system}" >&2
+                    exit 1''
+                else
+                  "# gate agrees with meta.platforms on ${system}"
+              }
+              ${deployPkgs.deploy}/bin/deploy list > list.txt
+              ${
+                if deployPkgs.deployReadyForAgentSupported then
+                  ''grep -q "ready-for-agent" list.txt''
+                else
+                  ''
+                    if grep -q "ready-for-agent" list.txt; then
+                      echo "ready-for-agent target registered on unsupported system ${system}" >&2
+                      exit 1
+                    fi''
+              }
+              mkdir -p $out
             '';
         deploy-dupkeys-property =
           pkgs.runCommandLocal "check-deploy-dupkeys-property"
@@ -1857,11 +1923,12 @@ let
 
   make-mcpx-overlay = {
     overlays = {
+      # Consumer overlays skip the standalone suite; CI checks that target.
       default = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
       mcpx = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
     };
   };

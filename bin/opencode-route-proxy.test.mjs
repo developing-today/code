@@ -8,13 +8,14 @@
 // route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
+    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood | huge-body | huge-body-chunked
     last: null,
     hits: 0,
     server: null,
@@ -377,6 +378,36 @@ const makeLeaf = (name, expectedKey) => {
         );
         return res.end("data: [DONE]\n\n");
       }
+      if (leaf.mode === "huge-body") {
+        // A valid completion whose body exceeds the leaf-body cap,
+        // with an honest content-length (#16398).
+        const big = JSON.stringify({
+          id: "chatcmpl-x",
+          object: "chat.completion",
+          created: 1,
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: { role: "assistant", content: "x".repeat(8192) },
+            },
+          ],
+        });
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(big),
+        });
+        return res.end(big);
+      }
+      if (leaf.mode === "huge-body-chunked") {
+        // An over-cap body with NO content-length, dribbled in
+        // chunks: only a streaming byte cap can stop it (#16398).
+        res.writeHead(200, { "content-type": "application/json" });
+        const piece = "x".repeat(1024);
+        for (let i = 0; i < 8; i++) res.write(piece);
+        return res.end();
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -422,7 +453,11 @@ const startProxy = async (arg = {}) => {
   const timeout =
     typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
   const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
+  const leafBodyMax =
+    typeof arg === "object" ? arg.leafBodyMaxBytes : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
+  const systemdActivation =
+    arg && typeof arg === "object" && arg.systemdActivation === true;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -530,6 +565,22 @@ const startProxy = async (arg = {}) => {
       },
       "models": { "m-wd": {} },
     },
+    "leafFree": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
+      "tokenMetering": {
+        "groups": {
+          "big": { "dailyTokens": 28, "marginTokens": 7, "models": ["m-free"] },
+          "small": { "dailyTokens": 700, "marginTokens": 0, "models": ["m-free2"] }
+        }
+      },
+      "models": { "m-free": {}, "m-free2": {} },
+    },
+    "leafPaid": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
+      "models": { "m-free": {} },
+    },
   },
   "model_designations": {
     "m-desig-dec": { "purposes": ["decision"] },
@@ -556,6 +607,9 @@ const startProxy = async (arg = {}) => {
       "bad-days-string": { "daysOfWeek": "fri", "start": "00:00", "end": "23:59", "timezone": "UTC" },
       "bad-days-name": { "daysOfWeek": ["wed", "funday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
       "full-day-names": { "daysOfWeek": ["Wednesday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
+      "offpeak-x": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "04:00", "end": "06:00", "timezone": "UTC", "class": "off-peak" },
+      "preburn-overlap": { "daysOfWeek": ["wed"], "start": "02:00", "end": "03:00", "timezone": "UTC", "class": "preburn" },
+      "badclass-x": { "daysOfWeek": ["mon"], "start": "00:00", "end": "23:59", "timezone": "UTC", "class": "spicy" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
@@ -580,6 +634,9 @@ const startProxy = async (arg = {}) => {
       "t-window-bad-days-string": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-string" }, "leafB/m-b" ] },
       "t-window-bad-days-name": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-name" }, "leafB/m-b" ] },
       "t-window-full-day-names": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "full-day-names" }, "leafB/m-b" ] },
+      "t-window-bound": { "selection": "ordered", "windows": ["peak"], "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
+      "t-window-bound-multi": { "selection": "ordered", "windows": ["peak", "offpeak-x"], "targets": [ { "model": "leafA/m-a", "window": "offpeak-x" }, "leafB/m-b" ] },
+      "t-window-badclass": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "badclass-x" }, "leafB/m-b" ] },
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
@@ -601,12 +658,28 @@ const startProxy = async (arg = {}) => {
       "t-speak": { "purpose": "speak", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
       "t-guard": { "purpose": "guard", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
       "t-chat-desig": { "selection": "ordered", "targets": ["leafA/m-desig-dec", "leafB/m-b"] },
+      "t-metered": { "selection": "ordered", "targets": ["leafFree/m-free", "leafPaid/m-free"] },
+      "t-metered-only": { "selection": "ordered", "targets": ["leafFree/m-free"] },
+      "t-metered-groups": { "selection": "ordered", "targets": ["leafFree/m-free", "leafFree/m-free2", "leafPaid/m-free"] },
     },
   },
 }`,
   );
 
-  const port = await freePort();
+  let activationSocket;
+  let activationFd;
+  let port;
+  if (systemdActivation) {
+    activationSocket = net.createServer();
+    await new Promise((resolve, reject) => {
+      activationSocket.once("error", reject);
+      activationSocket.listen(0, "127.0.0.1", resolve);
+    });
+    port = activationSocket.address().port;
+    activationFd = activationSocket._handle.fd;
+  } else {
+    port = await freePort();
+  }
   const env = {
     ...process.env,
     HOME: tmp,
@@ -617,15 +690,38 @@ const startProxy = async (arg = {}) => {
     ...(leafTimeout !== undefined
       ? { OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS: String(leafTimeout) }
       : {}),
+    ...(leafBodyMax !== undefined
+      ? { OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES: String(leafBodyMax) }
+      : {}),
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
   };
+  delete env.LISTEN_FDS;
+  delete env.LISTEN_PID;
+  const proxyPath = path.join(binDir, "opencode-route-proxy.mjs");
+  const childArgs = systemdActivation
+    ? [
+        "--input-type=module",
+        "-e",
+        `process.env.LISTEN_PID = String(process.pid); await import(${JSON.stringify(pathToFileURL(proxyPath).href)});`,
+      ]
+    : [proxyPath];
+  if (systemdActivation) env.LISTEN_FDS = "1";
   const child = spawn(
     process.execPath,
-    [path.join(binDir, "opencode-route-proxy.mjs")],
-    { env, stdio: ["ignore", "pipe", "pipe"] },
+    childArgs,
+    {
+      env,
+      stdio: systemdActivation
+        ? ["ignore", "pipe", "pipe", activationFd]
+        : ["ignore", "pipe", "pipe"],
+    },
   );
+  if (systemdActivation) {
+    await once(child, "spawn");
+    await new Promise((resolve) => activationSocket.close(resolve));
+  }
   let log = "";
   child.stdout.on("data", (d) => (log += d));
   child.stderr.on("data", (d) => (log += d));
@@ -656,6 +752,9 @@ const startProxy = async (arg = {}) => {
     });
   const cleanup = async () => {
     child.kill("SIGKILL");
+    if (activationSocket?.listening) {
+      await new Promise((resolve) => activationSocket.close(resolve));
+    }
     leafA.server.close();
     leafB.server.close();
   };
@@ -753,6 +852,23 @@ test("health and model list are served locally", async () => {
   }
 });
 
+test(
+  "systemd LISTEN_FDS accepts on the inherited fd 3 listener (oracle: /health returns 200)",
+  async () => {
+    const p = await startProxy({ systemdActivation: true });
+    try {
+      const response = await fetch(`${p.base}/health`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        service: "opencode-route-proxy",
+      });
+    } finally {
+      await p.cleanup();
+    }
+  },
+);
+
 test("ordered route serves from the first leaf, messages verbatim", async () => {
   const p = await startProxy();
   try {
@@ -792,6 +908,47 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     assert.equal(rows[0].session_id, null);
     assert.equal(rows[1].outcome, "success");
     assert.equal(rows[1].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("over-cap leaf body with a declared length fails over; both attempts recorded (#16398)", async () => {
+  const p = await startProxy({ leafBodyMaxBytes: "1024" });
+  try {
+    p.leafA.mode = "huge-body";
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "ProviderInternal");
+    assert.match(rows[0].error_message, /exceeds the 1024-byte cap/);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].session_id, null);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("over-cap leaf body streamed without a length fails over (#16398)", async () => {
+  const p = await startProxy({ leafBodyMaxBytes: "1024" });
+  try {
+    p.leafA.mode = "huge-body-chunked";
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "ProviderInternal");
+    assert.match(rows[0].error_message, /exceeds the 1024-byte cap/);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[1].outcome, "success");
   } finally {
     await p.cleanup();
   }
@@ -1567,6 +1724,152 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-days-string") && log.includes('daysOfWeek="fri"'), `log names a string daysOfWeek:\n${log}`);
     assert.ok(log.includes("bad-days-name") && log.includes("funday"), `log names a bad weekday:\n${log}`);
     assert.ok(!log.includes('model_route_windows["full-day-names"]'), `full weekday names are valid:\n${log}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------- #9378 stage 2: window context on route_attempt
+
+// Read the newest attempt's recorded window context.
+const latestWindowRow = (dbPath) => {
+  const db = new DatabaseSync(dbPath);
+  const row = db
+    .prepare(
+      "SELECT provider_id, window_names, window_class, holiday, priority_band FROM route_attempt ORDER BY id DESC LIMIT 1",
+    )
+    .get();
+  db.close();
+  return { ...row };
+};
+
+test("route_attempt carries window context, flipping with the window switch (#9378)", async () => {
+  // 2026-11-04 is a Wednesday. 02:30 UTC is inside the peak window;
+  // 05:00 UTC is off-peak for the bound route (peak ended at 04:00).
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    const peak = await p.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(peak.status, 200);
+    assert.equal((await peak.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "peak",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+  const q = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 5, 0) });
+  try {
+    const off = await q.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(off.status, 200);
+    assert.equal((await off.json()).choices[0].message.content, "LEAF-B");
+    assert.deepEqual(latestWindowRow(q.dbPath), {
+      provider_id: "leafB",
+      window_names: "",
+      window_class: "neutral",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await q.cleanup();
+  }
+});
+
+test("unbound routes see every window; peak outranks preburn (#9378)", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    // Unbound: every defined window counts. At Wed 02:30 UTC the
+    // full-day fixture window and the preburn overlap join peak;
+    // absent classes record as the peak default.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "peak,full-day-names,preburn-overlap",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("off-peak class records on its own window (#9378)", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 5, 0) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-bound-multi", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "offpeak-x",
+      window_class: "off-peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("unknown window class warns but still gates (#9378)", async () => {
+  // 2026-11-02 is a Monday; badclass-x covers the whole day.
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 2, 12, 0) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-badclass", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    let log = "";
+    for (let i = 0; i < 20; i++) {
+      log = p.log();
+      if (log.includes("badclass-x") && log.includes("unknown class")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(
+      log.includes("badclass-x") && log.includes("unknown class"),
+      `log names the bad class:\n${log}`,
+    );
+    // The recording-label typo records as the peak default; the gate
+    // still follows the window's time rule.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "badclass-x",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a walled leg stays walled across a window switch (#9378 G2)", async () => {
+  const now = Date.UTC(2026, 10, 4, 2, 30); // Wednesday, inside peak
+  const p = await startProxy({ nowMs: now });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: now - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the walled peak lead must not be attempted");
+    // The failover attempt still carries the peak switch state.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafB",
+      window_names: "peak",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
   } finally {
     await p.cleanup();
   }
@@ -2687,5 +2990,281 @@ test("guard serves chat-shaped calls through the guard pool only (#13675 P2)", a
     assert.match(await mismatch.text(), /cannot serve guard/);
   } finally {
     await p.cleanup();
+  }
+});
+
+// ------------------------------------------------ metering wall (#13839)
+//
+// Fixture arithmetic: every successful fake-leaf call reports
+// usage { prompt_tokens: 5, completion_tokens: 2 } = 7 counted
+// tokens. leafFree's big group (model m-free) declares
+// dailyTokens 28 with marginTokens 7, so its counted cap is 21 =
+// exactly three calls; its small group (m-free2) declares 700.
+// leafPaid is the unmetered paid tail behind the same model.
+
+test("metering wall: counted usage walls the free leg at bucket minus margin and the route falls through (oracle: the ledger's own recorded usage, 7 tokens per fixture response)", async () => {
+  const p = await startProxy();
+  try {
+    for (let i = 0; i < 3; i++) {
+      const res = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    }
+    await waitForAttempts(p, 3);
+    // Counting accuracy: the ledger rows the proxy itself recorded
+    // carry the fixture usage verbatim, and their input+output sum
+    // is the counted total the wall judges.
+    const db = new DatabaseSync(p.dbPath, { readOnly: true });
+    const counted = db
+      .prepare(
+        "SELECT tokens_input, tokens_output FROM route_attempt WHERE provider_id = 'leafFree' ORDER BY id",
+      )
+      .all();
+    db.close();
+    assert.deepEqual(
+      counted.map((r) => [r.tokens_input, r.tokens_output]),
+      [
+        [5, 2],
+        [5, 2],
+        [5, 2],
+      ],
+    );
+    assert.equal(
+      counted.reduce((s, r) => s + r.tokens_input + r.tokens_output, 0),
+      21,
+    );
+    // The 4th turn must not serve via leafFree: 21 counted tokens
+    // is the big group's cap (28 - 7 margin). No spill.
+    const fourth = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+    assert.equal(fourth.status, 200);
+    assert.equal((await fourth.json()).choices[0].message.content, "LEAF-B");
+    const after = p.attempts();
+    assert.equal(
+      after.filter((r) => r.provider_id === "leafFree").length,
+      3,
+      "a metered leg served after its bucket was spent",
+    );
+    assert.equal(after.filter((r) => r.provider_id === "leafPaid").length, 1);
+    assert.match(p.log(), /metering wall excluded leafFree\/m-free/);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("metering wall: the cap is bucket minus margin, exactly, and reasoning tokens count once (oracle: seeded ledger counts at the boundary)", async () => {
+  const PINNED = Date.UTC(2026, 0, 15, 12, 0, 0);
+  const seed = (p, tokensInput, tokensOutput, tokensReasoning) => {
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output, tokens_reasoning)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      PINNED - 60_000,
+      PINNED - 59_000,
+      "t-metered-only",
+      "leafFree",
+      "m-free",
+      "success",
+      1,
+      tokensInput,
+      tokensOutput,
+      tokensReasoning,
+    );
+    db.close();
+  };
+  // 20 counted tokens < cap 21: the leg still serves. The seeded
+  // row carries 10 reasoning tokens inside its 10 output tokens
+  // (the OpenAI usage shape usageFields records): counted once,
+  // the total is 20 — double-counting the subset would read 30
+  // and wall the leg here.
+  const under = await startProxy({ nowMs: PINNED });
+  try {
+    seed(under, 10, 10, 10);
+    const res = await under.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await under.cleanup();
+  }
+  // 21 counted tokens = cap 21 (28 dailyTokens - 7 margin): the
+  // leg walls, and with no fall-through leg the request fails
+  // closed instead of billing.
+  const at = await startProxy({ nowMs: PINNED });
+  try {
+    seed(at, 11, 10, 3);
+    const res = await at.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error.message, /no available members/);
+    assert.equal(at.leafA.hits, 0, "the metered leg was called despite the spent bucket");
+    assert.equal(
+      at.attempts().filter((r) => r.provider_id === "leafFree").length,
+      1,
+      "only the seeded row exists; no new free-leg attempt was recorded",
+    );
+  } finally {
+    await at.cleanup();
+  }
+});
+
+test("metering wall: groups count separately (oracle: a spent big group walls only its own models)", async () => {
+  const p = await startProxy();
+  try {
+    const db = new DatabaseSync(p.dbPath);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(now - 1000, now - 999, "t-metered-groups", "leafFree", "m-free", "success", 1, 500, 500);
+    db.close();
+    // m-free (big group, cap 21) is walled by the seeded 1000
+    // tokens; m-free2 (small group, cap 700, count 0) still serves
+    // on the same provider.
+    const res = await p.post({ model: "opencode-route/t-metered-groups", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    const freeSuccesses = p
+      .attempts()
+      .filter((r) => r.provider_id === "leafFree" && r.outcome === "success");
+    assert.equal(freeSuccesses.at(-1).model_id, "m-free2");
+    // And the plain metered route falls through to the paid tail.
+    const res2 = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+    assert.equal(res2.status, 200);
+    assert.equal((await res2.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("metering wall: the wall lifts at the 00:00 UTC reset with no operator action (oracle: the pinned clock's UTC day window)", async () => {
+  const AFTER_MIDNIGHT = Date.UTC(2026, 0, 16, 0, 0, 30);
+  const p = await startProxy({ nowMs: AFTER_MIDNIGHT });
+  try {
+    const db = new DatabaseSync(p.dbPath);
+    // Yesterday's spend: 1000 counted tokens, started before
+    // midnight — far past the cap, but in yesterday's window.
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      Date.UTC(2026, 0, 15, 23, 59, 0),
+      Date.UTC(2026, 0, 15, 23, 59, 1),
+      "t-metered-only",
+      "leafFree",
+      "m-free",
+      "success",
+      1,
+      600,
+      400,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// A minimal second spawn helper for the restart test: startProxy
+// always builds a fresh fixture home, so a restart over the SAME
+// config + ledger needs its own boot.
+const spawnProxyOn = async ({ configPath, dbPath, home }) => {
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    HOME: home,
+    OPENCODE_ROUTE_PROXY_PORT: String(port),
+    OPENCODE_ROUTE_PROXY_CONFIG: configPath,
+    OPENCODE_ROUTE_PROXY_DB: dbPath,
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+  };
+  const child = spawn(
+    process.execPath,
+    [path.join(binDir, "opencode-route-proxy.mjs")],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  child.stdout.on("data", (d) => (log += d));
+  child.stderr.on("data", (d) => (log += d));
+  const base = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 50; i++) {
+    try {
+      const res = await fetch(`${base}/health`);
+      if (res.ok) break;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 100));
+    if (i === 49) throw new Error(`proxy did not start: ${log}`);
+  }
+  return {
+    post: (payload) =>
+      fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    kill: () => child.kill("SIGKILL"),
+  };
+};
+
+test("metering wall: the counted bucket survives a proxy restart (oracle: a fresh process over the same ledger still walls with zero new usage)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-metering-restart-"));
+  const leaf = await makeLeaf("LEAF-R", "key-r");
+  try {
+    const dbPath = path.join(tmp, "opencode.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+      `CREATE TABLE credential (id integer PRIMARY KEY, integration_id text, label text, value text, active integer);
+       ${ROUTE_ATTEMPT_SCHEMA}`,
+    );
+    db.close();
+    const configPath = path.join(tmp, "opencode.jsonc");
+    fs.writeFileSync(
+      configPath,
+      `{
+  "provider": {
+    "soloFree": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leaf.port}/v1", "apiKey": "key-r" },
+      "tokenMetering": { "groups": { "g": { "dailyTokens": 21, "marginTokens": 0, "models": ["m-solo"] } } },
+      "models": { "m-solo": {} }
+    }
+  },
+  "experimental": {
+    "model_routes": {
+      "t-solo": { "selection": "ordered", "targets": ["soloFree/m-solo"] }
+    }
+  }
+}`,
+    );
+    const first = await spawnProxyOn({ configPath, dbPath, home: tmp });
+    try {
+      for (let i = 0; i < 3; i++) {
+        const res = await first.post({ model: "opencode-route/t-solo", messages: MSGS });
+        assert.equal(res.status, 200);
+        await res.text();
+      }
+      const walled = await first.post({ model: "opencode-route/t-solo", messages: MSGS });
+      assert.equal(walled.status, 502);
+      await walled.text();
+      assert.equal(leaf.hits, 3);
+    } finally {
+      first.kill();
+    }
+    // A fresh process over the same ledger: the spent bucket is
+    // still spent — the counter is the ledger, not memory.
+    const second = await spawnProxyOn({ configPath, dbPath, home: tmp });
+    try {
+      const res = await second.post({ model: "opencode-route/t-solo", messages: MSGS });
+      assert.equal(res.status, 502);
+      await res.text();
+      assert.equal(leaf.hits, 3, "the restarted proxy served a metered leg off a spent bucket");
+    } finally {
+      second.kill();
+    }
+  } finally {
+    leaf.server.close();
   }
 });

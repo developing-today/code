@@ -64,6 +64,7 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+use super::collab_steps::{StepRefusal, StepSchema, check_steps, document_content_size};
 use super::content_mode::{ContentMode, detect_mode_with_content};
 use super::identity::{sanitize_name, short_id};
 use super::markdown::{
@@ -71,12 +72,29 @@ use super::markdown::{
 };
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
+use id_grants::{Grant, GrantError, GrantId, GrantSet, GrantSetSnapshot, LoadError, Scope};
 use id_store::documents::{DocumentError, DocumentRef};
+use id_store::grant_authority::{identity_key, may_read_with_grants};
 use id_store::note_checkpoints::{
     CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints, NotePolicyRecord,
 };
 use id_store::notes::{AppliedNote, NoteRecord};
+use id_store::read_authority::ReadDefaults;
+use id_store::talk_page::{
+    ChainError, ChangeKind, ChangelogEntry, EntryDraft, OpLogRange, SignedEntry, TalkPageError,
+    verify_chain,
+};
 use p2panda_core::Hash;
+
+mod notes;
+pub use notes::{
+    NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME, NoteCheckpointSnapshot, NoteSnapshotError, note_session_key,
+};
+use notes::{
+    NoteChangelogRecord, NoteGrantError, mint_checkpoint_event_id, parse_note_doc_id,
+    parse_note_hash, restore_changelogs, unix_millis, write_note_snapshot_file,
+    write_note_snapshot_file_with_parent_sync,
+};
 
 /// Message type tags for the wire protocol.
 mod msg {
@@ -238,6 +256,10 @@ pub struct Document {
     pub mode: ContentMode,
     /// History of all applied steps (step data, client ID as JSON value).
     pub steps: RwLock<Vec<(Step, serde_json::Value)>>,
+    /// Content size (`doc.content.size`) of the base document after
+    /// every accepted step (#1618). Changed only under the `steps`
+    /// write lock, alongside the history it describes.
+    pub content_size: AtomicU64,
     /// Active cursor positions by client ID.
     pub cursors: RwLock<HashMap<String, CursorPosition>>,
     /// Broadcast channel for sending updates to clients.
@@ -265,12 +287,14 @@ impl Document {
     /// Create a document with a `ProseMirror` document and content mode.
     pub fn with_doc_and_mode(doc: serde_json::Value, mode: ContentMode) -> Self {
         let (tx, _) = broadcast::channel(256);
+        let content_size = document_content_size(&doc, mode);
 
         Self {
             version: AtomicU64::new(0),
             doc: RwLock::new(doc),
             mode,
             steps: RwLock::new(Vec::new()),
+            content_size: AtomicU64::new(content_size),
             cursors: RwLock::new(HashMap::new()),
             broadcast: tx,
             client_count: AtomicUsize::new(0),
@@ -295,33 +319,52 @@ impl Document {
     /// Atomically accept a batch of steps submitted at `base_version`
     /// (#2968).
     ///
-    /// Holds the steps write lock across the version check, the append,
-    /// and the version bump, so two sockets submitting at the same base
-    /// version cannot both pass the check: exactly one is accepted and
-    /// the other observes the winner's bumped version. Returns the new
-    /// version on success, or the current version on mismatch. Broadcast
-    /// and Ack stay with the caller, after this lock has been released.
+    /// Holds the steps write lock across the version check, the step
+    /// checks, the append, and the version bump, so two sockets
+    /// submitting at the same base version cannot both pass the check:
+    /// exactly one is accepted and the other observes the winner's
+    /// bumped version. Returns the new version on success. Broadcast and
+    /// Ack stay with the caller, after this lock has been released.
+    ///
+    /// # Errors
+    ///
+    /// [`StepsRejected::VersionMismatch`] with the current version when
+    /// `base_version` is stale, and [`StepsRejected::Invalid`] when a step
+    /// breaks the step contract (#1618): an unknown step type, a node or
+    /// mark outside the document's schema, or a position outside the
+    /// document. A rejected batch stores nothing and leaves the version
+    /// and content size unchanged.
     pub async fn try_apply_steps(
         &self,
         base_version: u64,
         steps: &[serde_json::Value],
         client_id: u64,
-    ) -> Result<u64, u64> {
+    ) -> Result<u64, StepsRejected> {
+        use std::sync::atomic::Ordering;
         let mut doc_steps = self.steps.write().await;
         let current_version = self.version();
         if base_version != current_version {
-            return Err(current_version);
+            return Err(StepsRejected::VersionMismatch {
+                current: current_version,
+            });
         }
+        let Some(schema) = StepSchema::for_mode(self.mode) else {
+            return Err(StepsRejected::Invalid(StepRefusal {
+                index: 0,
+                reason: format!("a {} document does not take edits", self.mode.as_str()),
+            }));
+        };
+        let new_size = check_steps(schema, self.content_size.load(Ordering::SeqCst), steps)
+            .map_err(StepsRejected::Invalid)?;
+        self.content_size.store(new_size, Ordering::SeqCst);
         for step in steps {
             doc_steps.push((
                 Step { data: step.clone() },
                 serde_json::Value::Number(client_id.into()),
             ));
         }
-        let new_version = self
-            .version
-            .fetch_add(steps.len() as u64, std::sync::atomic::Ordering::SeqCst)
-            + steps.len() as u64;
+        let new_version =
+            self.version.fetch_add(steps.len() as u64, Ordering::SeqCst) + steps.len() as u64;
         drop(doc_steps);
         Ok(new_version)
     }
@@ -352,6 +395,19 @@ impl Default for Document {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Why [`Document::try_apply_steps`] refused a batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepsRejected {
+    /// The batch was built on a stale version; `current` is the
+    /// document's version now.
+    VersionMismatch {
+        /// The document's current version.
+        current: u64,
+    },
+    /// A step breaks the step contract (#1618).
+    Invalid(StepRefusal),
 }
 
 /// Why publishing a note checkpoint from a live session was refused
@@ -402,140 +458,44 @@ impl From<DocumentError> for PublishCheckpointError {
     }
 }
 
-/// The file name of the persisted note checkpoint snapshot (#3819):
-/// the serving host keeps it beside the identity store
-/// (`.identity.redb`), the node's other durable local state.
-pub const NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME: &str = ".note-checkpoints.json";
-
-/// The durable snapshot of the note checkpoint log (#3819): the
-/// applied events and the per-note policies in one document — the
-/// form a host persists across a restart. The events alone rebuild
-/// every note as public; the policies are what keep a scoped note
-/// scoped, so the two are always written and read together.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NoteCheckpointSnapshot {
-    /// The applied note events, in the order they were recorded.
-    pub events: Vec<AppliedNote>,
-    /// The effective policy of every note in the log, in note ID order.
-    pub policies: Vec<NotePolicyRecord>,
-}
-
-/// Why restoring a persisted note checkpoint snapshot failed (#3819).
+/// Why a note session's end could not be recorded in the note's
+/// changelog (#14272).
 #[derive(Debug)]
-pub enum NoteSnapshotError {
-    /// The snapshot file could not be read or written.
-    Io {
-        /// The snapshot's path.
-        path: PathBuf,
-        /// The underlying I/O failure.
-        source: std::io::Error,
-    },
-    /// The snapshot file is not a well-formed snapshot.
-    Corrupt {
-        /// The snapshot's path.
-        path: PathBuf,
-        /// The underlying decoding failure.
-        source: serde_json::Error,
-    },
-    /// The snapshot's events or policies were refused by the
-    /// checkpoint core: the events do not fold, or a policy names
-    /// an unknown note or the wrong owner.
-    Checkpoint(CheckpointError),
+pub enum SessionEntryError {
+    /// The session entry could not be drafted or signed.
+    Entry(TalkPageError),
+    /// The note's changelog would not verify with the entry appended.
+    Chain(ChainError),
 }
 
-impl std::fmt::Display for NoteSnapshotError {
+impl std::fmt::Display for SessionEntryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io { path, source } => {
-                write!(
-                    f,
-                    "note checkpoint snapshot at {}: {source}",
-                    path.display()
-                )
-            }
-            Self::Corrupt { path, source } => write!(
-                f,
-                "note checkpoint snapshot at {} is corrupt: {source}",
-                path.display()
-            ),
-            Self::Checkpoint(err) => write!(f, "{err}"),
+            Self::Entry(err) => write!(f, "{err}"),
+            Self::Chain(err) => write!(f, "{err}"),
         }
     }
 }
 
-impl std::error::Error for NoteSnapshotError {
+impl std::error::Error for SessionEntryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
-            Self::Corrupt { source, .. } => Some(source),
-            Self::Checkpoint(err) => Some(err),
+            Self::Entry(err) => Some(err),
+            Self::Chain(err) => Some(err),
         }
     }
 }
 
-impl From<CheckpointError> for NoteSnapshotError {
-    fn from(err: CheckpointError) -> Self {
-        Self::Checkpoint(err)
+impl From<TalkPageError> for SessionEntryError {
+    fn from(err: TalkPageError) -> Self {
+        Self::Entry(err)
     }
 }
 
-/// Writes a snapshot to `path` atomically: the new document lands
-/// under a temporary name in the same directory and is renamed over
-/// the old one, so a crash mid-write leaves the previous snapshot
-/// (or none), never a torn one for the next restart to read.
-fn write_note_snapshot_file(
-    path: &std::path::Path,
-    snapshot: &NoteCheckpointSnapshot,
-) -> Result<(), NoteSnapshotError> {
-    let bytes =
-        serde_json::to_vec_pretty(snapshot).map_err(|source| NoteSnapshotError::Corrupt {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    let mut tmp_os = path.as_os_str().to_owned();
-    tmp_os.push(".tmp");
-    let tmp = PathBuf::from(tmp_os);
-    std::fs::write(&tmp, bytes).map_err(|source| NoteSnapshotError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    std::fs::rename(&tmp, path).map_err(|source| NoteSnapshotError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(())
-}
-
-/// Mints the event ID for a checkpoint published from a live session:
-/// a digest of everything the revision is — its note, its author, the
-/// heads it builds on, its content, and the session version that
-/// produced it — so two saves of identical bytes at different versions
-/// are still distinct events, and the same save replayed is the same
-/// event.
-fn mint_checkpoint_event_id(
-    note: &Hash,
-    author: &AuthorKey,
-    heads: &[Hash],
-    content: &DocumentRef,
-    version: u64,
-) -> Hash {
-    Hash::digest(format!("{note}:{author:?}:{heads:?}:{}:{version}", content.content).as_bytes())
-}
-
-/// A `doc_id` naming a note session over the wire: the
-/// [`note_session_key`] form, `note:<note id hex>` (#3819 slice 2).
-/// Anything else is a filename, exactly as before.
-fn parse_note_doc_id(doc_id: &str) -> Option<Hash> {
-    doc_id.strip_prefix("note:")?.parse().ok()
-}
-
-/// The session key for a note: its stable ID under a `note:`
-/// prefix, so a note session can never alias a filename session
-/// (#3819). The ID is the note's `note.create` event ID
-/// (`id_store::notes`), independent of any filename or alias.
-#[must_use]
-pub fn note_session_key(note_id: &Hash) -> String {
-    format!("note:{note_id}")
+impl From<ChainError> for SessionEntryError {
+    fn from(err: ChainError) -> Self {
+        Self::Chain(err)
+    }
 }
 
 /// State for all collaborative editing sessions.
@@ -569,6 +529,25 @@ pub struct CollabState {
     /// groups, so scoped notes honor user grants and the owner, and
     /// public notes behave exactly as before the boundary existed.
     note_group_roles: GroupRoles,
+    /// The checkpoints each open note session has published so far,
+    /// by session key (#14272): the run of the merge layer's log the
+    /// session covers. [`CollabState::end_note_session`] takes it
+    /// when the session's last editor leaves and records it as the
+    /// session's one changelog entry.
+    note_session_ops: Mutex<HashMap<String, OpLogRange>>,
+    /// Each note's changelog (#5834, #14272): the hash-chained
+    /// `session` entries its multiplayer sessions ended with, in
+    /// chain order. It verifies end to end from its
+    /// first entry after every append, and is persisted with the
+    /// checkpoint snapshot.
+    note_changelogs: Mutex<HashMap<Hash, Vec<ChangelogEntry>>>,
+    /// The node's selective-sharing grants over notes (#14790): issued
+    /// and revoked by note owners through
+    /// [`CollabState::grant_note_access`] and
+    /// [`CollabState::revoke_note_grant`], consulted by
+    /// [`CollabState::may_read_note`], and persisted with the
+    /// checkpoint snapshot.
+    note_grants: Mutex<GrantSet>,
 }
 
 impl CollabState {
@@ -625,6 +604,93 @@ impl CollabState {
             self.persist_note_snapshot().await;
         }
         result
+    }
+
+    /// Issues a root grant over notes the issuer owns (#14790): `owner`
+    /// must be the grant's issuer, every scope must name a note `owner`
+    /// owns, and the grant must pass the grants model's checks. A
+    /// stored grant is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError`] naming the refusal; nothing is
+    /// stored on any refusal.
+    pub async fn grant_note_access(
+        &self,
+        owner: AuthorKey,
+        grant: Grant,
+    ) -> Result<(), NoteGrantError> {
+        if grant.issuer != identity_key(owner) {
+            return Err(NoteGrantError::NotIssuer);
+        }
+        {
+            let log = self.note_log.lock().await;
+            for scope in &grant.scopes {
+                let Scope::Object(object) = scope else {
+                    return Err(NoteGrantError::NotANote);
+                };
+                let note = parse_note_hash(object).ok_or(NoteGrantError::NotANote)?;
+                match log.access(note) {
+                    Some((note_owner, _)) if note_owner == owner => {}
+                    _ => return Err(NoteGrantError::NotOwner),
+                }
+            }
+        }
+        self.note_grants
+            .lock()
+            .await
+            .insert_root(grant)
+            .map_err(NoteGrantError::Grant)?;
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Revokes a grant `by` issued (#14790): it, and every grant
+    /// delegated from it, stops admitting anyone at the next check.
+    /// The revocation is persisted with the checkpoint snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteGrantError::UnknownGrant`] when no grant with that
+    /// id was issued by `by`, whether it is someone else's or absent.
+    pub async fn revoke_note_grant(
+        &self,
+        by: AuthorKey,
+        id: &GrantId,
+    ) -> Result<(), NoteGrantError> {
+        {
+            let mut grants = self.note_grants.lock().await;
+            match grants.get(id) {
+                Some(grant) if grant.issuer == identity_key(by) => {}
+                _ => return Err(NoteGrantError::UnknownGrant),
+            }
+            grants.revoke(id);
+        }
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Whether `reader` may read `note` under the read order with the
+    /// owner's live grants added at the object tier, as of `now` (Unix
+    /// seconds, UTC) (#14790). Unknown notes are denied.
+    pub async fn may_read_note(
+        &self,
+        note: Hash,
+        reader: AuthorKey,
+        defaults: &ReadDefaults,
+        now: u64,
+    ) -> bool {
+        let log = self.note_log.lock().await;
+        let grants = self.note_grants.lock().await;
+        may_read_with_grants(
+            &log,
+            note,
+            reader,
+            &self.note_group_roles,
+            defaults,
+            &grants,
+            now,
+        )
     }
 
     /// Get or create a document for editing.
@@ -761,19 +827,49 @@ impl CollabState {
     }
 
     /// The checkpoint log's durable snapshot: the applied events
-    /// and the per-note policies together (#3819) — the document
+    /// and the per-note policies together (#3819), with every note's
+    /// changelog (#14272) — the document
     /// [`Self::restore_note_snapshot`] rebuilds from, and the form
     /// persisted at the installed snapshot path.
     ///
     /// # Errors
     ///
-    /// Returns [`CheckpointError`] when the recorded events do not
-    /// fold (a log built through this type's methods does not).
-    pub async fn note_snapshot(&self) -> Result<NoteCheckpointSnapshot, CheckpointError> {
+    /// Returns [`NoteSnapshotError::Checkpoint`] when the recorded
+    /// events do not fold (a log built through this type's methods
+    /// does not), and [`NoteSnapshotError::Changelog`] when an entry
+    /// cannot be encoded.
+    pub async fn note_snapshot(&self) -> Result<NoteCheckpointSnapshot, NoteSnapshotError> {
         let log = self.note_log.lock().await;
+        let mut changelogs = self
+            .note_changelogs
+            .lock()
+            .await
+            .iter()
+            .map(|(note, entries)| {
+                Ok(NoteChangelogRecord {
+                    note: *note,
+                    entries: entries
+                        .iter()
+                        .map(ChangelogEntry::canonical_bytes)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, TalkPageError>>()
+            .map_err(SessionEntryError::Entry)?;
+        changelogs.sort_by_key(|record| *record.note.as_bytes());
+        let grants = {
+            let grants = self.note_grants.lock().await;
+            grants
+                .grants()
+                .next()
+                .is_some()
+                .then(|| grants.to_snapshot())
+        };
         Ok(NoteCheckpointSnapshot {
             events: log.events().to_vec(),
             policies: log.policies()?,
+            changelogs,
+            grants,
         })
     }
 
@@ -786,14 +882,23 @@ impl CollabState {
     ///
     /// # Errors
     ///
-    /// Returns the checkpoint core's refusal unchanged.
+    /// Returns the checkpoint core's refusal as
+    /// [`NoteSnapshotError::Checkpoint`], and a changelog that does not
+    /// decode or verify as [`NoteSnapshotError::Changelog`].
     pub async fn restore_note_snapshot(
         &self,
         snapshot: NoteCheckpointSnapshot,
-    ) -> Result<(), CheckpointError> {
+    ) -> Result<(), NoteSnapshotError> {
         let rebuilt =
             NoteCheckpoints::from_events_with_policies(snapshot.events, snapshot.policies)?;
+        let changelogs = restore_changelogs(snapshot.changelogs)?;
+        let grants = match snapshot.grants {
+            Some(grants) => GrantSet::from_snapshot(grants)?,
+            None => GrantSet::new(),
+        };
         *self.note_log.lock().await = rebuilt;
+        *self.note_changelogs.lock().await = changelogs;
+        *self.note_grants.lock().await = grants;
         self.persist_note_snapshot().await;
         Ok(())
     }
@@ -937,25 +1042,100 @@ impl CollabState {
             return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
         };
         let content = DocumentRef::for_bytes("text/markdown", text.as_bytes())?;
-        let published = {
+        let (published, op) = {
             let mut log = self.note_log.lock().await;
             if log.record(note)?.is_none() {
-                log.create(note, author, content)?
+                (log.create(note, author, content)?, note)
             } else {
                 let heads = log.heads(note)?;
                 let event_id =
                     mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
-                log.checkpoint_on_heads_checked(
+                let record = log.checkpoint_on_heads_checked(
                     note,
                     event_id,
                     author,
                     content,
                     &self.note_group_roles,
-                )?
+                )?;
+                (record, event_id)
             }
         };
+        self.note_session_ops
+            .lock()
+            .await
+            .entry(key.to_owned())
+            .and_modify(|range| *range = range.extended(*op.as_bytes()))
+            .or_insert_with(|| OpLogRange::single(*op.as_bytes()));
         self.persist_note_snapshot().await;
         Ok(published)
+    }
+
+    /// Ends a note session in the note's changelog (#14272, slice 4 of
+    /// #5834): called when the session's last editor leaves. When the
+    /// session published checkpoints, exactly one `session` entry is
+    /// appended to the note's changelog naming the run of checkpoints
+    /// it covers ([`OpLogRange`]); the checkpoints themselves stay in
+    /// the merge layer, never in the changelog. `sign` turns the draft
+    /// into the entry its actor signs (the host signs with its own
+    /// key), and `received_at` is the receipt time stamped on it. The
+    /// grown chain must verify end to end from its first entry before
+    /// the entry is kept.
+    ///
+    /// Returns `Ok(None)` when the session published nothing, or when
+    /// `key` names no note session: there is nothing to record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEntryError`] when the entry cannot be drafted
+    /// or signed, or the chain would not verify with it. The session's
+    /// range is then kept open, so the next session end records it.
+    pub async fn end_note_session<F>(
+        &self,
+        key: &str,
+        received_at: u64,
+        sign: F,
+    ) -> Result<Option<ChangelogEntry>, SessionEntryError>
+    where
+        F: FnOnce(EntryDraft) -> Result<SignedEntry, TalkPageError>,
+    {
+        let Some(note) = self.note_id_for_key(key).await else {
+            return Ok(None);
+        };
+        let entry = {
+            let mut sessions = self.note_session_ops.lock().await;
+            let Some(range) = sessions.get(key).copied() else {
+                return Ok(None);
+            };
+            let mut changelogs = self.note_changelogs.lock().await;
+            let chain = changelogs.entry(note).or_default();
+            let draft = match chain.last() {
+                None => {
+                    EntryDraft::genesis(note.as_bytes().to_vec(), ChangeKind::Session, received_at)
+                }
+                Some(previous) => EntryDraft::after(previous, ChangeKind::Session, received_at)?,
+            }
+            .with_op_log(range);
+            let entry = sign(draft)?.receive(received_at);
+            let mut grown = chain.clone();
+            grown.push(entry.clone());
+            verify_chain(note.as_bytes(), None, &grown)?;
+            *chain = grown;
+            sessions.remove(key);
+            entry
+        };
+        self.persist_note_snapshot().await;
+        Ok(Some(entry))
+    }
+
+    /// The note's changelog (#14272): the `session` entries its ended
+    /// multiplayer sessions recorded, in chain order.
+    pub async fn note_changelog(&self, note: Hash) -> Vec<ChangelogEntry> {
+        self.note_changelogs
+            .lock()
+            .await
+            .get(&note)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The content reference a reopened note session hydrates from:
@@ -1337,8 +1517,13 @@ async fn apply_steps(
     let new_version = doc
         .try_apply_steps(version, steps, client_id)
         .await
-        .map_err(|current_version| {
-            format!("Version mismatch: expected {current_version}, got {version}")
+        .map_err(|rejected| match rejected {
+            StepsRejected::VersionMismatch {
+                current: current_version,
+            } => format!("Version mismatch: expected {current_version}, got {version}"),
+            // Not a "Version mismatch" or "desynchronized" error: the
+            // client must not reconnect and resend the same bad step.
+            StepsRejected::Invalid(refusal) => refusal.to_string(),
         })?;
 
     let update = CollabMessage::Update {
@@ -1988,6 +2173,30 @@ async fn handle_collab_socket(
     // server's key. A refusal (notably a multi-head note, which needs
     // an explicit merge) is logged, never fatal to the disconnect.
     if remaining_clients == 0 {
+        // The session's one changelog entry (#14272): the run of
+        // checkpoints it published, signed with this server's key.
+        if let Some(note) = &note_session {
+            let key = note_session_key(note);
+            match collab
+                .end_note_session(&key, unix_millis(), |draft| {
+                    identity_store.sign_changelog_entry(draft)
+                })
+                .await
+            {
+                Ok(Some(entry)) => tracing::debug!(
+                    "[collab] Note session '{}' ended; changelog entry {} covers {:?}",
+                    key,
+                    entry.signed().seq(),
+                    entry.signed().op_log().map(|range| range.count)
+                ),
+                Ok(None) => {}
+                Err(err) => tracing::warn!(
+                    "[collab] Could not record the end of note session '{}' in its changelog: {}",
+                    key,
+                    err
+                ),
+            }
+        }
         tracing::debug!(
             "[collab] Note/filename session '{}' ended at version {} (connected at {}); \
              publication is client-driven, never a disconnect side effect",
@@ -2056,6 +2265,8 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let steps = vec![serde_json::json!({
                     "stepType": "replace",
+                    "from": 0,
+                    "to": 0,
                     "marker": client_id,
                 })];
                 (client_id, doc.try_apply_steps(0, &steps, client_id).await)
@@ -2069,9 +2280,9 @@ mod tests {
             let (client_id, result) = handle.await.unwrap();
             match result {
                 Ok(1) => winners.push(client_id),
-                Err(1) => {}
+                Err(StepsRejected::VersionMismatch { current: 1 }) => {}
                 other => panic!(
-                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and Err(1) for every loser are possible"
+                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and a mismatch at 1 for every loser are possible"
                 ),
             }
         }
@@ -2090,9 +2301,12 @@ mod tests {
         // version is rejected; the next submission at the new version
         // succeeds.
         let doc = Document::new();
-        let step = vec![serde_json::json!({ "stepType": "replace" })];
+        let step = vec![serde_json::json!({ "stepType": "replace", "from": 0, "to": 0 })];
         assert_eq!(doc.try_apply_steps(0, &step, 7).await, Ok(1));
-        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Err(1));
+        assert_eq!(
+            doc.try_apply_steps(0, &step, 7).await,
+            Err(StepsRejected::VersionMismatch { current: 1 })
+        );
         assert_eq!(doc.try_apply_steps(1, &step, 7).await, Ok(2));
         assert_eq!(doc.version(), 2);
         assert_eq!(doc.steps.read().await.len(), 2);
@@ -2161,10 +2375,316 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_refuses_unappliable_steps_without_mutation() {
+        // #1618: the issue's probe steps are refused before storage —
+        // nothing stored, no version bump, nothing broadcast — and the
+        // error is not one the client treats as "reconnect and resend".
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let probes = [
+            serde_json::json!({"stepType": "bogusType", "from": 1, "to": 2}),
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 999_999}),
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+                "slice": {"content": [{"type": "no_such_node"}]}}),
+            serde_json::json!(42),
+            serde_json::json!(null),
+            serde_json::json!("hi"),
+        ];
+        for probe in probes {
+            // A valid step ahead of the bad one does not get through
+            // either: the batch is refused whole.
+            let batch = vec![
+                serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+                    "slice": {"content": [{"type": "text", "text": "ok"}]}}),
+                probe.clone(),
+            ];
+            let error = apply_steps(&doc, 0, &batch, 123).await.unwrap_err();
+            assert!(error.starts_with("Invalid step 1:"), "{probe}: {error}");
+            assert!(!error.contains("Version mismatch") && !error.contains("desynchronized"));
+        }
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert!(updates.try_recv().is_err());
+
+        // The tracked size moves with accepted steps: after typing two
+        // characters, the old end of the paragraph is still in range and
+        // the new end is too, but one past it is not.
+        let typed = vec![
+            serde_json::json!({"stepType": "replace", "from": 1, "to": 1,
+            "slice": {"content": [{"type": "text", "text": "ok"}]}}),
+        ];
+        assert_eq!(apply_steps(&doc, 0, &typed, 123).await.unwrap(), 1);
+        let at_end = vec![serde_json::json!({"stepType": "replace", "from": 4, "to": 4})];
+        assert_eq!(apply_steps(&doc, 1, &at_end, 123).await.unwrap(), 2);
+        let past_end = vec![serde_json::json!({"stepType": "replace", "from": 5, "to": 5})];
+        assert!(apply_steps(&doc, 2, &past_end, 123).await.is_err());
+        assert_eq!(doc.version(), 2);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_list_item_content_outside_editor_schema() {
+        // Oracle: web/src/editor.ts declares list_item content as
+        // `paragraph block*`; a direct text child violates that expression.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "bullet_list", "content": [{
+                "type": "list_item", "content": [{"type": "text", "text": "bad"}]
+            }]}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("list_item"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "bullet_list", "content": [{
+                "type": "list_item", "content": [{"type": "paragraph", "content": [
+                    {"type": "text", "text": "ok"}
+                ]}]
+            }]}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_slice_content_outside_editor_schema() {
+        // Oracle: web/src/editor.ts content expressions — a `table`
+        // holds `table_row+`, a cell holds `paragraph+`, a `paragraph`
+        // holds inline nodes only. A slice violating any of them is
+        // refused before storage, like the list_item case above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "table", "content": [{
+                "type": "table_cell", "content": [{"type": "text", "text": "bad"}]
+            }]}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("table"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "table", "content": [{
+                "type": "table_row", "content": [{
+                    "type": "table_cell", "content": [{"type": "paragraph", "content": [
+                        {"type": "text", "text": "ok"}
+                    ]}]
+                }]
+            }]}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_slice_with_unopenable_depths() {
+        // Oracle: prosemirror-model's `Slice` contract — an open
+        // depth requires that many openable (non-leaf) nodes on that
+        // side of the fragment. A lone text node claiming
+        // `openStart: 1` fits the size check but is a slice no cut
+        // can produce; `replace` throws for it on every client, so
+        // it is refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "text", "text": "bad"}], "openStart": 1}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("openStart"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control at exactly the openable bound: an empty paragraph
+        // opens one level on each side (the paragraph-split shape).
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_link_mark_without_href() {
+        // Oracle: prosemirror-schema-basic gives the link mark's
+        // `href` attr no default, so a link mark without a string
+        // `href` throws in `Mark.fromJSON` on every client. It is
+        // refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "link"}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("href"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string href is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com"}}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_link_mark_with_non_string_title() {
+        // Oracle: prosemirror-schema-basic gives the link mark's
+        // `title` attr `validate: "string|null"`, so a link mark
+        // whose `title` is present but neither a string nor null
+        // throws in `Mark.fromJSON` on every client. It is refused
+        // before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("title"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string title is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "Example"}}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_image_without_src() {
+        // Oracle: `editor.ts` gives the image node's `src` attr no
+        // default, so an image without a string `src` throws in
+        // `Node.fromJSON` on every client. It is refused before
+        // storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "image"}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("src"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string src is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "image", "attrs": {"src": "https://example.com/x.png"}}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_non_numeric_heading_level() {
+        // Oracle: prosemirror-schema-basic gives the heading node's
+        // `level` attr `validate: "number"`, so a heading whose
+        // `level` is not a number throws in `Node.fromJSON` on every
+        // client. It is refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "heading", "attrs": {"level": "2"}}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("level"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a numeric level is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "heading", "attrs": {"level": 2}}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
-        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0})];
+        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0, "to": 0})];
 
         let ack_version = apply_steps(&doc, 0, &steps, 123).await.unwrap();
 
@@ -2566,14 +3086,14 @@ mod tests {
             mode: "raw".to_owned(),
         };
         let init_bytes = init.encode();
-        assert!(!init_bytes.is_empty());
+        assert_ne!(init_bytes, [] as [u8; 0]);
         // MessagePack fixarray of 4 elements starts with 0x94
         // First element should decode to 0 (INIT)
 
         let ack = CollabMessage::Ack { version: 0 };
         let ack_bytes = ack.encode();
         // MessagePack fixarray of 2 elements starts with 0x92
-        assert!(!ack_bytes.is_empty());
+        assert_ne!(ack_bytes, [] as [u8; 0]);
     }
 
     #[test]
@@ -3067,7 +3587,7 @@ mod tests {
             matches!(err, PublishCheckpointError::NotNoteSession(_)),
             "a filename session has no note to checkpoint: {err}"
         );
-        assert!(state.note_events().await.is_empty());
+        assert_eq!(state.note_events().await, [] as [AppliedNote; 0]);
     }
 
     #[tokio::test]
@@ -3330,6 +3850,281 @@ mod tests {
         assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
     }
 
+    #[test]
+    fn test_note_snapshot_file_write_round_trips_and_leaves_no_temp() {
+        // #16358: the persist half of the snapshot round-trip — what
+        // write_note_snapshot_file lands at the path parses back as
+        // the same snapshot, a rewrite replaces it, and no temp file
+        // is left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let snapshot = NoteCheckpointSnapshot {
+            events: Vec::new(),
+            policies: Vec::new(),
+            changelogs: Vec::new(),
+            grants: None,
+        };
+
+        write_note_snapshot_file(&path, &snapshot).unwrap();
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, snapshot);
+
+        write_note_snapshot_file(&path, &snapshot).unwrap();
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, snapshot);
+
+        let mut tmp_os = path.as_os_str().to_owned();
+        tmp_os.push(".tmp");
+        assert!(!PathBuf::from(tmp_os).exists());
+    }
+
+    #[test]
+    fn test_note_snapshot_parent_sync_failure_is_an_error_not_success() {
+        // #16358: a post-rename parent-directory sync failure must
+        // surface as an error — reporting success would claim a
+        // durability the rename does not have. The new file is
+        // already installed at that point (the AfterRename stage);
+        // the error is how the caller learns the install is not yet
+        // durable.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let snapshot = NoteCheckpointSnapshot {
+            events: Vec::new(),
+            policies: Vec::new(),
+            changelogs: Vec::new(),
+            grants: None,
+        };
+
+        let err = write_note_snapshot_file_with_parent_sync(&path, &snapshot, |_| {
+            Err(std::io::Error::other("injected parent sync failure"))
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(err, NoteSnapshotError::Io { .. }),
+            "a parent sync failure is an I/O error, not success: {err}"
+        );
+        assert!(
+            err.to_string().contains("AfterRename"),
+            "the error names the post-rename stage: {err}"
+        );
+        assert!(path.exists(), "the rename already installed the file");
+    }
+
+    /// A note owned by `owner`, scoped so nobody else reads it, in a
+    /// state persisting to `path`; returns the state and the note.
+    async fn private_note_state(path: PathBuf, owner: AuthorKey, byte: u8) -> (CollabState, Hash) {
+        let state = CollabState::new().with_note_snapshot_path(path);
+        let note = Hash::from_bytes([byte; 32]);
+        state
+            .get_or_create_for_note(&note, "", Some(b"# Private"), Some("g.md"))
+            .await;
+        state
+            .publish_note_checkpoint(&note_session_key(&note), owner)
+            .await
+            .unwrap();
+        state
+            .set_note_access(note, owner, NoteAccess::Scoped(vec![]))
+            .await
+            .unwrap();
+        (state, note)
+    }
+
+    fn note_read_grant(name: &str, issuer: AuthorKey, reader: AuthorKey, note: Hash) -> Grant {
+        use id_grants::{Delegation, Duration, Operation, Subject};
+        Grant {
+            id: GrantId(name.to_owned()),
+            issuer: identity_key(issuer),
+            subject: Subject::Identity(identity_key(reader)),
+            scopes: std::collections::BTreeSet::from([Scope::Object(note.to_hex())]),
+            operations: std::collections::BTreeSet::from([Operation::Read]),
+            duration: Duration::Standing,
+            delegation: Delegation::default(),
+            parent: None,
+        }
+    }
+
+    const GRANT_NOW: u64 = 1_800_000_000;
+
+    #[tokio::test]
+    async fn test_an_owner_grant_admits_a_reader_and_revoke_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 61).await;
+        let defaults = ReadDefaults::none();
+
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        state
+            .grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        // The grant names one reader; another stays refused.
+        assert!(
+            !state
+                .may_read_note(note, [9u8; 32], &defaults, GRANT_NOW)
+                .await
+        );
+
+        // Only the issuer revokes, and a stranger's attempt gets the
+        // same answer as an unknown id.
+        assert_eq!(
+            state
+                .revoke_note_grant(reader, &GrantId("g1".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        assert_eq!(
+            state
+                .revoke_note_grant(owner, &GrantId("absent".to_owned()))
+                .await,
+            Err(NoteGrantError::UnknownGrant)
+        );
+        state
+            .revoke_note_grant(owner, &GrantId("g1".to_owned()))
+            .await
+            .unwrap();
+        assert!(
+            !state
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_only_a_note_owner_issues_a_grant_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner: AuthorKey = [7u8; 32];
+        let other: AuthorKey = [8u8; 32];
+        let (state, note) =
+            private_note_state(dir.path().join(".note-checkpoints.json"), owner, 62).await;
+
+        // The issuer field must be the account issuing.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", owner, other, note))
+                .await,
+            Err(NoteGrantError::NotIssuer)
+        );
+        // Someone else's grant over the owner's note is refused, and an
+        // unknown note gets the same answer.
+        assert_eq!(
+            state
+                .grant_note_access(other, note_read_grant("g1", other, other, note))
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        assert_eq!(
+            state
+                .grant_note_access(
+                    owner,
+                    note_read_grant("g1", owner, other, Hash::from_bytes([99u8; 32]))
+                )
+                .await,
+            Err(NoteGrantError::NotOwner)
+        );
+        // A scope that is not a note id is refused.
+        let mut collection = note_read_grant("g1", owner, other, note);
+        collection.scopes =
+            std::collections::BTreeSet::from([Scope::Object(note.to_hex().to_uppercase())]);
+        assert_eq!(
+            state.grant_note_access(owner, collection).await,
+            Err(NoteGrantError::NotANote)
+        );
+        assert!(
+            !state
+                .may_read_note(note, other, &ReadDefaults::none(), GRANT_NOW)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_note_grants_survive_a_restart_through_the_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let gone: AuthorKey = [9u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 63).await;
+
+        // Before any grant, the file carries no grants field at all, so
+        // it reads exactly as snapshots written before grants existed.
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(raw.get("grants").is_none());
+
+        live.grant_note_access(owner, note_read_grant("keep", owner, reader, note))
+            .await
+            .unwrap();
+        live.grant_note_access(owner, note_read_grant("drop", owner, gone, note))
+            .await
+            .unwrap();
+        live.revoke_note_grant(owner, &GrantId("drop".to_owned()))
+            .await
+            .unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        let defaults = ReadDefaults::none();
+        assert!(
+            restarted
+                .may_read_note(note, reader, &defaults, GRANT_NOW)
+                .await
+        );
+        assert!(
+            !restarted
+                .may_read_note(note, gone, &defaults, GRANT_NOW)
+                .await
+        );
+        assert_eq!(
+            restarted.note_snapshot().await.unwrap(),
+            live.note_snapshot().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_tampered_grant_snapshot_fails_the_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let owner: AuthorKey = [7u8; 32];
+        let reader: AuthorKey = [8u8; 32];
+        let (live, note) = private_note_state(path.clone(), owner, 64).await;
+        live.grant_note_access(owner, note_read_grant("g1", owner, reader, note))
+            .await
+            .unwrap();
+
+        // A revocation naming no grant does not load, so the whole
+        // restart fails and nothing is replaced.
+        let mut snapshot = live.note_snapshot().await.unwrap();
+        snapshot
+            .grants
+            .as_mut()
+            .unwrap()
+            .revoked
+            .insert(GrantId("absent".to_owned()));
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        let restarted = CollabState::new().with_note_snapshot_path(path);
+        let err = restarted
+            .restore_persisted_note_snapshot()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NoteSnapshotError::Grants(_)), "{err}");
+        assert_eq!(restarted.note_events().await, [] as [AppliedNote; 0]);
+    }
+
     #[tokio::test]
     async fn test_seed_note_policies_before_events_is_refused() {
         use id_store::note_checkpoints::{NoteGrant, NotePrincipal, NoteRole};
@@ -3454,6 +4249,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_a_note_session_ends_with_one_changelog_entry_naming_its_checkpoints() {
+        use ed25519_dalek::SigningKey;
+        use id_store::talk_page::{EntryRef, verify_chain};
+
+        let state = CollabState::new();
+        let note = Hash::from_bytes([37u8; 32]);
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        let server = SigningKey::from_bytes(&[5u8; 32]);
+        let author: AuthorKey = server.verifying_key().to_bytes();
+        let sign = |draft: EntryDraft| SignedEntry::sign(draft, &server);
+
+        // A session that published nothing records nothing.
+        assert!(
+            state
+                .end_note_session(&key, 1, sign)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.note_changelog(note).await, [] as [ChangelogEntry; 0]);
+
+        // A session that published three checkpoints ends with exactly
+        // one `session` entry, naming the first and last of them.
+        state
+            .publish_note_checkpoint_text(&key, author, "one")
+            .await
+            .unwrap();
+        state
+            .publish_note_checkpoint_text(&key, author, "two")
+            .await
+            .unwrap();
+        let last = state
+            .publish_note_checkpoint_text(&key, author, "three")
+            .await
+            .unwrap();
+        let head = last.heads[0];
+        let entry = state
+            .end_note_session(&key, 10, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.signed().kind(), ChangeKind::Session);
+        assert_eq!(entry.signed().actor(), &author);
+        assert_eq!(
+            entry.signed().refs(),
+            &[EntryRef::OpLog(OpLogRange {
+                first: *note.as_bytes(),
+                last: *head.as_bytes(),
+                count: 3,
+            })]
+        );
+        let changelog = state.note_changelog(note).await;
+        assert_eq!(changelog, vec![entry.clone()]);
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+
+        // Ending again records nothing more: the range was taken.
+        assert!(
+            state
+                .end_note_session(&key, 11, sign)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The next session covers only its own checkpoint, and chains
+        // after the first entry; the whole log verifies end to end.
+        let next = state
+            .publish_note_checkpoint_text(&key, author, "four")
+            .await
+            .unwrap();
+        let second = state
+            .end_note_session(&key, 20, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.signed().seq(), 1);
+        assert_eq!(
+            second.signed().prev_hash(),
+            Some(entry.entry_hash().unwrap())
+        );
+        assert_eq!(
+            second.signed().op_log(),
+            Some(OpLogRange::single(*next.heads[0].as_bytes()))
+        );
+        let changelog = state.note_changelog(note).await;
+        assert_eq!(changelog.len(), 2);
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_a_note_changelog_survives_a_restart_and_keeps_chaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let note = Hash::from_bytes([41u8; 32]);
+        let key = note_session_key(&note);
+        let server = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let author: AuthorKey = server.verifying_key().to_bytes();
+        let sign = |draft: EntryDraft| SignedEntry::sign(draft, &server);
+
+        let live = CollabState::new().with_note_snapshot_path(path.clone());
+        live.get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        live.publish_note_checkpoint_text(&key, author, "one")
+            .await
+            .unwrap();
+        let first = live
+            .end_note_session(&key, 10, sign)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The entry reached the file.
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.changelogs.len(), 1);
+        assert_eq!(persisted.changelogs[0].note, note);
+
+        // Restart: the changelog comes back verified, and the next
+        // session's entry chains after the restored one.
+        let restarted = CollabState::new().with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_changelog(note).await, vec![first.clone()]);
+        restarted
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        restarted
+            .publish_note_checkpoint_text(&key, author, "two")
+            .await
+            .unwrap();
+        let second = restarted
+            .end_note_session(&key, 20, sign)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            second.signed().prev_hash(),
+            Some(first.entry_hash().unwrap())
+        );
+        let changelog = restarted.note_changelog(note).await;
+        assert!(verify_chain(note.as_bytes(), None, &changelog).is_ok());
+
+        // A snapshot whose changelog was tampered with is a failed
+        // restart, never a silently shortened history.
+        let mut tampered: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        tampered.changelogs[0].entries.remove(0);
+        let fresh = CollabState::new();
+        assert!(matches!(
+            fresh.restore_note_snapshot(tampered).await,
+            Err(NoteSnapshotError::Changelog(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_a_failed_session_entry_keeps_the_range_open() {
+        let state = CollabState::new();
+        let note = Hash::from_bytes([39u8; 32]);
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        let author: AuthorKey = [7u8; 32];
+        state
+            .publish_note_checkpoint_text(&key, author, "kept")
+            .await
+            .unwrap();
+        let refuse = |_draft: EntryDraft| -> Result<SignedEntry, TalkPageError> {
+            Err(TalkPageError::Invalid("refused"))
+        };
+        assert!(state.end_note_session(&key, 1, refuse).await.is_err());
+        assert_eq!(state.note_changelog(note).await, [] as [ChangelogEntry; 0]);
+
+        // The next session end records the range the failed one held.
+        let server = ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]);
+        let entry = state
+            .end_note_session(&key, 2, |draft| SignedEntry::sign(draft, &server))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.signed().op_log(),
+            Some(OpLogRange::single(*note.as_bytes()))
+        );
+    }
+
+    #[tokio::test]
     async fn test_note_head_content_tracks_publications_and_heads() {
         let state = CollabState::new();
         let note = Hash::from_bytes([33u8; 32]);
@@ -3554,7 +4538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_note_session_wire_round_trip_publishes_and_hydrates() {
+    async fn test_note_checkpoint_wire_round_trip_publishes_and_hydrates() {
         use axum::Router;
         use futures::SinkExt;
         use iroh::endpoint::{Endpoint, RelayMode, presets};
@@ -3586,7 +4570,7 @@ mod tests {
             .await
             .unwrap(),
         );
-        let state = crate::AppState::new(
+        let mut state = crate::AppState::new(
             store,
             None,
             "collab-note-wire-test".to_owned(),
@@ -3596,6 +4580,11 @@ mod tests {
         )
         .await
         .unwrap();
+        // Persist the event log just as the host does so a fresh
+        // CollabState can restore it below, independently of the live
+        // ProseMirror document.
+        let snapshot_path = dir.path().join(NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME);
+        state.collab = Arc::new(CollabState::new().with_note_snapshot_path(snapshot_path.clone()));
 
         let app = Router::new()
             .route("/ws/collab/{doc_id}", axum::routing::get(ws_collab_handler))
@@ -3607,7 +4596,7 @@ mod tests {
         });
 
         let note = Hash::from_bytes([41u8; 32]);
-        let url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
+        let mut url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
 
         // First session: connect, edit (steps), checkpoint the live
         // text, disconnect.
@@ -3616,7 +4605,7 @@ mod tests {
         // step batch is buffered and acked after Init.
         let steps = CollabMessage::Steps {
             version: 0,
-            steps: vec![serde_json::json!({"stepType": "replace"})],
+            steps: vec![serde_json::json!({"stepType": "replace", "from": 0, "to": 0})],
             client_id: 1,
         };
         client
@@ -3656,14 +4645,25 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
 
-        // A session document outlives its last client by a one-hour
-        // cleanup grace period (DOCUMENT_CLEANUP), so a quick
-        // reconnect rejoins the live session; hydration is the
-        // cold-open path, after eviction or a restart. Simulate the
-        // eviction the cleanup task performs.
-        state.collab.remove_document(&note_session_key(&note)).await;
+        // A new process rebuilds the durable log from its snapshot. The
+        // wire session below must append to that rebuilt head, not create
+        // a parallel root or reuse the dead process's document state.
+        server.abort();
+        let restarted = CollabState::new().with_note_snapshot_path(snapshot_path);
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_events().await, events);
+        state.collab = Arc::new(restarted);
+        let app = Router::new()
+            .route("/ws/collab/{doc_id}", axum::routing::get(ws_collab_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
 
-        // Second session: the Init document is the checkpointed
+        // A genuinely fresh session: the Init document is the checkpointed
         // text, hydrated from the blob store under its document
         // hash. The checkpoint is recorded as text/markdown, so the
         // heading parses as a heading and its plain text drops the
@@ -3677,9 +4677,93 @@ mod tests {
             crate::routes::file_handlers::extract_plain_text(&doc),
             "Saved over the wire"
         );
+        let second_checkpoint = CollabMessage::Checkpoint {
+            text: "# Chained after restart".to_owned(),
+        };
+        client
+            .send(ClientMessage::Binary(second_checkpoint.encode().into()))
+            .await
+            .unwrap();
+        let done = wait_for_message(&mut client, "checkpointed").await;
+        assert!(matches!(done, CollabMessage::Checkpointed { .. }));
         drop(client);
-        // Disconnects published nothing further.
-        assert_eq!(state.collab.note_events().await.len(), 1);
+        let events_after_restart = state.collab.note_events().await;
+        assert_eq!(events_after_restart.len(), 2);
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
+        let id_store::notes::NoteOp::Revise { parents, .. } = &events_after_restart[1].op else {
+            panic!("post-restart checkpoint must be a revision");
+        };
+        assert_eq!(parents, &vec![Hash::from_bytes([41u8; 32])]);
+
+        // Concurrent/offline branches remain separate. A wire save from
+        // that state is refused until an explicit merge is made through
+        // the existing checkpoint API; it must never silently discard a
+        // head. The protocol has no Merge message, so exercise the
+        // explicit merge through the existing API and assert its parents.
+        let mut forked_log = NoteCheckpoints::from_events(events_after_restart.clone()).unwrap();
+        let fork = DocumentRef::for_bytes("text/markdown", b"# Offline fork").unwrap();
+        forked_log
+            .checkpoint(
+                note,
+                Hash::from_bytes([51u8; 32]),
+                [7u8; 32],
+                fork,
+                vec![events_after_restart[1].id],
+            )
+            .unwrap();
+        let other = DocumentRef::for_bytes("text/markdown", b"# Other offline fork").unwrap();
+        forked_log
+            .checkpoint(
+                note,
+                Hash::from_bytes([52u8; 32]),
+                [7u8; 32],
+                other,
+                vec![events_after_restart[1].id],
+            )
+            .unwrap();
+        state
+            .collab
+            .seed_note_events(forked_log.events().to_vec())
+            .await
+            .unwrap();
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 2);
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let _ = wait_for_message(&mut client, "init").await;
+        client
+            .send(ClientMessage::Binary(
+                CollabMessage::Checkpoint {
+                    text: "# Must not join forks".to_owned(),
+                }
+                .encode()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let refused = wait_for_message(&mut client, "error").await;
+        assert!(matches!(refused, CollabMessage::Error { .. }));
+        drop(client);
+        assert_eq!(state.collab.note_events().await.len(), 4);
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 2);
+        let merge_id = Hash::from_bytes([53u8; 32]);
+        let merged = forked_log
+            .merge(
+                note,
+                merge_id,
+                [7u8; 32],
+                DocumentRef::for_bytes("text/markdown", b"# Explicit merge").unwrap(),
+            )
+            .unwrap();
+        let merged_record = merged.revision(merge_id).unwrap();
+        assert_eq!(
+            merged_record.parents,
+            vec![Hash::from_bytes([51u8; 32]), Hash::from_bytes([52u8; 32])]
+        );
+        state
+            .collab
+            .seed_note_events(forked_log.events().to_vec())
+            .await
+            .unwrap();
+        assert_eq!(state.collab.note_heads(note).await.unwrap(), vec![merge_id]);
 
         // A filename session refuses checkpoints.
         let (mut client, _) =
@@ -3696,7 +4780,7 @@ mod tests {
         let refused = wait_for_message(&mut client, "error").await;
         assert!(matches!(refused, CollabMessage::Error { .. }));
         drop(client);
-        assert_eq!(state.collab.note_events().await.len(), 1);
+        assert_eq!(state.collab.note_events().await.len(), 5);
 
         server.abort();
     }

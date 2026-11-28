@@ -11,10 +11,14 @@
 //!   are not live), dispatches the `fleet-exec.yml` workflow with
 //!   only the session handle and non-secret parameters, and binds
 //!   the resulting run — the handoff is the handle plus the
-//!   portable `OWNER/REPO#RUN_ID` + attempt form. `run` sends one
-//!   command and streams its IO back; `attach` / `watch` stream a
-//!   session after handoff; `renew` extends the lease within the
-//!   max lifespan; `extend` asks past the max (the broker raises
+//!   portable `OWNER/REPO#RUN_ID` + attempt form. `once` is the
+//!   one-shot sugar over the same path: it finds a live session
+//!   for the host repo in the local store or starts one (same
+//!   defaults, same claim, same handoff), runs one command, and
+//!   exits with its code. `run` sends one command and streams its
+//!   IO back; `attach` / `watch` stream a session after handoff;
+//!   `renew` extends the lease within the max
+//!   lifespan; `extend` asks past the max (the broker raises
 //!   the needs-drew alert; Drew's answer returns via `decide`);
 //!   `close` ends the session.
 //! - `fleet actions agent …` — the runner half, run by the
@@ -63,6 +67,16 @@ Live short-lived exec sessions inside GitHub Actions runners
              Run one command on the session's runner; streams its
              output and exits with the command's exit code. <ref>
              is a handle or the portable OWNER/REPO#RUN_ID form.
+  exec once [--repo OWNER/REPO] [--target-repo OWNER/REPO]
+             [--lease S] [--max-lifespan S] [--timeout S]
+             [--broker-url URL] [--context TEXT] [--hide-logs]
+             [--close] -- <command...>
+             One-shot sugar over start+run: find a live session
+             for --repo in the local store or start one (same
+             claim, same handoff), run one command, exit with its
+             code. Defaults: --repo dezren39/fleet, --lease 1800,
+             --max-lifespan 1800, --timeout 600. The session stays
+             open for the next once unless --close.
   exec attach <ref>
              Stream the session's IO (full replay) until it ends.
   exec watch <ref>
@@ -233,7 +247,19 @@ fn gh_api(
 ) -> Result<Value, String> {
     let token = gh_token(config)?;
     let url = format!("https://api.github.com{path}");
-    let agent = ureq::agent();
+    // Platform root store, not webpki-roots alone: seats behind a
+    // TLS-intercepting egress proxy (the sandbox) present the proxy's
+    // CA, which only the platform store carries — with the default
+    // agent the dispatch died with UnknownIssuer (code#15575; same
+    // fix as the gh App leg, code#13122).
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .into();
     let mut resp = if method == "POST" {
         agent
             .post(&url)
@@ -247,7 +273,7 @@ fn gh_api(
                     .unwrap_or_default()
                     .as_str(),
             )
-            .map_err(|e| format!("github api {method} {path}: transport: {e}"))?
+            .map_err(|e| gh_transport_err(method, path, &e))?
     } else {
         agent
             .get(&url)
@@ -256,7 +282,7 @@ fn gh_api(
             .header("Authorization", &format!("Bearer {token}"))
             .header("User-Agent", "fleet-actions")
             .call()
-            .map_err(|e| format!("github api {method} {path}: transport: {e}"))?
+            .map_err(|e| gh_transport_err(method, path, &e))?
     };
     let status = resp.status().as_u16();
     let text = resp
@@ -273,6 +299,47 @@ fn gh_api(
         return Ok(json!({}));
     }
     serde_json::from_str(&text).map_err(|e| format!("github api {method} {path}: bad JSON: {e}"))
+}
+
+/// Actionable hint for seat-side GitHub API transport failures that look
+/// like TLS certificate trust (code#15575). Returns `None` for
+/// non-TLS failures so ordinary transport errors stay terse.
+fn tls_trust_hint(err: &str) -> Option<&'static str> {
+    let lower = err.to_lowercase();
+    let looks_like_tls = [
+        "unknownissuer",
+        "unknown issuer",
+        "invalid peer certificate",
+        "certificate verify failed",
+        "certificate has expired",
+        "self-signed",
+        "self signed",
+        "unable to get local issuer",
+        "certificate",
+        "rustls",
+        "x509",
+        "tls handshake",
+        "ssl certificate",
+    ]
+    .iter()
+    .any(|sig| lower.contains(sig));
+    if !looks_like_tls {
+        return None;
+    }
+    Some(
+        "seat TLS trust: the GitHub API TLS handshake failed certificate validation — \
+         seats behind the sandbox TLS-intercepting egress proxy need a fleet binary carrying \
+         code#15575 (platform certificate roots). Re-run scripts/muse/bootstrap.sh to refresh \
+         the binary, then retry",
+    )
+}
+
+fn gh_transport_err(method: &str, path: &str, e: &dyn std::fmt::Display) -> String {
+    let base = format!("github api {method} {path}: transport: {e}");
+    match tls_trust_hint(&e.to_string()) {
+        Some(hint) => format!("{base} ({hint})"),
+        None => base,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +423,7 @@ fn exec_run(config: &Config, args: &[String]) -> i32 {
     match args.first().map(|s| s.as_str()) {
         Some("start") => exec_start(config, &args[1..]),
         Some("run") => exec_command(config, &args[1..]),
+        Some("once") => exec_once(config, &args[1..]),
         Some("attach") => exec_attach(config, &args[1..], false),
         Some("watch") => exec_attach(config, &args[1..], true),
         Some("renew") => exec_renew(config, &args[1..]),
@@ -553,6 +621,7 @@ fn exec_start(config: &Config, args: &[String]) -> i32 {
         "max_until": opened.get("max_until").cloned().unwrap_or(Value::Null),
         "placement_path": placement_path,
         "broker_url": broker_url,
+        "created_at": now_unix(),
         "hide_logs": flags.has("hide-logs"),
     });
     store_put(record);
@@ -583,6 +652,160 @@ fn exec_start(config: &Config, args: &[String]) -> i32 {
         "attached — streaming session IO (commands go through `fleet actions exec run` from another shell; Ctrl-C detaches, the session lives on)"
     );
     stream_session(&handle, true, None)
+}
+
+/// List stored session records, most recently started first.
+fn list_sessions() -> Vec<(String, Value)> {
+    let store = store_load();
+    let Some(obj) = store.as_object() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, Value)> = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    out.sort_by_key(|(_, v)| v.get("created_at").and_then(|c| c.as_i64()).unwrap_or(0));
+    out.reverse();
+    out
+}
+
+/// The one-shot sugar (#13774): find a live session for the host
+/// repo in the local store or start one with `exec start --detach`
+/// (same lease discipline, same #13765 claim, same handoff), then
+/// run one command through it and exit with its code. The session
+/// stays open for the next `once` unless `--close`.
+fn exec_once(config: &Config, args: &[String]) -> i32 {
+    let flags = match parse_flags(
+        args,
+        &[
+            "repo",
+            "workflow",
+            "ref",
+            "target-repo",
+            "target-ref",
+            "lease",
+            "max-lifespan",
+            "timeout",
+            "broker-url",
+            "context",
+        ],
+        &["hide-logs", "close"],
+    ) {
+        Ok(f) => f,
+        Err(e) => return fail_out(EXIT_USAGE, &e),
+    };
+    let command_text = flags.positional.join(" ");
+    if command_text.trim().is_empty() {
+        return fail_out(
+            EXIT_USAGE,
+            "usage: fleet actions exec once [options] -- <command...>",
+        );
+    }
+    let host_repo = flags.get("repo").unwrap_or(DEFAULT_HOST_REPO);
+    let cmd_timeout_s = match flags.seconds("timeout") {
+        Ok(v) => v.unwrap_or(600),
+        Err(e) => return fail_out(EXIT_USAGE, &e),
+    };
+
+    // Find: the most recent stored session for this host repo whose
+    // row is still live at the broker.
+    let mut handle: Option<String> = None;
+    for (stored_handle, rec) in list_sessions() {
+        if rec.get("host_repo").and_then(|v| v.as_str()) != Some(host_repo) {
+            continue;
+        }
+        match fleet_queue::client::actions_exec::ae_stream(&stored_handle, 0, None)
+            .and_then(check_envelope)
+        {
+            Ok(v) => {
+                let state = v
+                    .get("session")
+                    .and_then(|s| s.get("state"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if matches!(state, "open" | "bound" | "live" | "extension-pending") {
+                    handle = Some(stored_handle);
+                    break;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    // Create: same path as `exec start --detach` — the lease has a
+    // one-shot default (1800 s) where start requires it by
+    // construction.
+    let handle = match handle {
+        Some(h) => {
+            println!("once: reusing live session {h} on {host_repo}");
+            h
+        }
+        None => {
+            let lease_s = match flags.seconds("lease") {
+                Ok(v) => v.unwrap_or(1800),
+                Err(e) => return fail_out(EXIT_USAGE, &e),
+            };
+            let before: std::collections::HashSet<String> =
+                list_sessions().into_iter().map(|(h, _)| h).collect();
+            let mut start_args: Vec<String> = vec![
+                "--repo".to_string(),
+                host_repo.to_string(),
+                "--timeout".to_string(),
+                lease_s.to_string(),
+                "--detach".to_string(),
+            ];
+            for (flag, name) in [
+                ("workflow", "workflow"),
+                ("ref", "ref"),
+                ("target-repo", "target-repo"),
+                ("target-ref", "target-ref"),
+                ("max-lifespan", "max-lifespan"),
+                ("broker-url", "broker-url"),
+                ("context", "context"),
+            ] {
+                if let Some(v) = flags.get(flag) {
+                    start_args.push(format!("--{name}"));
+                    start_args.push(v.to_string());
+                }
+            }
+            if flags.has("hide-logs") {
+                start_args.push("--hide-logs".to_string());
+            }
+            let code = exec_start(config, &start_args);
+            if code != EXIT_OK {
+                return code;
+            }
+            let new_handle = list_sessions()
+                .into_iter()
+                .map(|(h, _)| h)
+                .find(|h| !before.contains(h));
+            let Some(new_handle) = new_handle else {
+                return fail_out(EXIT_ERROR, "start succeeded but recorded no session");
+            };
+            println!("once: started new session {new_handle} on {host_repo}");
+            new_handle
+        }
+    };
+
+    // Run: one command through the session; its exit code is ours.
+    let cmd =
+        match fleet_queue::client::actions_exec::ae_command(&handle, &command_text, cmd_timeout_s)
+            .and_then(check_envelope)
+        {
+            Ok(v) => v,
+            Err((c, m)) => return fail_out(c, &format!("enqueue command: {m}")),
+        };
+    let cmd_id = cmd
+        .get("cmd_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if cmd_id.is_empty() {
+        return fail_out(EXIT_ERROR, "broker accepted the command without an id");
+    }
+    let code = stream_session(&handle, false, Some(&cmd_id));
+    if flags.has("close") {
+        let _ = fleet_queue::client::actions_exec::ae_close(&handle);
+        println!("once: closed session {handle}");
+    }
+    code
 }
 
 /// Stream a session's IO from the broker, printing new chunks as
@@ -1530,5 +1753,63 @@ fn r2_put(
     } else {
         let _ = resp.body_mut().read_to_string();
         Err(format!("HTTP {status}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: golden corpus — the exact seat failure from code#15575
+    /// must name the trust problem and the remedy; non-TLS failures
+    /// must pass through unchanged.
+    #[test]
+    fn tls_failures_name_the_trust_problem() {
+        for err in [
+            "io: invalid peer certificate: UnknownIssuer",
+            "transport: invalid peer certificate: UnknownIssuer",
+            "x509: certificate signed by unknown authority",
+            "TLS handshake failed: certificate verify failed (self signed certificate)",
+        ] {
+            let hint = tls_trust_hint(err);
+            assert!(hint.is_some(), "no hint for TLS failure: {err}");
+            let hint = hint.unwrap();
+            assert!(
+                hint.contains("15575") && hint.contains("bootstrap"),
+                "hint names neither the issue nor the remedy: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_tls_failures_stay_terse() {
+        for err in [
+            "connection refused",
+            "HTTP 403: Resource not accessible by integration",
+            "dns error: no records found",
+            "timed out",
+        ] {
+            assert_eq!(tls_trust_hint(err), None, "false hint for: {err}");
+        }
+    }
+
+    #[test]
+    fn dispatch_error_carries_hint_only_for_tls() {
+        let tls = gh_transport_err(
+            "POST",
+            "/repos/o/r/actions/workflows/fleet-exec.yml/dispatches",
+            &"io: invalid peer certificate: UnknownIssuer",
+        );
+        assert!(tls.contains("transport: "), "{tls}");
+        assert!(tls.contains("15575"), "{tls}");
+        let plain = gh_transport_err(
+            "POST",
+            "/repos/o/r/actions/workflows/fleet-exec.yml/dispatches",
+            &"connection refused",
+        );
+        assert_eq!(
+            plain,
+            "github api POST /repos/o/r/actions/workflows/fleet-exec.yml/dispatches: transport: connection refused"
+        );
     }
 }

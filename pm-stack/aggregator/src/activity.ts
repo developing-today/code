@@ -35,7 +35,7 @@
 // describes exactly what that bounded source can and cannot represent.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { EventsStore } from "./events.ts";
+import { type EventsStore, MAX_SOURCE_LINK_LENGTH } from "./events.ts";
 import type { TierItem } from "./model.ts";
 import { isIsoDate, isNonNegative } from "./validate.ts";
 
@@ -619,7 +619,13 @@ export class IngestionStore {
   async ingest(
     events: Pick<EventsStore, "record">,
     deliveries: readonly ActivityDelivery[],
-  ): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
+  ): Promise<{
+    ingested: number;
+    duplicates: number;
+    failed: number;
+    failedIds: string[];
+    rejectedLinkIds: string[];
+  }> {
     const run = this.ingestChain.then(() => this.ingestSerialized(events, deliveries));
     this.ingestChain = run.then(
       () => {},
@@ -631,24 +637,48 @@ export class IngestionStore {
   private async ingestSerialized(
     events: Pick<EventsStore, "record">,
     deliveries: readonly ActivityDelivery[],
-  ): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
+  ): Promise<{
+    ingested: number;
+    duplicates: number;
+    failed: number;
+    failedIds: string[];
+    rejectedLinkIds: string[];
+  }> {
     await this.load();
     let ingested = 0;
     let duplicates = 0;
     let failed = 0;
     const failedIds: string[] = [];
+    const rejectedLinkIds: string[] = [];
     let dirty = false;
+    // A replay batch may contain thousands of deliveries; build each persisted
+    // seen list's lookup index once instead of rescanning it for every delivery.
+    // A singleton stays on the scan path without allocating an unused index.
+    const seenBySource = deliveries.length > 1 ? new Map<string, Map<string, number>>() : undefined;
     for (const d of deliveries) {
-      const seen = (this.data.seen[d.source] ??= []);
-      const cp = (this.data.checkpoints[d.source] ??= {
-        source: d.source,
-        lastSourceId: null,
-        lastEventAt: null,
-        deliveries: 0,
-        duplicates: 0,
-        updatedAt: new Date().toISOString(),
-      });
-      if (seen.includes(d.sourceId)) {
+      let seen = this.data.seen[d.source];
+      if (!seen) this.data.seen[d.source] = seen = [];
+      let seenCounts = seenBySource?.get(d.source);
+      if (!seenCounts && seenBySource) {
+        seenCounts = new Map();
+        // Loaded lists may contain repeated ids; counts preserve membership
+        // until the last copy is evicted, just like the persisted array.
+        for (const id of seen) seenCounts.set(id, (seenCounts.get(id) ?? 0) + 1);
+        seenBySource.set(d.source, seenCounts);
+      }
+      let cp = this.data.checkpoints[d.source];
+      if (!cp) {
+        cp = {
+          source: d.source,
+          lastSourceId: null,
+          lastEventAt: null,
+          deliveries: 0,
+          duplicates: 0,
+          updatedAt: new Date().toISOString(),
+        };
+        this.data.checkpoints[d.source] = cp;
+      }
+      if (seenCounts ? seenCounts.has(d.sourceId) : seen.includes(d.sourceId)) {
         duplicates++;
         cp.duplicates++;
         cp.updatedAt = new Date().toISOString();
@@ -660,6 +690,17 @@ export class IngestionStore {
         // the record in the retry outbox and rethrows; the replay of this
         // delivery re-presents the same id and returns the landed record
         // instead of appending a duplicate (the v1 rollback this replaces).
+        //
+        // Source-link bound (#16069): the event schema caps
+        // `source.link` at MAX_SOURCE_LINK_LENGTH, and an over-limit
+        // provider link is a data-shape problem, not a retryable
+        // failure — handing it to record() would throw every replay
+        // forever while journaling nothing. Reject the link but
+        // preserve the rest of the event: the delivery still ingests
+        // (and is marked seen, so replay does not retry it), and the
+        // rejection is reported in `rejectedLinkIds`.
+        const linkRejected = typeof d.link === "string" && d.link.length > MAX_SOURCE_LINK_LENGTH;
+        if (linkRejected) rejectedLinkIds.push(d.sourceId);
         await events.record({
           id: `activity:${d.source}:${d.sourceId}`,
           at: d.at,
@@ -669,7 +710,7 @@ export class IngestionStore {
           summary: capUnits(d.link ? `${d.summary} — ${d.link}` : d.summary, 500),
           source: {
             identity: `pm-stack/aggregator/activity/${d.source}`,
-            ...(d.link ? { link: d.link } : {}),
+            ...(d.link && !linkRejected ? { link: d.link } : {}),
           },
         });
       } catch (err) {
@@ -682,7 +723,17 @@ export class IngestionStore {
         continue;
       }
       seen.push(d.sourceId);
-      if (seen.length > SEEN_RETENTION_MAX) seen.splice(0, seen.length - SEEN_RETENTION_MAX);
+      seenCounts?.set(d.sourceId, 1);
+      if (seen.length > SEEN_RETENTION_MAX) {
+        const evicted = seen.splice(0, seen.length - SEEN_RETENTION_MAX);
+        if (seenCounts) {
+          for (const sourceId of evicted) {
+            const remaining = seenCounts.get(sourceId)! - 1;
+            if (remaining) seenCounts.set(sourceId, remaining);
+            else seenCounts.delete(sourceId);
+          }
+        }
+      }
       cp.deliveries++;
       cp.lastSourceId = d.sourceId;
       if (!cp.lastEventAt || Date.parse(d.at) >= Date.parse(cp.lastEventAt)) cp.lastEventAt = d.at;
@@ -691,7 +742,7 @@ export class IngestionStore {
       dirty = true;
     }
     if (dirty) await this.persist();
-    return { ingested, duplicates, failed, failedIds };
+    return { ingested, duplicates, failed, failedIds, rejectedLinkIds };
   }
 
   /** Record (or extend) an open gap for a source window. An already
@@ -757,8 +808,14 @@ export async function ingestActivity(
   store: IngestionStore,
   events: Pick<EventsStore, "record">,
   deliveries: readonly ActivityDelivery[],
-): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
-  if (!deliveries.length) return { ingested: 0, duplicates: 0, failed: 0, failedIds: [] };
+): Promise<{
+  ingested: number;
+  duplicates: number;
+  failed: number;
+  failedIds: string[];
+  rejectedLinkIds: string[];
+}> {
+  if (!deliveries.length) return { ingested: 0, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: [] };
   try {
     return await store.ingest(events, deliveries);
   } catch (err) {
@@ -766,7 +823,13 @@ export async function ingestActivity(
       `[activity] WARNING: ingestion failed (${err instanceof Error ? err.message : String(err)}); ` +
         `deliveries stay unseen and a later pass can retry them.`,
     );
-    return { ingested: 0, duplicates: 0, failed: deliveries.length, failedIds: deliveries.map((d) => d.sourceId) };
+    return {
+      ingested: 0,
+      duplicates: 0,
+      failed: deliveries.length,
+      failedIds: deliveries.map((d) => d.sourceId),
+      rejectedLinkIds: [],
+    };
   }
 }
 

@@ -28,6 +28,7 @@ mod render;
 mod server;
 mod service;
 
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -50,7 +51,9 @@ use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
     Sensitivity as ProtoSensitivity, VectorBackend as ProtoVectorBackend,
 };
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{
+    Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+};
 use serde_json::Value as Json;
 
 // ---------------------------------------------------------------- args --
@@ -58,7 +61,6 @@ use serde_json::Value as Json;
 #[derive(Parser)]
 #[command(
     name = "atlas-search",
-    version,
     about = "atlas-search — the Atlas access layer: hybrid search over the corpus."
 )]
 struct Cli {
@@ -367,13 +369,16 @@ struct SearchArgs {
     project: Option<String>,
     #[arg(long)]
     client: Option<String>,
+    /// Manifest-defined generic_list filters populated by the manifest-aware parser.
+    #[arg(skip)]
+    generic_filters: Vec<atlas_core::filters::GenericFilter>,
     /// YYYY-MM-DD, on sessions.created_at (inclusive)
     #[arg(long)]
     since: Option<String>,
     /// YYYY-MM-DD, on sessions.created_at (inclusive)
     #[arg(long)]
     until: Option<String>,
-    /// ceiling in shareable<personal<local-only<secret-bearing (default personal; secret-bearing must be spelled out)
+    /// ceiling in shareable<personal<local-only<secret-bearing, or the canonical public<internal<private<sensitive (default personal; the top rung must be spelled out)
     #[arg(long, default_value = "personal")]
     max_sensitivity: String,
     /// disclosure context of the destination surface (#12404): fleet-internal (default; this CLI serves fleet surfaces), hosted-per-user, public-surface, or local-owner. The context ceiling intersects --max-sensitivity; neither widens the other, and excluded content is never served
@@ -448,6 +453,9 @@ struct SearchArgs {
     /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
     #[arg(long, env = "ATLAS_SHARDS")]
     shards: Option<String>,
+    /// path to the catalog/source-registry database for occurrence attribution (#3125 slice 7): with --shards, occurrence rows resolve their source locators to registered roots (root_id). Requires --shards.
+    #[arg(long = "source-registry", env = "ATLAS_SOURCE_REGISTRY")]
+    source_registry: Option<PathBuf>,
     #[command(flatten)]
     backend: BackendArgs,
     #[command(flatten)]
@@ -747,6 +755,140 @@ fn via_fallback_note(detail: String) -> String {
     format!("via-service: {detail}; served standalone")
 }
 
+/// Build the search command from the backend's effective filter surface.
+/// Only manifest-declared `generic_list` dimensions add flags; the
+/// four named compatibility aliases remain the statically declared flags.
+fn command_for_manifest(manifest: &atlas_core::manifest::Manifest) -> Result<Command, clap::Error> {
+    let mut command = Cli::command();
+    let search = command
+        .find_subcommand_mut("search")
+        .expect("Cli declares the search subcommand");
+
+    for dimension in manifest
+        .dimensions
+        .iter()
+        .filter(|d| d.shape == atlas_core::manifest::Shape::GenericList)
+    {
+        let long = dimension.name.replace('_', "-");
+        if search
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some(long.as_str()))
+        {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!(
+                    "manifest dimension '{}' conflicts with search option '--{long}'",
+                    dimension.name
+                ),
+            ));
+        }
+        *search = std::mem::take(search).arg(
+            Arg::new(dimension.name.clone())
+                .long(long)
+                .value_name("VALUE")
+                .action(ArgAction::Append)
+                .value_delimiter(',')
+                .help(format!("filter by manifest dimension {}", dimension.name)),
+        );
+    }
+    Ok(command)
+}
+
+/// Parse a CLI invocation with only the generic filter flags declared by
+/// the effective manifest. Unknown dimensions remain clap errors rather
+/// than being ignored and widening the search.
+fn parse_cli_with_manifest_from<I, T>(
+    args: I,
+    manifest: &atlas_core::manifest::Manifest,
+) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let command = command_for_manifest(manifest)?;
+    let matches = command.try_get_matches_from(args)?;
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    let Some(search_matches) = matches.subcommand_matches("search") else {
+        return Ok(cli);
+    };
+    let Cmd::Search(search_args) = &mut cli.cmd else {
+        return Ok(cli);
+    };
+
+    for dimension in manifest
+        .dimensions
+        .iter()
+        .filter(|d| d.shape == atlas_core::manifest::Shape::GenericList)
+    {
+        let values = search_matches
+            .get_many::<String>(&dimension.name)
+            .map(|values| {
+                values
+                    .flat_map(|value| split_csv(Some(value)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !values.is_empty() {
+            search_args
+                .generic_filters
+                .push(atlas_core::filters::GenericFilter {
+                    name: dimension.name.clone(),
+                    semantics: dimension.semantics,
+                    values,
+                });
+        }
+    }
+    Ok(cli)
+}
+
+/// The ordinary derived parser cannot know manifest-defined options.
+/// Detect an unknown long option on `search`, bootstrap the static fields
+/// permissively to select/open its backend, then parse the original argv
+/// strictly with that backend's effective manifest.
+fn has_unrecognized_search_option(args: &[OsString]) -> bool {
+    let Some(search_index) = args.iter().position(|arg| arg == "search") else {
+        return false;
+    };
+    let mut command = Cli::command();
+    let Some(search) = command.find_subcommand_mut("search") else {
+        return false;
+    };
+    for arg in args.iter().skip(search_index + 1) {
+        let value = arg.to_string_lossy();
+        if value == "--" {
+            break;
+        }
+        if let Some(option) = value.strip_prefix("--") {
+            let long = option.split('=').next().unwrap_or(option);
+            if !search
+                .get_arguments()
+                .any(|known| known.get_long() == Some(long))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn parse_cli_from(args: Vec<OsString>) -> Result<Cli, clap::Error> {
+    if !has_unrecognized_search_option(&args) {
+        return Cli::try_parse_from(args);
+    }
+
+    let bootstrap_matches = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(args.clone())?;
+    let bootstrap_cli = Cli::from_arg_matches(&bootstrap_matches)?;
+    let Cmd::Search(search_args) = bootstrap_cli.cmd else {
+        return Cli::try_parse_from(args);
+    };
+    let backend = pick_backend(&search_args.backend, &search_args.vector.vec_table, 0).map_err(
+        |(_, message)| clap::Error::raw(clap::error::ErrorKind::ValueValidation, message),
+    )?;
+    parse_cli_with_manifest_from(args, &backend.manifest())
+}
+
 /// Translate the CLI's search surface into the wire request.
 fn proto_search_request(args: &SearchArgs) -> SearchRequest {
     SearchRequest {
@@ -763,8 +905,13 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             client: split_csv(args.client.as_deref()),
             since: args.since.clone(),
             until: args.until.clone(),
+            dimensions: args
+                .generic_filters
+                .iter()
+                .map(|filter| (filter.name.clone(), filter.values.clone()))
+                .collect(),
         },
-        ceiling: ProtoSensitivity::from_name(&args.max_sensitivity)
+        ceiling: ProtoSensitivity::from_ceiling_name(&args.max_sensitivity)
             .unwrap_or(ProtoSensitivity::Personal),
         k: u(args.k),
         pool: u(args.pool),
@@ -830,7 +977,7 @@ fn try_via_service_search(args: &SearchArgs) -> Result<Option<Json>, String> {
     if !via_requested(&args.backend) {
         return Ok(None);
     }
-    if ProtoSensitivity::from_name(&args.max_sensitivity).is_none() {
+    if ProtoSensitivity::from_ceiling_name(&args.max_sensitivity).is_none() {
         // Let the standalone path produce the Python's exact
         // validation fatal rather than silently clamping here.
         return Ok(None);
@@ -943,6 +1090,13 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     // The disclosure context validates up front too (#12404),
     // so a bad value fails identically on every path.
     let context = parse_context(&args.context)?;
+    if args.source_registry.is_some() && args.shards.is_none() {
+        return Err((
+            2,
+            "--source-registry requires --shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        ));
+    }
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -957,7 +1111,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             Err(n) => note = Some(n),
         }
     }
-    let filters = Filters::new(
+    let mut filters = Filters::new(
         split_csv(args.kind.as_deref()),
         split_csv(args.topic.as_deref()),
         split_csv(args.project.as_deref()),
@@ -967,6 +1121,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
         args.until.clone(),
     )
     .map_err(map_err)?;
+    filters.generic = args.generic_filters.clone();
     let mut backend = pick_backend(&args.backend, &args.vector.vec_table, trunc)?;
     if let Some(spec) = args.shards.as_deref() {
         let set = open_from_spec(
@@ -975,7 +1130,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             &args.vector.vec_table,
         )
         .map_err(map_err)?;
-        backend = Box::new(ShardedBackend::new(backend, set));
+        let mut sharded = ShardedBackend::new(backend, set);
+        if let Some(path) = args.source_registry.as_deref() {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            sharded = sharded.with_source_registry(conn);
+        }
+        backend = Box::new(sharded);
     }
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
@@ -1099,11 +1259,15 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     if let Some(spec) = &settings.shards {
         let ceiling = serve_discovery_ceiling(&settings.clients);
         let set = open_from_spec(spec, ceiling, &settings.vec_table).map_err(map_err)?;
-        let backend = ShardedBackend::new(backend, set).with_refresh(
+        let mut backend = ShardedBackend::new(backend, set).with_refresh(
             spec.clone(),
             ceiling,
             settings.shard_refresh,
         );
+        if let Some(path) = &settings.source_registry {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            backend = backend.with_source_registry(conn);
+        }
         let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
             std::sync::Arc::new(backend),
             shared,
@@ -1398,7 +1562,21 @@ fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn main() -> ExitCode {
-    let cli = <Cli as clap::Parser>::parse();
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-search {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
+    let args = std::env::args_os().collect::<Vec<_>>();
+    let cli = match parse_cli_from(args) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, msg)) => {
@@ -1411,6 +1589,87 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_cli_filters_round_trip_into_generic_dimensions() {
+        // Oracle: this validated manifest declares only `source_app` as a
+        // generic_list dimension. Its generated flag reaches the wire map;
+        // the four named aliases retain their pre-Phase-3 values, while an
+        // undeclared option is rejected instead of broadening the query.
+        let mut manifest = atlas_core::manifest::Manifest {
+            version: 1,
+            content_hash: String::new(),
+            dimensions: vec![atlas_core::manifest::Dimension {
+                name: "source_app".to_string(),
+                shape: atlas_core::manifest::Shape::GenericList,
+                semantics: atlas_core::manifest::Semantics::Exact,
+                label_column: None,
+            }],
+        };
+        manifest.content_hash = manifest.compute_hash();
+        manifest.validate().expect("synthetic manifest is valid");
+
+        // Runtime bootstrap must retain the static search fields while
+        // ignoring a not-yet-known manifest flag; the strict second pass
+        // below then accepts only the declared dimension.
+        let bootstrap_matches = Cli::command()
+            .ignore_errors(true)
+            .try_get_matches_from(["atlas-search", "search", "atlas", "--source-app", "mail"])
+            .expect("permissive bootstrap parse");
+        let bootstrap = Cli::from_arg_matches(&bootstrap_matches)
+            .expect("static search options survive bootstrap parsing");
+        let Cmd::Search(bootstrap_args) = bootstrap.cmd else {
+            panic!("expected search command")
+        };
+        assert_eq!(bootstrap_args.query, "atlas");
+
+        let cli = parse_cli_with_manifest_from(
+            [
+                "atlas-search",
+                "search",
+                "atlas",
+                "--source-app",
+                "mail",
+                "--kind",
+                "message",
+                "--topic",
+                "planning",
+                "--project",
+                "atlas",
+                "--client",
+                "muse",
+            ],
+            &manifest,
+        )
+        .expect("declared generic dimension flag parses");
+        let Cmd::Search(args) = cli.cmd else {
+            panic!("expected search command")
+        };
+        let request = proto_search_request(&args);
+        assert_eq!(request.filters.kind, vec!["message".to_string()]);
+        assert_eq!(request.filters.topic, vec!["planning".to_string()]);
+        assert_eq!(request.filters.project, vec!["atlas".to_string()]);
+        assert_eq!(request.filters.client, vec!["muse".to_string()]);
+        assert_eq!(
+            request.filters.dimensions.get("source_app"),
+            Some(&vec!["mail".to_string()])
+        );
+
+        let undeclared = parse_cli_with_manifest_from(
+            [
+                "atlas-search",
+                "search",
+                "atlas",
+                "--unknown-dimension",
+                "mail",
+            ],
+            &manifest,
+        );
+        assert!(
+            undeclared.is_err(),
+            "undeclared dimensions must be rejected"
+        );
+    }
 
     #[test]
     fn cli_and_raw_request_share_query_parameter_names_and_values() {

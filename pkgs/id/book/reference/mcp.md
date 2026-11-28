@@ -34,16 +34,16 @@ Tool definitions are pinned at session start by SHA-256 over their canonical JSO
 
 `v1_tool_definitions()` in `mcp_bridge.rs` defines 8 tools, in this pinned order.
 
-| # | Tool | Maps to | Ceiling key | Parameters | Behaviour |
-|---|---|---|---|---|---|
-| 1 | `world.join` | `session.presence` | `presence` | `capability: string` (required), `after: u64` (optional) | Sends `{type:"join", capability, after, agent_profile:true}`. A second join returns `AlreadyJoined`. |
-| 2 | `world.leave` | `session.presence` | `presence` | none | No frame exists for leaving: returns `ToolAction::Close`. Presence is connection-scoped, so leaving is closing. |
-| 3 | `screen.read` | `screen.read` | `screen.read` | none | Local answer: the latest full `view` text plus pending semantic-diff changes. Reading drains the pending changes. Sends no frame. |
-| 4 | `screen.subscribe` | `screen.subscribe` | `screen.read` | `region` (optional: `{x, y, width, height}`, all `u64`), `event_classes` (optional string array). At least one of the two is required. | Sends `{type:"screen_subscribe", …}`. |
-| 5 | `object.inspect` | `object.inspect` | `screen.read` | `entity_ref` (required, any JSON value; keyed by its JSON string) | Local answer from observed `object_changed` diffs. When nothing is known: `"object not in the observed screen state"`. Sends no frame. |
-| 6 | `program.invoke` | `input` | `program.invoke` | `program`: non-empty string, `object`: non-empty string, `arguments`: string, `screen_revision`: optional `u64` | Sends exactly one `{type:"input", data_hex: hex(arguments), screen_revision?}` frame. No chaining: one call, one frame. `program` and `object` are validated here and allowlist-enforced by the policy layer. |
-| 7 | `chat.post` | `chat.post` | `chat.post` | `text: string` (required), `screen_revision`: optional `u64` | Sends `{type:"chat", text, screen_revision?}`. |
-| 8 | `presence.set` | `presence.set` | `presence` | — | Listed but unimplemented in v1: always refused. See below. |
+| #   | Tool               | Maps to            | Ceiling key      | Parameters                                                                                                                             | Behaviour                                                                                                                                                                                                     |
+| --- | ------------------ | ------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `world.join`       | `session.presence` | `presence`       | `capability: string` (required), `after: u64` (optional)                                                                               | Sends `{type:"join", capability, after, agent_profile:true}`. A second join returns `AlreadyJoined`.                                                                                                          |
+| 2   | `world.leave`      | `session.presence` | `presence`       | none                                                                                                                                   | No frame exists for leaving: returns `ToolAction::Close`. Presence is connection-scoped, so leaving is closing.                                                                                               |
+| 3   | `screen.read`      | `screen.read`      | `screen.read`    | none                                                                                                                                   | Local answer: the latest full `view` text plus pending semantic-diff changes. Reading drains the pending changes. Sends no frame.                                                                             |
+| 4   | `screen.subscribe` | `screen.subscribe` | `screen.read`    | `region` (optional: `{x, y, width, height}`, all `u64`), `event_classes` (optional string array). At least one of the two is required. | Sends `{type:"screen_subscribe", …}`.                                                                                                                                                                         |
+| 5   | `object.inspect`   | `object.inspect`   | `screen.read`    | `entity_ref` (required, any JSON value; keyed by its JSON string)                                                                      | Local answer from observed `object_changed` diffs. When nothing is known: `"object not in the observed screen state"`. Sends no frame.                                                                        |
+| 6   | `program.invoke`   | `input`            | `program.invoke` | `program`: non-empty string, `object`: non-empty string, `arguments`: string, `screen_revision`: optional `u64`                        | Sends exactly one `{type:"input", data_hex: hex(arguments), screen_revision?}` frame. No chaining: one call, one frame. `program` and `object` are validated here and allowlist-enforced by the policy layer. |
+| 7   | `chat.post`        | `chat.post`        | `chat.post`      | `text: string` (required), `screen_revision`: optional `u64`                                                                           | Sends `{type:"chat", text, screen_revision?}`.                                                                                                                                                                |
+| 8   | `presence.set`     | `presence.set`     | `presence`       | —                                                                                                                                      | Listed but unimplemented in v1: always refused. See below.                                                                                                                                                    |
 
 Session rule: every tool except `world.join` requires a joined session. Calling one before joining returns `NotJoined`.
 
@@ -63,7 +63,7 @@ Any other unrecognised name returns `BridgeError::UnknownTool`. The forbidden li
 
 ### `presence.set`: a pinned tool the bridge always refuses (WEB-13)
 
-`presence.set` is one of the 8 pinned `v1_tool_definitions()`, so a client discovering the surface is offered it. Calling it always fails: `tool_action` refuses it unconditionally with `BridgeError::NoFrameMapping`. The reason is structural — presence *is* the join. There is no presence frame in the world session protocol to map the call onto. That is disagreement WEB-13: the v1 surface lists a tool that can never succeed in v1.
+`presence.set` is one of the 8 pinned `v1_tool_definitions()`, so a client discovering the surface is offered it. Calling it always fails: `tool_action` refuses it unconditionally with `BridgeError::NoFrameMapping`. The reason is structural — presence _is_ the join. There is no presence frame in the world session protocol to map the call onto. That is disagreement WEB-13: the v1 surface lists a tool that can never succeed in v1.
 
 ## The policy layer: PolicySession
 
@@ -82,16 +82,16 @@ Two further rules are enforced in the same layer:
 
 The ceiling and quota come from a `RoleGrant`, set by the owner at grant time and never widened by the session:
 
-| Field | Meaning |
-|---|---|
-| `agent_key` | `[u8; 32]`, the agent's key. |
-| `agent_label` | The agent's label. |
-| `owner` | The granting owner. |
-| `world` | The world the grant covers. |
+| Field            | Meaning                                                       |
+| ---------------- | ------------------------------------------------------------- |
+| `agent_key`      | `[u8; 32]`, the agent's key.                                  |
+| `agent_label`    | The agent's label.                                            |
+| `owner`          | The granting owner.                                           |
+| `world`          | The world the grant covers.                                   |
 | `capability_ref` | The delegation/grant record ID, stamped on every audit event. |
-| `ceiling` | A `CapabilityCeiling`. |
-| `quota` | A `Quota`. |
-| `rate_limits` | A list of `RateLimit{tool, max_calls, window_secs}`. |
+| `ceiling`        | A `CapabilityCeiling`.                                        |
+| `quota`          | A `Quota`.                                                    |
+| `rate_limits`    | A list of `RateLimit{tool, max_calls, window_secs}`.          |
 
 `CapabilityCeiling` has four sets — `tools`, `worlds`, `object_classes`, `program_allowlist` — all `BTreeSet<String>`. Anything unnamed in the relevant set is outside the ceiling.
 
@@ -99,21 +99,21 @@ The ceiling and quota come from a `RoleGrant`, set by the owner at grant time an
 
 `Quota` has three axes: `frames`, `tool_calls`, `program_invocations`.
 
-| Action | tool_calls | frames | program_invocations |
-|---|---|---|---|
-| Any admitted action | 1 | — | — |
-| `world.join` | 1 | 1 | — |
-| `screen.subscribe` | 1 | 1 | — |
-| `chat.post` | 1 | 1 | — |
-| `program.invoke` | 1 | 1 | 1 |
-| `screen.read`, `object.inspect` | 1 | 0 | 0 |
-| `world.leave` | 0 | 0 | 0 |
+| Action                          | tool_calls | frames | program_invocations |
+| ------------------------------- | ---------- | ------ | ------------------- |
+| Any admitted action             | 1          | —      | —                   |
+| `world.join`                    | 1          | 1      | —                   |
+| `screen.subscribe`              | 1          | 1      | —                   |
+| `chat.post`                     | 1          | 1      | —                   |
+| `program.invoke`                | 1          | 1      | 1                   |
+| `screen.read`, `object.inspect` | 1          | 0      | 0                   |
+| `world.leave`                   | 0          | 0      | 0                   |
 
 `world.leave` is never refused by ceiling or quota and is charged nothing. It is still audited.
 
 ### Quota exhaustion parks the agent
 
-When a quota axis is exhausted, the agent is *parked*: the policy layer emits the first-class world event
+When a quota axis is exhausted, the agent is _parked_: the policy layer emits the first-class world event
 
 ```text
 QUOTA_PARK_EVENT = "agent parked, quota exhausted"
@@ -125,15 +125,15 @@ as a `ParkEvent{kind: "agent_parked", reason: "quota_exhausted", …}`. Parking 
 
 `AuditOutcome` records what happened to each action:
 
-| Outcome | Meaning |
-|---|---|
-| `Executed` | The action ran. |
-| `RefusedCeiling` | Outside the capability ceiling. |
-| `RefusedQuota{axis}` | A quota axis could not pay; `axis` names which one. |
-| `RefusedParked` | The agent is already parked. |
-| `RefusedStaleInput{token, current}` | The supplied `screen_revision` (`token`) is not the latest observed revision (`current`). |
-| `RefusedRateLimit{tool, max_calls, window_secs}` | The tool's sliding-window limit was hit. |
-| Bridge-error refusals | The underlying bridge returned an error, for example `NotJoined`, `AlreadyJoined`, `UnknownTool` or `NoFrameMapping`. |
+| Outcome                                          | Meaning                                                                                                               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `Executed`                                       | The action ran.                                                                                                       |
+| `RefusedCeiling`                                 | Outside the capability ceiling.                                                                                       |
+| `RefusedQuota{axis}`                             | A quota axis could not pay; `axis` names which one.                                                                   |
+| `RefusedParked`                                  | The agent is already parked.                                                                                          |
+| `RefusedStaleInput{token, current}`              | The supplied `screen_revision` (`token`) is not the latest observed revision (`current`).                             |
+| `RefusedRateLimit{tool, max_calls, window_secs}` | The tool's sliding-window limit was hit.                                                                              |
+| Bridge-error refusals                            | The underlying bridge returned an error, for example `NotJoined`, `AlreadyJoined`, `UnknownTool` or `NoFrameMapping`. |
 
 The agent is the audit subject, never its editor: the audit log and the spend figures are exposed to the agent read-only.
 

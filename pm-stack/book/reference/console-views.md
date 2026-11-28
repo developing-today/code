@@ -1,16 +1,23 @@
 # The console, view by view
 
-The PM console is a Bun server (`pm-stack/console/src/server.ts`, base path `/console`, port 4872) serving a static single-page application: shell `pm-stack/console/public/index.html` (title "PM", one `&lt;main id="view"&gt;`, a bottom tab bar, and a global Ask/confirm `&lt;dialog id="ask"&gt;`), logic in `pm-stack/console/public/app.js`, with `outbox.js` and `sw.js` alongside. Views are hash routes in the `VIEWS` map in `app.js` (at about line 2955); routing is `parse()` in the same file. An unknown hash falls back to `now`. The console is also served at the edge by the pm-console-edge Worker and wrapped as an Android TWA.
+The PM console is a Bun server (`pm-stack/console/src/server.ts`, base path `/console`, port 4872) serving a static single-page application: shell `pm-stack/console/public/index.html` (title "PM", one `&lt;main id="view"&gt;`, a bottom tab bar, and a global Ask/confirm `&lt;dialog id="ask"&gt;`), logic in `pm-stack/console/public/app.js`, with `outbox.js` and `sw.js` alongside. Views are hash routes in the `VIEWS` map in `app.js` (at about line 4884); routing is `parse()` in the same file. An unknown hash falls back to `now`. The console is also served at the edge by the pm-console-edge Worker and wrapped as an Android TWA.
 
-This chapter covers all 21 console hash views in the survey census, one entry each, in census order. Every entry follows the same shape: what the view is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them. Console actions post to the generic endpoint `POST /console/api/act`, covered in [The question sets, enumerated](question-sets.md) and [Aggregator HTTP routes and API](aggregator-routes.md).
+This chapter covers all 27 console hash views in the census re-derived 2026-11-27 (#14428 item 11), one entry each, in census order. The counting rule: one view per key of the `VIEWS` map in `app.js` after the page modules in `public/pages/index.js` register their routes (the app's own `routesKnown()`) — 24 keys written in the map itself plus the three page-module routes (`more/trends`, `more/reports`, `more/components`). A sub-address (`needs/<sub>`, `ask/say=<text>`, `now/done/<segment>`, `more/phone/<sub>`, `more/look/<segment>`) is a segment of its parent view, not a view of its own; `now/done` counts separately because it is a key of its own in the map. Every entry follows the same shape: what the view is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them. Console actions post to the generic endpoint `POST /console/api/act`, covered in [The question sets, enumerated](question-sets.md) and [Aggregator HTTP routes and API](aggregator-routes.md).
 
 ## `#now` — Now
 
 - **What it is:** The current board: in-progress and next work (`viewNow`).
 - **Inputs:** Data from `Work.board()` (`console/src/work.ts`): queue counts, claimed, queued, and blocked-reason groups.
 - **Defaults:** The fallback view: an unknown hash lands here.
-- **Behaviour:** The console's home view, drawn from the queue's current state.
+- **Behaviour:** The console's home view, drawn from the queue's current state. Counts are fleet queue tasks (queue-broker state: claimed is in progress, queued is next, blocked is blocked) — same words as the aggregator's board-derived work-item counts (`/queue`, Overview in-progress), different source; the page says so and cross-links the aggregator's wording (#14063). The need-you tile is the console's own set, not the aggregator's NEEDS USER intake queue.
 - **Failure shapes:** None recorded in the survey.
+
+## `#now/done` and `#now/done/<segment>` — Done
+
+- **What it is:** What was finished, in three segments — merged pull requests, finished queue tasks, closed issues (`viewDone`, reached as `now/done/<merged|tasks|closed>`, default `merged`).
+- **Inputs:** The done document (`docs.done`): the last week's merged pull requests, finished tasks with their verdicts, and closed issues.
+- **Behaviour:** Finished tasks with a recorded result are listed before those without one. Each segment names how much of the last week it shows, newest first.
+- **Failure shapes:** Before the document is read the view says it is reading; a document with nothing read yet says so rather than showing an empty week.
 
 ## `#next` — Next
 
@@ -24,7 +31,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **What it is:** Everything waiting on the owner (`viewNeeds`, extra `questions`), split into segmented sub-views: `questions`, `hands`, `reviews`, `other`.
 - **Inputs:** The aggregator's needs-Drew census, `GET /api/needs-drew.json`, split by `console/src/work.ts` (`Work.census()`): hands items carry a `hands:v1` marker, reviews carry the `user/review` label with no hands marker, and the rest are escalated items with no stated action. Session-derived waiting items come from `/api/attention.json` (`Work.sessions()`, tier `needs-drew`). Decision sets appear under `questions`, read from the decisions file by `Work.questions()`: open questions only, newest set first, context clipped to 280 characters in the list.
 - **Defaults:** The default segment is chosen by counts: questions first, then hands, then reviews.
-- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other.
+- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other. The view names its source (the console's need-you set: open questions plus hands, reviews, escalated) and cross-links the aggregator `/attention` NEEDS USER intake queue as the different count (#14063).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#ask` and `#ask/say=&lt;text&gt;` — Ask
@@ -38,14 +45,35 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** The index of the `more/*` views (`viewMore`, extra `ops`).
 - **Inputs:** Links to every aggregator dashboard page, grouped by `PAGE_GROUPS`, rendered from the dashboard manifest data (`app.js` at about line 1185).
-- **Behaviour:** The console's table of contents: the sixteen views below are reached from here.
+- **Behaviour:** The console's table of contents: the twenty-one views below are reached from here.
 - **Failure shapes:** None recorded in the survey.
+
+## `#more/trends` — Trends
+
+- **What it is:** Day-by-day and, for longer windows, week-by-week charts of merged pull requests, features by project, issues and bugs opened or closed, time from pull request opening to merge, and finished queue tasks.
+- **Inputs:** `GET /console/api/trends?days=<7|14|30|90>` reads GitHub issue and pull request history plus queue-store task-finish events (`console/src/trends.ts`, `console/src/reads.ts`). The GitHub history is kept and progressively filled in; the view says when older days are not whole yet. No machine is required for this read.
+- **Behaviour:** The window choices are 7, 14, 30, and 90 days. Up to 31 days the charts are daily; longer windows are grouped by week. Refresh asks for a fresh read. The feature list links to the latest merged feature pull requests in each project.
+- **Failure shapes:** When task history is unavailable, task charts are omitted; an incomplete GitHub history is identified in the view.
+
+## `#more/reports` — Reports
+
+- **What it is:** A prose report made on demand from the same history as Trends, for a day, a week, or 30 days. It can be read, copied, or shared as text.
+- **Inputs:** `GET /console/api/trends?days=<1|7|30>&end=<date>` reads the underlying history; queue counts are included only for a report ending today (`console/public/pages/reports.js`, `console/src/trends.ts`).
+- **Behaviour:** Earlier and later controls navigate historical periods. The report summarizes merged pull requests, feature work by project, issues and bugs, and finished queue tasks when task history is available; links in the feature section open the pull requests. This is the console's `#more/reports` view, not the aggregator's separate `/reports` review-conflict page documented in [The aggregator website, page by page](website-pages.md).
+- **Failure shapes:** Partial or not-yet-whole history is called out in the report; unavailable task history omits the queue section.
+
+## `#more/components` — Components
+
+- **What it is:** Every shared element the app is built with, shown once each on one screen (`public/pages/components.js`, #14433).
+- **Inputs:** The page's own `ELEMENTS` census: 15 shared elements (card, chip, row, tile, link, option, seg, stat, fold, empty, the chart kit's stat tiles, stacked columns and line chart, and the app frame's toast and sheet), each drawn with the class `app.css` gives it or the chart-kit function that makes it.
+- **Behaviour:** Change the theme, the text size or the spacing in `#more/look` and this screen shows what every element does under it, so a look can be judged on all of them at a glance — and a new screen has something to copy instead of inventing its own.
+- **Failure shapes:** None recorded.
 
 ## `#more/queue` — Queue
 
 - **What it is:** Queue tasks by status (`viewQueue`).
 - **Inputs:** Actions post to `POST /console/api/queue/&lt;task&gt;/&lt;action&gt;` (`console/src/server.ts`).
-- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue`.
+- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue` (board-derived work items, not live broker tasks).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#more/prs` — Pull requests
@@ -68,6 +96,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Inputs:** `GET /console/api/agents`.
 - **Behaviour:** The console's cut of the session registry; the aggregator's cut is `/sessions`.
 - **Failure shapes:** None recorded in the survey.
+
+## `#more/messages` — Messages
+
+- **What it is:** The owner's message pipeline and composer (`viewMessages`, `ops`): every message on every surface (connector, fleet, notes) with its real sender, plus the offers list.
+- **Inputs:** `GET /console/api/pipeline` (filters: kind, surface, sender, receiver, batch, work state, unread), `GET /console/api/offers`; sends post to the action table as `message.send`, `message.broaden`, `message.offer`.
+- **Behaviour:** The composer takes the bridge's whole addressing grammar — names, globs (`agent:f*`), groups, `all` — with a kind toggle (message / instruction) and an optional limit. A send answers with the bridge's match report (matched, delivered, recipients named, remaining), shown in place; while agents remain, **Broaden** delivers the send's own remainder on its batch, never a fresh fan-out. **Offer instead** posts the text as a claim offer with a slot count; the offer's row shows its claims as they land, and its claims and replies read together through the batch filter. Instructions reach agents sender-stripped (the bridge's job); this screen always shows the owner as sender. Sends ride the PM stack's bridge credential at the edge: with the credential and the bridge service binding, the edge delivers a send itself, as `service:pm-stack` — the service identity the bridge mints for the PM stack (Bridge S7, PR #14431; `pm-stack/console/edge/src/direct.ts`) — and reads the agents list, the message log, and the pipeline, directory, and credential views there with the credential's `read` scope, so none of it waits for a machine. A revoked or unknown credential answers a plain error on this screen (the bridge turned the PM credential away) and nothing is sent — a turned-away send is never silently held for a machine. Without the credential or the binding, sends are held for a machine, like any other held action, exactly as before S7.
+- **Failure shapes:** A send whose answer carries no match report is said so ("the bridge did not say who that reached"), never recounted console-side. The offers list failing to read is shown as its own empty state, apart from the pipeline's.
 
 ## `#more/services` — Services
 
@@ -125,6 +160,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Behaviour:** The per-device companion to `#more/phone`, which lists all linked devices.
 - **Failure shapes:** None recorded in the survey.
 
+## `#more/look` and `#more/look/<segment>` — Appearance
+
+- **What it is:** How the app looks on this device, in three segments — colours, typeface, size and spacing (`viewLook`, reached as `more/look/<colours|type|layout>`, default `colours`).
+- **Inputs:** The device-local Look settings: follow the system's light/dark or one theme, the day and night themes, typeface, text size and spacing choices.
+- **Behaviour:** A sample card shows each choice on text, small print, the three status colours and each kind of button. Choices are kept on this device only.
+- **Failure shapes:** If the Look module cannot load on the device the view says so; a choice the device would not keep lasts only until the app is closed, and the view says that too.
+
 ## `#more/releases` — Releases
 
 - **What it is:** Release and deploy workflow runs (`viewReleases`).
@@ -150,7 +192,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** The intake routing list (`viewIntake`): kinds note, bug, and change, with their label and rank routes (`plan.ts` `ROUTES`; `INTAKE_LABEL = "owner/intake"`).
 - **Inputs:** A submission from this view.
-- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table.
+- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table. A change against a capability with a roadmap file is also made by the platform itself, as a pull request against that file alone (`console/src/roadmap-change.ts`), when it can be made mechanically — a row added, moved, marked built, dropped, or retitled; the pull request is recorded on the issue, and a change that cannot be made mechanically says why in the answer and stands as issue and task alone.
 - **Failure shapes:** None recorded in the survey.
 
-Sources: PM-SURVEY website census (`pm-stack/console/public/app.js`, `pm-stack/console/src/server.ts`, `pm-stack/console/src/work.ts`, `pm-stack/console/src/ops.ts`, `pm-stack/console/src/plan.ts`), survey files `website-pages.md` and `disagreements.md` (D4, D12, D13), census date 2026-11-23.
+Sources: PM-SURVEY website census (`pm-stack/console/public/app.js`, `pm-stack/console/public/pages/trends.js`, `pm-stack/console/public/pages/reports.js`, `pm-stack/console/src/server.ts`, `pm-stack/console/src/reads.ts`, `pm-stack/console/src/trends.ts`, `pm-stack/console/src/work.ts`, `pm-stack/console/src/ops.ts`, `pm-stack/console/src/plan.ts`), survey files `website-pages.md` and `disagreements.md` (D4, D12, D13), census date 2026-11-23.

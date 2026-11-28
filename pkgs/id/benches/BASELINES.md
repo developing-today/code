@@ -426,8 +426,8 @@ are diagnostic and do not add to the combined percentile, as with
    storage service.
 
 This is the #557 disease in a second form: there, actor tasks
-*parked* workers on a blocking journal wait (fixed by
-`block_in_place`, #12499); here, guest execution *burns* workers
+_parked_ workers on a blocking journal wait (fixed by
+`block_in_place`, #12499); here, guest execution _burns_ workers
 with CPU-bound synchronous calls, so the remedy is placement, not
 unparking — guest calls must run where they cannot starve the
 runtime (dedicated execution threads or a bounded blocking pool),
@@ -683,3 +683,206 @@ The deciding run for the criterion remains what it was: the
 unloaded laptop re-run of the many-worlds harness, still
 outstanding; a loaded number is not substituted for it.
 `baseline.txt` is untouched.
+
+## First 10x stress run (#13087) — the hub ceiling wall, and an at-cap completion (2026-11-25, ci-runner)
+
+Machine class: `ci-runner` — the fleet-command executor's container on a
+GitHub-hosted runner (4 CPUs, AMD EPYC 7763, 15 GB RAM, container overlay
+storage; rustc 1.99.1). This is not the reference laptop class:
+`baseline.txt` / `baseline.jsonl` are unchanged, and no number here is
+comparable to the fleet-laptop rows above. The reference-laptop 10x fleet
+run remains outstanding (see the end of this section). Bench binary at
+main `fcc1cae304` (branch `felix/13087-10x-stress-limits`, no code
+changes). Producing commands, from `pkgs/id/`:
+
+```sh
+# tier attempt (run 45598189927):
+ID_BENCH_MW_IDLE_WORLDS=10000 ID_BENCH_MW_ACTIVE_WORLDS=1000 \
+  cargo bench --bench world_bench -- --only many_worlds
+# boundary + at-cap runs (run 45604414422): same, with
+# ID_BENCH_MW_ACTIVE_WORLDS=257 and =256
+```
+
+**The wall at the tier configuration (measured, 5 of 5 reps).** Every
+rep at the full 10x configuration (10,000 idle / 1,000 active) failed in
+~25 s with:
+
+```text
+Error: server has too many worlds open; try again shortly
+```
+
+The bench creates the 10,000 idle worlds (create, drop the lease), then
+holds the active worlds' leases concurrently. The hub it builds uses
+`HubLimits::default()`, whose `max_open_worlds` is 256
+(`crates/id-worlds/src/world_hub.rs`); eviction only frees *unleased*
+durable worlds, so the 257th concurrent lease is refused with
+`ResolveError::TooManyWorlds`. A confirmation run at 257 active worlds
+failed the same way. The wall is a codified code/config limit, not a
+host limit — the host was idle at the refusal — and it is filed as
+#15056 (tier-sized hub limits for the harness, then re-run). `id serve`
+already exposes the same ceiling as the operator setting
+`world_max_open`; the bench hardcodes the default.
+
+**The at-cap completion (10,000 idle / 256 active, 1 rep completed).**
+At the largest configuration the default hub admits, the run completes
+and every verification assertion passes (checkpoints=256, evicted=256,
+reopened=256):
+
+```text
+profile many_worlds journal_appends=51712 journal_append_mean_us=459 journal_append_p50_us=500 journal_append_p95_us=2000 journal_append_p99_us=2000 commands=51968 command_mean_us=3458439 command_p50_us=18446744073709551615 command_p95_us=18446744073709551615 command_p99_us=18446744073709551615 queue_depth_max=0 checkpoints_during_load=0
+bench many_worlds unit=ms_per_command median=211217.200 min=0.309 reps=1 p50_ms=211217.200 p95_ms=942836.565 p99_ms=1007152.602 wake_p50_ms=202953.721 wake_p95_ms=934447.776 wake_p99_ms=999145.115 input_ack_p50_ms=8033.817 input_ack_p95_ms=8410.307 input_ack_p99_ms=8536.673 target_p99_ms=50 target_met=false idle_worlds=10000 active_worlds=256 events_per_second=20 duration_secs=10 commands=51200 load_elapsed_secs=1030.245 completed_events_per_second=49.7 checkpoint_triggers=256 checkpoints=256 evicted=256 reopened=256
+```
+
+Reading of this venue's numbers (they describe this 4-core container,
+not the platform): the offered load was 5,120 inputs/s; 49.7/s
+completed. The journal is not the constraint — 51,712 appends averaged
+459 µs. The tail is wake lateness (p99 999,145 ms of a 1,007,153 ms
+end-to-end p99): 256 world actors plus their guests and the submission
+drivers cannot get the venue's 4 cores, so the 10 s load phase took
+1,030 s of wall time to drain. This is the #557 scheduling disease at
+10x population on too few cores, recorded as such; it decides nothing
+about the laptop class, where the same code at 1x population completes
+1,997/s of 2,000 offered. The profile line's command percentiles read
+`18446744073709551615` (`u64::MAX`): the actor histogram's overflow
+bucket reports `u64::MAX` by design and the printer emits it unmarked —
+filed as #15094. The bench line's percentiles are computed from raw
+samples and are unaffected. Two further at-cap reps were started; the
+second was still running when the dispatch job hit its time limit, so
+this section records the one completed rep rather than a median.
+
+What this run settles and what it does not: the 10x tier's first wall
+is measured and is the hub's 256 concurrent-lease ceiling (#15056).
+The fleet run at the full tier, and any laptop-class 10x number, wait
+on that fix and on a reference-laptop run; #13087 stays open for them.
+
+## Fuel-spinning hub lifecycle profile (#1067, 2026-11-26, AMD Ryzen 7 7840U)
+
+Reference host: AMD Ryzen 7 7840U, 8 cores / 16 logical threads, 123 GiB
+RAM; `rustc 1.99.1`. This is a local reference-host measurement, not a
+CI container result. Both phases used 300 victim samples, 3 seconds,
+100 victim commands/s, 15 spinner worlds, fuel admission bound 14 and
+20,000,000 fuel per respawn attempt. Command from `pkgs/id/`:
+
+```sh
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_isolation
+ID_BENCH_GUEST_BURN_CONCURRENCY=14 cargo bench --bench world_bench -- --only fuel_spin_persistent
+```
+
+The respawn profile (`fuel_spin_isolation`) measured victim p99 at
+1.463 ms calm and 40.764 ms under burn (27.859x); its spinner worlds
+settled 29.8B fuel. The persistent-world profile measured p99 at
+1.976 ms calm and 4.023 ms under burn (2.036x); its spinner worlds
+settled 202.2B fuel. Both exceed the 1.10x target. The persistent run
+completed 87,142 finite updates versus 1,490 trapped respawn spins.
+
+These are diagnostic, not workload-matched numbers: the persistent
+profile settled 6.8x more total fuel in the same phase. They show that
+world/guest respawn churn strongly worsens victim latency, while also
+showing that keeping guests alive does not meet the latency target by
+itself. A follow-up must match the per-world fuel workload and measure
+the scheduler's fairness policy before drawing a target verdict. No
+existing `baseline.txt` measurement is replaced by these diagnostic
+profiles.
+## Journal ack modes, one full F11.8 run per mode (2026-11-24, slice #557)
+
+Command per mode (from `pkgs/id/`, via `~/tools/fleet-build-lock`):
+
+```sh
+cargo bench --bench world_bench -- --only many_worlds            # sync (default, no env var)
+ID_BENCH_MW_JOURNAL_ACK_MODE=batched cargo bench --bench world_bench -- --only many_worlds
+ID_BENCH_MW_JOURNAL_ACK_MODE=async cargo bench --bench world_bench -- --only many_worlds
+```
+
+Code state: branch `lane/code-i/22182-many-worlds-ack-modes` at
+`19ff780de3c` (bench-only selector `ID_BENCH_MW_JOURNAL_ACK_MODE` +
+`journal_ack_mode=` result token; no production default or durability
+change). Selector unit tests: `cargo test -p id --lib bench_ack_mode`,
+4/4 pass. `cargo clippy -p id --all-targets` fails on this venue for
+pre-existing reasons (rustc 1.99.0 rmeta vs clippy-driver 1.99.1
+E0514 across `id-core`; same failure with an isolated target dir);
+no new clippy signal from this slice.
+
+Venue honesty: the laptop was NOT idle — load average 9–13 across
+the three runs (shared fleet load). Per-mode conditions are stamped
+below. These numbers stand as the first per-mode reference under
+load, not the unloaded deciding run the criterion calls for.
+
+- sync (start load avg 12.33; end 11.07):
+
+```text
+bench many_worlds unit=ms_per_command median=8.507 min=3.900 reps=1 journal_ack_mode=sync p50_ms=8.507 p95_ms=11.072 p99_ms=12.055 wake_p50_ms=0.782 wake_p95_ms=1.486 wake_p99_ms=1.601 input_ack_p50_ms=7.776 input_ack_p95_ms=10.161 input_ack_p99_ms=11.087 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.005 completed_events_per_second=1999.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- batched (start load avg 11.07; end 9.24):
+
+```text
+bench many_worlds unit=ms_per_command median=1.304 min=0.495 reps=1 journal_ack_mode=batched p50_ms=1.304 p95_ms=2.015 p99_ms=8.220 wake_p50_ms=1.225 wake_p95_ms=1.919 wake_p99_ms=2.027 input_ack_p50_ms=0.064 input_ack_p95_ms=0.103 input_ack_p99_ms=6.940 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.000 completed_events_per_second=2000.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- async (start load avg 9.24; end 12.93):
+
+```text
+bench many_worlds unit=ms_per_command median=1.278 min=0.448 reps=1 journal_ack_mode=async p50_ms=1.278 p95_ms=2.014 p99_ms=3.178 wake_p50_ms=1.198 wake_p95_ms=1.904 wake_p99_ms=2.440 input_ack_p50_ms=0.064 input_ack_p95_ms=0.242 input_ack_p99_ms=1.142 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.001 completed_events_per_second=1999.8 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Verdict vs `target_met` (p99 <= 50 ms): all three modes
+`target_met=true` under the loaded venue. The relaxed modes cut the
+ack wait as expected (input_ack_p50 7.776 ms sync vs 0.064 ms
+batched/async); the remaining p99 in batched mode (8.220 ms) is the
+per-64 sync tail, in async mode (3.178 ms) scheduling/wake.
+`baseline.txt` is untouched — the deciding comparison stays the
+unloaded-laptop re-run.
+
+
+## Post-#15577 fair-scheduler reference run (2026-11-27, loaded host)
+
+The bounded guest scheduler from [PR #15797](https://github.com/developing-today/code/pull/15797) is present at target commit `7acad057ea5909c223fbe5c32d78165bdde1078b`. Fleet built the release bench with `cargo +1.99.1 bench --manifest-path pkgs/id/Cargo.toml --bench world_bench --no-run` in [run 45935701606](https://github.com/dezren39/fleet/actions/runs/45935701606). The downloaded executable SHA-256 is `10179dd8f4106e56e010991838f53a2fb3b04b179aa9b7a4b41c648255b5d377`.
+
+The focused guest-burn test command `cargo +1.99.1 test --manifest-path pkgs/id/Cargo.toml -p id-worlds --lib guest_burn` passed 11 tests in [run 45930673927](https://github.com/dezren39/fleet/actions/runs/45930673927), on main SHA `17d3ef93b3238242cb7a6c646e67218e3c648e8a`. That workflow's subsequent bench command failed due to running `-p id` from the root workspace; the corrected manifest-specific build is run 45935701606.
+
+Host: AMD Ryzen 7 7840U, 16 logical CPUs, NixOS 26.11, Linux 6.18.60. The full workloads used 15 spinner worlds, 3-second calm and spinning phases, and 100 victim commands/s (300 samples in each phase). `--quick` was not used, and `ID_BENCH_GUEST_BURN_CONCURRENCY` was unset (the shared default bound was 14).
+
+Exact invocations, five alternating repetitions each:
+
+```sh
+/tmp/15577-world-bench-45935701606/world_bench --only fuel_spin_isolation
+/tmp/15577-world-bench-45935701606/world_bench --only fuel_spin_persistent
+```
+
+Each process emitted one bench line and one profile line. Spinner throughput below is calculated as `spins / spinning_elapsed_secs` for the isolation workload and `persistent_updates / spinning_elapsed_secs` for the persistent workload. The host was under shared Fleet load throughout: one-, five- and fifteen-minute load averages rose from `11.86 / 10.17 / 11.32` at the first run to `23.22 / 13.73 / 12.47` at the last.
+
+| Workload | Repetitions | Calm victim p99 (median, range) | Spinning victim p99 (median, range) | Ratio (median, range) | Spinner throughput (median, range) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fuel_spin_isolation` | 5 | 7.386 ms (5.083–15.074) | 90.183 ms (48.042–204.215) | 9.556× (5.983–29.957) | 152.4 spins/s (100.5–168.2) |
+| `fuel_spin_persistent` | 5 | 8.392 ms (4.759–10.697) | 41.067 ms (35.331–323.569) | 8.212× (4.007–38.556) | 3,994 updates/s (2,610–5,778) |
+
+The result is a repeatable miss in this loaded venue: all ten repetitions reported `target_met=false` against 1.10×. Profiles attribute most of the added tail to runtime wake lateness: isolation spinning wake-p99 median was 80.224 ms versus 4.744 ms calm; persistent spinning wake-p99 median was 31.102 ms versus 4.148 ms calm. The victim queue stayed at depth zero and the victim recorded no journal appends. CPU load increased during the set, so these numbers do not decide the quiet-reference target.
+
+Two one-off admission-sizing probes after the five-run set were also under heavy load and are not target-decision runs: at bound 4, persistent victim p99 was 2.239 ms calm / 17.655 ms spinning (7.886×), 13,163 updates (about 4,246/s), spinning wake-p99 8.616 ms; at bound 1, p99 was 17.200 / 39.443 ms (2.293×), 5,941 updates (about 1,916/s), spinning wake-p99 29.443 ms.
+
+**Decision:** this records a loaded-host ceiling and its wake-lateness attribution on the reference machine; it does not establish the ≤1.10× target under quiet conditions. Next slice: after this PR, run the same five-repetition comparison on the AMD host when the five-minute load average is at most 4 at start, and record whether the target is reachable. If the target still misses, keep the raw profile and decide the next scheduler change from the measured bottleneck.
+
+Raw bench and profile output (grouped by workload; executions alternated isolation then persistent for repetitions 1–5):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=20.352 min=0.189 reps=1 victim_p99_ms_calm=5.089 victim_p99_ms_spinning=152.463 ratio=29.957 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=468 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.247
+profile fuel_spin_isolation calm_wake_p99_ms=4.393 calm_input_ack_p99_ms=3.386 spinning_wake_p99_ms=142.466 spinning_input_ack_p99_ms=51.210 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=198 calm_command_p99_us=10000 spinning_command_mean_us=6884 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1804 victim_burn_waits=741 spinner_settled_fuel=9360000000
+bench fuel_spin_isolation unit=ms_per_command median=37.479 min=0.927 reps=1 victim_p99_ms_calm=8.092 victim_p99_ms_spinning=204.215 ratio=25.238 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=321 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.043 spinning_elapsed_secs=3.193
+profile fuel_spin_isolation calm_wake_p99_ms=4.782 calm_input_ack_p99_ms=6.342 spinning_wake_p99_ms=194.216 spinning_input_ack_p99_ms=66.076 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=641 calm_command_p99_us=10000 spinning_command_mean_us=6857 spinning_command_p99_us=250000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=752 spinner_settled_fuel=6420000000
+bench fuel_spin_isolation unit=ms_per_command median=16.595 min=1.149 reps=1 victim_p99_ms_calm=15.074 victim_p99_ms_spinning=90.183 ratio=5.983 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=485 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.183
+profile fuel_spin_isolation calm_wake_p99_ms=8.007 calm_input_ack_p99_ms=11.885 spinning_wake_p99_ms=80.224 spinning_input_ack_p99_ms=52.126 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=823 calm_command_p99_us=10000 spinning_command_mean_us=6291 spinning_command_p99_us=250000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1804 victim_burn_waits=764 spinner_settled_fuel=9700000000
+bench fuel_spin_isolation unit=ms_per_command median=9.097 min=0.903 reps=1 victim_p99_ms_calm=5.083 victim_p99_ms_spinning=48.042 ratio=9.452 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=532 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.162
+profile fuel_spin_isolation calm_wake_p99_ms=3.578 calm_input_ack_p99_ms=3.523 spinning_wake_p99_ms=38.090 spinning_input_ack_p99_ms=34.347 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=293 calm_command_p99_us=10000 spinning_command_mean_us=4732 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=811 spinner_settled_fuel=10640000000
+bench fuel_spin_isolation unit=ms_per_command median=10.808 min=0.655 reps=1 victim_p99_ms_calm=7.386 victim_p99_ms_spinning=70.576 ratio=9.556 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=492 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.217
+profile fuel_spin_isolation calm_wake_p99_ms=4.744 calm_input_ack_p99_ms=6.258 spinning_wake_p99_ms=60.576 spinning_input_ack_p99_ms=38.394 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=447 calm_command_p99_us=10000 spinning_command_mean_us=5324 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=785 spinner_settled_fuel=9840000000
+bench fuel_spin_persistent unit=ms_per_command median=4.593 min=0.944 reps=1 victim_p99_ms_calm=5.871 victim_p99_ms_spinning=35.331 ratio=6.018 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 persistent_updates=18391 spinner_worlds=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.043 spinning_elapsed_secs=3.183
+profile fuel_spin_persistent calm_wake_p99_ms=2.628 calm_input_ack_p99_ms=3.772 spinning_wake_p99_ms=25.332 spinning_input_ack_p99_ms=22.885 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=329 calm_command_p99_us=10000 spinning_command_mean_us=2952 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=2 spinner_settled_fuel=42667303910
+bench fuel_spin_persistent unit=ms_per_command median=25.414 min=0.485 reps=1 victim_p99_ms_calm=10.697 victim_p99_ms_spinning=211.686 ratio=19.789 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 persistent_updates=9787 spinner_worlds=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.109
+profile fuel_spin_persistent calm_wake_p99_ms=3.718 calm_input_ack_p99_ms=8.706 spinning_wake_p99_ms=201.686 spinning_input_ack_p99_ms=57.570 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=550 calm_command_p99_us=10000 spinning_command_mean_us=5795 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=0 spinner_settled_fuel=22705937870
+bench fuel_spin_persistent unit=ms_per_command median=7.718 min=0.724 reps=1 victim_p99_ms_calm=10.248 victim_p99_ms_spinning=41.067 ratio=4.007 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 persistent_updates=12450 spinner_worlds=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.117
+profile fuel_spin_persistent calm_wake_p99_ms=6.090 calm_input_ack_p99_ms=5.553 spinning_wake_p99_ms=31.102 spinning_input_ack_p99_ms=28.450 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=544 calm_command_p99_us=10000 spinning_command_mean_us=4409 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=9 victim_burn_admitted=1805 victim_burn_waits=0 spinner_settled_fuel=28884124500
+bench fuel_spin_persistent unit=ms_per_command median=3.841 min=0.383 reps=1 victim_p99_ms_calm=4.759 victim_p99_ms_spinning=39.078 ratio=8.212 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 persistent_updates=17840 spinner_worlds=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.110
+profile fuel_spin_persistent calm_wake_p99_ms=4.148 calm_input_ack_p99_ms=2.208 spinning_wake_p99_ms=29.080 spinning_input_ack_p99_ms=23.682 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=173 calm_command_p99_us=2000 spinning_command_mean_us=3059 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=12 victim_burn_admitted=1805 victim_burn_waits=0 spinner_settled_fuel=41388978400
+bench fuel_spin_persistent unit=ms_per_command median=13.080 min=0.645 reps=1 victim_p99_ms_calm=8.392 victim_p99_ms_spinning=323.569 ratio=38.556 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 persistent_updates=8168 spinner_worlds=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.130
+profile fuel_spin_persistent calm_wake_p99_ms=5.046 calm_input_ack_p99_ms=4.172 spinning_wake_p99_ms=313.571 spinning_input_ack_p99_ms=61.371 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=375 calm_command_p99_us=10000 spinning_command_mean_us=6134 spinning_command_p99_us=250000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=9 victim_burn_admitted=1804 victim_burn_waits=0 spinner_settled_fuel=18949841680
+```

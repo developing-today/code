@@ -23,11 +23,13 @@ The verbs split by which token they use and which routes they call.
 
 **Central verbs** (the owner token — full control):
 
-| Verb                                                                                                                                       | Route                                     | Behaviour                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send --to <targets> [--command] [--sender NAME] <text \| ->`                                                                              | `POST /api/<owner-token>/fleet/send`      | Targets: `agent:<name>` (or a bare name), `group:<name>`, `all`; repeat `--to` or comma-separate. `--command` marks the item a command (default: a plain message). `-` reads the text from stdin. |
-| `agents`                                                                                                                                   | `GET /api/<owner-token>/fleet/agents`     | Registered agents, their groups, and unread counts.                                                                                                                                               |
-| `log [--agent A] [--direction inbound\|outbound] [--kind message\|command] [--since-id N] [--before-id N] [--limit N] [--order asc\|desc]` | `GET /api/<owner-token>/fleet/messages?…` | The central message log, filtered.                                                                                                                                                                |
+| Verb                                                                                                                                       | Route                                     | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send --to <targets> [--command] [--sender NAME] <text \| ->`                                                                              | `POST /api/<owner-token>/fleet/send`      | Targets: `agent:<name>` (or a bare name; the name may be a glob, `agent:f*`), `group:<name>`, `all`; repeat `--to` or comma-separate. `--limit N` delivers to only the first N matches, and the answer is the match report. `send --broaden <batch>` instead re-delivers an earlier pattern send's text to the matches its limit left over. `--command` marks the item a command (default: a plain message). `-` reads the text from stdin. |
+| `offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text \| ->`                                                      | `POST /api/<owner-token>/fleet/offer`     | Post a claim offer instead of delivering: the text is stored once, and the first N eligible agents to claim it are delivered a row on the offer's batch.                                                                                                                                                                                                                                                                                    |
+| `offers`                                                                                                                                   | `GET /api/<owner-token>/fleet/offers`     | Every offer with its claims: who claimed, when, and the row each claim delivered.                                                                                                                                                                                                                                                                                                                                                           |
+| `agents`                                                                                                                                   | `GET /api/<owner-token>/fleet/agents`     | Registered agents, their groups, and unread counts.                                                                                                                                                                                                                                                                                                                                                                                         |
+| `log [--agent A] [--direction inbound\|outbound] [--kind message\|command] [--since-id N] [--before-id N] [--limit N] [--order asc\|desc]` | `GET /api/<owner-token>/fleet/messages?…` | The central message log, filtered.                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 **Agent verbs** (the fleet token — mailbox access only; it cannot send
 commands):
@@ -38,6 +40,7 @@ commands):
 | `inbox [--agent A] [--groups g1,g2] [--commands \| --messages] [--all] [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]` | `GET /fleet/<fleet-token>/inbox?…`                       | Unread items by default; `--all` includes read ones; `--take` marks what it returns as read; `--wait` polls (default interval 15 s; wait capped at 24 h in source) until something arrives or the seconds pass.                                                                                                                                                   |
 | `post [--agent A] [--reply-to ID] [--to ADDR] [--instruction \| --kind K] <text \| ->`                                                      | `POST /fleet/<fleet-token>/send`                         | A message to central by default. With `--reply-to` it answers that row (and marks it read). `--to` sends to any address instead: `drew`, `claude`, `chatgpt`, `connectors`, `agent:<name>` (or a bare name), `group:<name>`, `agents`, `all`; repeat or comma-separate. `--instruction` (or `--kind instruction`) makes it an instruction, which requires `--to`. |
 | `ack [--agent A] (--up-to ID \| ID...)`                                                                                                     | `POST /fleet/<fleet-token>/ack`                          | Mark messages read: either a list of ids, or everything up to an id.                                                                                                                                                                                                                                                                                              |
+| `work [--agent A] --state acted\|queued\|done [--task ID] ID...`                                                                            | `POST /fleet/<fleet-token>/work`                         | Record the work-item lifecycle of your own instructions: `acted` (handled in-session), `queued` (became queue task `--task`), `done`. Forward only, from `received`; only the receiving agent can mark its own copy.                                                                                                                                              |
 | `health`                                                                                                                                    | `GET /healthz`                                           | The bridge's health probe. No token.                                                                                                                                                                                                                                                                                                                              |
 
 Defaults and config: the agent name defaults to `$FLEET_AGENT`, then
@@ -48,6 +51,53 @@ the bridge's JSON, passed through.
 
 Exit codes: 0 ok, 2 usage, 3 transport or credentials, **4 the bridge
 refused the request** (its JSON error goes to stderr).
+
+## Pattern sends: globs, limits, the match report, and broaden
+
+A send's agent target may be a **glob**: in `agent:f*`, the `*` matches
+any run of name characters (including none) and every other character
+matches itself. There is one matching rule for the whole bridge
+(`pkgs/message-bridge/worker/src/glob.js`), shared by the fleet and
+notes surfaces: matching is case-insensitive, and resolution enumerates
+matches against the registry at send time in deterministic name order,
+so a limit always picks the same first N. Exact names resolve to
+themselves, registered or not; a glob, a group, or `all` that matches
+nobody is an error.
+
+`--limit N` caps how many of the matches receive the send. Without a
+limit, a send that would reach more than 200 agents is refused. Every
+send answers with a **match report** — `{matched, delivered,
+recipients, remaining}` — and records a **distribution** (the
+`bridge_distribution` table: batch, sender, pattern, limit, and the
+matched and delivered sets), which is what makes the remainder
+addressable afterwards.
+
+**Broaden** is the follow-up that spends that record:
+`send --broaden <batch>` re-delivers the original send's body — same
+batch, same kind and sender — to exactly the matched-but-undelivered
+remainder, optionally under a new `--limit` or a widened pattern. The
+delivered set is the record, so a second identical broaden delivers
+nothing. Only the original sender may broaden its own distribution;
+central (the owner token) may broaden any.
+
+## The offer pool: claim-style distribution
+
+Fan-out cannot express "the next task goes to the next N agents who
+pick it up", so a sender can post an **offer** instead (`offer --to
+<targets> --slots N`, Bridge S5, PR #14442). The offer is stored once
+and never fanned out. Its address — a name, a glob, a group, or `all` —
+is matched against the registry **at claim time**: eligible agents see
+open offers in the `offers` section of their inbox answer, and a claim
+is one atomic operation that lands only while a slot remains and the
+agent has not already claimed. A winning claim delivers a normal
+mailbox row on the offer's batch and records the claim, so replies
+thread onto the batch; past the last slot the answer is a definite
+`filled`, an expired offer (an offer may carry `--ttl SECS`) answers
+`expired`, a repeat claim `already claimed`, an ineligible agent
+`not eligible`, and the poster can never claim its own offer. Anonymity
+is unchanged: a command offer is projected sender-free to eligible
+agents and claimants, while the owner — and `fleet bridge offers` —
+sees who posted it and every claim.
 
 ## Mailbox and ack semantics
 
@@ -62,6 +112,18 @@ operations change read state:
   pushed command is consumed by exactly the hand-out that returns it.
 - `post --reply-to ID` answers a row and marks that row read.
 - `ack` marks explicit ids, or everything up to an id with `--up-to`.
+
+Read state is not the whole story for instructions. An instruction is a
+work item with a lifecycle the receiving agent records with `work`:
+`received` → `acted` (handled in-session) or `queued` (it became a named
+fleet queue task) → `done`, forward only, each recipient's copy
+independent on a group send. The owner's pipeline shows the state and
+the queue task id, so an instruction that is neither acted on nor
+queued stays visible at `received` — the defect the task-it-or-queue-it
+rule (in the reference chapter, and in the text the intake ladder hands
+a woken agent) exists to prevent. Notes instructions carry the same
+fields on the notes surface; connector-channel instructions store none —
+their read state stands in for `acted`.
 
 The registry side is equally simple: there is no separate enrolment store
 on the bridge. Saying `hello` _is_ registering — name, groups, and last-seen

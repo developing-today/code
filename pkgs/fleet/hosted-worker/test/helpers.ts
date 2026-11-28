@@ -19,6 +19,13 @@ export const BINDING_C = "cccccccccccccccccccccccccccccccc";
 
 export const SERVICE_TOKEN = "svc-token-for-tenant-a-0123456789abcdef";
 
+/** The queue-scoped service token (#14942 CF-2): the cutover's
+ * recorded auth route — resolved against the tenancy directory
+ * alone, scoped to the queue door. Tests minting the full write
+ * lifecycle through the HTTP door use this, never the
+ * stamping/query-scoped SERVICE_TOKEN. */
+export const QUEUE_SERVICE_TOKEN = "svc-token-for-queue-door-a-0123456789abcdef";
+
 /** The webhook receiver's shared secret in the harness config
  * (#12590): deliveries in tests sign with this; the receiver's
  * unconfigured case is exercised with a config built without it. */
@@ -79,6 +86,13 @@ export async function makeHarness(): Promise<Harness> {
         routes: ["stamping", "query"],
         active: true,
         label: "pm-service-test",
+      },
+      {
+        sha256: await sha256Hex(QUEUE_SERVICE_TOKEN),
+        binding_id: BINDING_A,
+        routes: ["queue"],
+        active: true,
+        label: "queue-door-roundtrip-probe",
       },
     ],
   });

@@ -525,10 +525,52 @@ export function makeEntry(providerId, modelId, siblings, modelsDevEntry) {
 // ---------------------------------------------------------------------------
 // Sources
 // ---------------------------------------------------------------------------
-async function fetchJson(url, timeoutMs = 15000) {
+// #16505: byte budget for fetchJson bodies. AbortSignal.timeout bounds
+// duration, never bytes: a fast endpoint can deliver gigabytes inside
+// the window and res.json() buffers it all before parsing, OOMing the
+// sync. models.dev's api.json is low-single-digit MB today, so the
+// default leaves generous headroom while still bounding memory;
+// overridable via PROVIDER_CATALOG_SYNC_FETCH_MAX_BYTES in tests.
+export const FETCH_JSON_MAX_BYTES = (() => {
+  const fromEnv = Number(process.env.PROVIDER_CATALOG_SYNC_FETCH_MAX_BYTES);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? Math.floor(fromEnv) : 16 * 1024 * 1024;
+})();
+
+// Stream a fetch body with a byte budget instead of res.json()
+// (prior art: acp-adapter readCappedBody #16391, route-proxy #16398).
+// A declared content-length past the cap fails before any byte is
+// read; a streamed body aborts (reader cancelled) the moment the
+// running total passes the cap, so an over-cap body is never fully
+// buffered. Breaches throw a named error so callers report the source
+// as unavailable with the reason, exactly like HTTP/shape failures.
+export async function readCappedBody(res, cap = FETCH_JSON_MAX_BYTES) {
+  if (!res.body) return '';
+  const declared = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(declared) && declared > cap) {
+    await res.body.cancel().catch(() => {});
+    throw new Error(`response body exceeded ${cap} bytes (content-length ${declared})`);
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`response body exceeded ${cap} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+export async function fetchJson(url, timeoutMs = 15000, cap = FETCH_JSON_MAX_BYTES) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const text = await readCappedBody(res, cap);
+  return JSON.parse(text);
 }
 
 function modelIdsFromProxyResponse(data) {
@@ -562,10 +604,32 @@ async function enumerateProxy(port, sourceDir) {
   return modelIdsFromProxyResponse(data);
 }
 
+// models.dev's catalog is an object keyed by provider id, each provider an
+// object whose optional `models` is an object keyed by model id (#7983 item
+// 8). Callers read it as `modelsDev?.[pid]?.models`, so a drifted shape (an
+// array, a string, a provider whose models is a list) would read as "no
+// models" and every crosscheck would quietly go empty. Reject it here so
+// the run reports models.dev as unavailable, with the reason, instead.
+export function parseModelsDev(data) {
+  const kind = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+  if (kind(data) !== 'object') {
+    throw new Error(`models.dev catalog must be a JSON object keyed by provider, got ${kind(data)}`);
+  }
+  for (const [pid, entry] of Object.entries(data)) {
+    if (kind(entry) !== 'object') {
+      throw new Error(`models.dev provider "${pid}" must be an object, got ${kind(entry)}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'models') && kind(entry.models) !== 'object') {
+      throw new Error(`models.dev provider "${pid}".models must be an object keyed by model id, got ${kind(entry.models)}`);
+    }
+  }
+  return data;
+}
+
 async function loadModelsDev(spec) {
   if (!spec) return null;
-  if (fs.existsSync(spec)) return JSON.parse(fs.readFileSync(spec, 'utf8'));
-  return fetchJson(spec, 30000);
+  if (fs.existsSync(spec)) return parseModelsDev(JSON.parse(fs.readFileSync(spec, 'utf8')));
+  return parseModelsDev(await fetchJson(spec, 30000));
 }
 
 // ---------------------------------------------------------------------------

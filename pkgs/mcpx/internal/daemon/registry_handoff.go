@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
@@ -84,6 +85,12 @@ type Adoption struct {
 	byPool  map[*pool.Pool][]*pool.Adopted
 	seq     map[*pool.Pool]int
 	orphans []*pool.Adopted
+	// supervisedOrphans are handed supervised lanes no pool here
+	// adopted: their server changed or left the config, so the child
+	// under its supervisor is stale. Nothing is contacted about them
+	// until Attach, so Abort leaves them entirely with the
+	// predecessor, which still owns them.
+	supervisedOrphans []supervisedOrphan
 	// orphanSessions are handed HTTP sessions no pool here adopted. Nothing
 	// is contacted about them until Attach, so Abort leaves them entirely
 	// with the predecessor, which still owns them.
@@ -93,6 +100,7 @@ type Adoption struct {
 	// tests, and the Server's orderly exit paths (Server keeps the
 	// committed Adoption for exactly this, #298).
 	orphanWG sync.WaitGroup
+	logf     func(string, ...any)
 }
 
 // orphanSession is a handed upstream HTTP session whose pool this
@@ -100,6 +108,17 @@ type Adoption struct {
 type orphanSession struct {
 	server string
 	h      pool.InstanceHandoff
+}
+
+// supervisedOrphan is a handed supervised lane whose pool this
+// configuration no longer has: the server name and scope key naming
+// the supervisor socket the stale child runs under. Legacy follow
+// lanes run under their own socket (see pool.SupervisedLaneKey), so
+// the lane flag travels too.
+type supervisedOrphan struct {
+	server string
+	key    string
+	legacy bool
 }
 
 // Adopt takes the children of every handed pool. Nothing reads them yet.
@@ -111,7 +130,7 @@ func (r *Registry) Adopt(hs []pool.PoolHandoff) (*Adoption, error) {
 			byID[p.PoolID()] = p
 		}
 	}
-	a := &Adoption{byPool: map[*pool.Pool][]*pool.Adopted{}, seq: map[*pool.Pool]int{}}
+	a := &Adoption{byPool: map[*pool.Pool][]*pool.Adopted{}, seq: map[*pool.Pool]int{}, logf: r.logf}
 	for _, h := range hs {
 		ads, err := pool.Adopt(h.Instances)
 		a.all = append(a.all, ads...)
@@ -125,6 +144,12 @@ func (r *Registry) Adopt(hs []pool.PoolHandoff) (*Adoption, error) {
 			for _, in := range h.Instances {
 				if in.HTTP != nil {
 					a.orphanSessions = append(a.orphanSessions, orphanSession{server: h.Server, h: in})
+				}
+				if in.Supervised {
+					// A changed or removed server's old child runs
+					// on, under its supervisor: nobody adopts it,
+					// so Attach terminates it there.
+					a.supervisedOrphans = append(a.supervisedOrphans, supervisedOrphan{server: h.Server, key: in.Key, legacy: in.LegacyLane})
 				}
 			}
 			continue
@@ -174,6 +199,18 @@ func (a *Adoption) Attach() {
 	for _, o := range a.orphans {
 		o.Close()
 	}
+	for _, o := range a.supervisedOrphans {
+		// The lane's server changed or left the config: its old
+		// child is stale, and the successor's pool (if any) must
+		// spawn fresh rather than adopt it. Terminate it under
+		// its supervisor now that the handoff has committed —
+		// the predecessor has detached, so nothing else serves
+		// it. A missing socket just means it is already gone.
+		sock := mcpclient.SupervisorSocketPathForInstance(mcpclient.StateDir(), o.server, pool.SupervisedLaneKey(o.key, o.legacy))
+		if err := mcpclient.TerminateSupervisorSocket(sock); err != nil && a.logf != nil {
+			a.logf("takeover: terminating stale supervised child for %s: %v", o.server, err)
+		}
+	}
 	for _, s := range a.orphanSessions {
 		a.orphanWG.Add(1)
 		go func(s orphanSession) {
@@ -213,6 +250,95 @@ func (r *Registry) AdoptSupervised(ctx context.Context) {
 	for _, p := range pools {
 		p.AdoptRunningSupervised(ctx)
 	}
+}
+
+// AdoptSupervisedAfterTakeover is the takeover-commit adoption scan with a
+// bounded retry for the transient already-attached window. The predecessor
+// closes its supervisor socket on commit, but the supervisor clears the
+// attachment asynchronously on EOF, so an immediate scan can be refused
+// while the detach is still in flight. Only that refusal is retried, for
+// ~2s at 50ms intervals (well under limits.takeoverTimeout=15s); every
+// other quiet no-op stays quiet, and a persistent already-attached
+// refusal expires to the same quiet no-op the startup scan would do.
+//
+// Supervised lanes travel in the handoff as metadata (see
+// pool.InstanceHandoff.Supervised): each is attached per key, so session
+// and other non-default lanes survive the takeover with the same child.
+// A pool with no supervised handoff still gets the legacy default-lane
+// scan, which covers a predecessor that detached before supervised
+// metadata existed.
+func (r *Registry) AdoptSupervisedAfterTakeover(ctx context.Context, hs []pool.PoolHandoff) {
+	byID := map[string]*pool.Pool{}
+	r.mu.RLock()
+	for _, name := range r.order {
+		if p := r.pools[name]; byID[p.PoolID()] == nil {
+			byID[p.PoolID()] = p
+		}
+	}
+	r.mu.RUnlock()
+	claimed := map[*pool.Pool]bool{}
+	for _, h := range hs {
+		p, ok := byID[h.PoolID]
+		if !ok {
+			continue
+		}
+		for _, in := range h.Instances {
+			if !in.Supervised {
+				continue
+			}
+			claimed[p] = true
+			rs := config.ResolvedScope{Key: in.Key, Root: in.Root, Cwd: in.Cwd}
+			adoptSupervisedWithDetachRetry(ctx, func(ctx context.Context) (bool, bool) {
+				return p.AdoptSupervisedLane(ctx, rs, in.LegacyLane)
+			})
+		}
+	}
+	r.mu.RLock()
+	seen := map[*pool.Pool]bool{}
+	var pools []*pool.Pool
+	for _, name := range r.order {
+		if p := r.pools[name]; !seen[p] {
+			seen[p] = true
+			pools = append(pools, p)
+		}
+	}
+	r.mu.RUnlock()
+	for _, p := range pools {
+		if claimed[p] {
+			continue
+		}
+		adoptSupervisedWithDetachRetry(ctx, p.AdoptRunningSupervisedDetailed)
+	}
+}
+
+// adoptDetachRetryBudget caps the transient-detach retry; the interval
+// sets the poll cadence. Both stay well under takeoverTimeout.
+const (
+	adoptDetachRetryBudget   = 2 * time.Second
+	adoptDetachRetryInterval = 50 * time.Millisecond
+)
+
+// adoptSupervisedWithDetachRetry runs adopt once, retrying only the
+// transient already-attached refusal until budget expiry or ctx done.
+// It reports whether the pool was adopted.
+func adoptSupervisedWithDetachRetry(ctx context.Context, adopt func(context.Context) (bool, bool)) bool {
+	adopted, alreadyAttached := adopt(ctx)
+	if adopted || !alreadyAttached {
+		return adopted
+	}
+	deadline := time.Now().Add(adoptDetachRetryBudget)
+	for alreadyAttached && time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(adoptDetachRetryInterval):
+		}
+		adopted, alreadyAttached = adopt(ctx)
+		if adopted || !alreadyAttached {
+			return adopted
+		}
+	}
+	return false
 }
 
 // ReapOrphanedSupervisors runs the reap half of the #9963

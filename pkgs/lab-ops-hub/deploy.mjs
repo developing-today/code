@@ -137,8 +137,23 @@ execFileSync("crane", ["push", imageTar, imageRef], {
   stdio: "inherit",
 });
 
-// 4. Deploy the Worker from the staged flake package.
-runWrangler(["deploy"]);
+// 4. Deploy the Worker from the staged flake package, stamping the
+// deployed commit as the VERSION var (#15793) when it is known:
+// LOH_VERSION from the caller, else the HEAD of the checkout deploy.mjs
+// runs in. The staged flake package carries no .git, so a nix deploy
+// without LOH_VERSION deploys unstamped and /version answers
+// "unknown", which the edge probe records honestly.
+let versionSha = process.env.LOH_VERSION ?? "";
+if (!/^[0-9a-f]{40}$/.test(versionSha)) {
+  versionSha = "";
+  try {
+    const head = execFileSync("git", ["-C", here, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    if (/^[0-9a-f]{40}$/.test(head)) versionSha = head;
+  } catch {
+    // Not a checkout: deploy unstamped.
+  }
+}
+runWrangler(versionSha ? ["deploy", "--var", `VERSION:${versionSha}`] : ["deploy"]);
 console.log(`deployed: ${WORKER} (image ${imageRef} pushed, wrangler deploy from the flake package)`);
 
 function runWrangler(wranglerArgs) {

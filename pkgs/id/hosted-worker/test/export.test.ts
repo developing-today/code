@@ -13,11 +13,11 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync } from "node:fs";
 import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, UserDO } from "../src/user-do.ts";
 import { authTranscript, bodyHashHex, type AuthContext } from "../src/bridge-auth.ts";
-import { blake3 } from "../src/blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
 import { encodeBatch } from "../src/bridge-session.ts";
-import type { CborValue } from "../src/canonical-cbor.ts";
+import type { CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 const BINDING = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FIXTURE_PATH = new URL("./fixtures/hosted-export-sets.json", import.meta.url);
@@ -83,7 +83,7 @@ function makeDO(sql: Sql, bucket: Bucket, env: Record<string, unknown> = {}) {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return new UserDO(state as never, { BLOBS: bucket, ...env } as never);
+  return new UserDO(state as never, { BLOBS_US: bucket, ...env } as never);
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {
@@ -245,10 +245,7 @@ test("export production: seeded DO yields the §6 sets, pinned to the fixture", 
   // Citations resolved by content to the §6 (SHA-256) blob names:
   // alpha cited by two objects, beta by one; each blob carried once.
   const docRefs = wire.objects.filter((o) => o.blob_refs.length > 0).map((o) => o.blob_refs[0]);
-  assert.deepEqual(
-    docRefs.sort(),
-    [blobHashes.alpha, blobHashes.alpha, blobHashes.beta].sort(),
-  );
+  assert.deepEqual(docRefs.sort(), [blobHashes.alpha, blobHashes.alpha, blobHashes.beta].sort());
   assert.deepEqual(blobHashList, [blobHashes.alpha, blobHashes.beta].sort());
   const blobBytes = new Map(wire.blobs.map((b) => [b.hash, b.bytes]));
   assert.deepEqual(blobBytes.get(blobHashes.alpha), [...BLOB_ALPHA]);
@@ -296,10 +293,7 @@ test("a referenced blob R2 cannot produce fails the export loudly, naming the ha
   assert.equal(res.status, 502);
   const body = (await res.json()) as { error: string; message: string };
   assert.equal(body.error, "export_production_failed");
-  assert.ok(
-    body.message.includes(blobHashes.beta),
-    `failure names the missing blob hash: ${body.message}`,
-  );
+  assert.ok(body.message.includes(blobHashes.beta), `failure names the missing blob hash: ${body.message}`);
 });
 
 test("an object citing content no referenced blob produces fails loudly, naming the cited hash", async () => {
@@ -324,10 +318,7 @@ test("an object citing content no referenced blob produces fails loudly, naming 
   assert.equal(res.status, 502);
   const body = (await res.json()) as { error: string; message: string };
   assert.equal(body.error, "export_production_failed");
-  assert.ok(
-    body.message.includes(bytesToHex(blake3(ghost))),
-    `failure names the cited content hash: ${body.message}`,
-  );
+  assert.ok(body.message.includes(bytesToHex(blake3(ghost))), `failure names the cited content hash: ${body.message}`);
 });
 
 test("the export leg fails closed without a proof, like every bridge leg", async () => {

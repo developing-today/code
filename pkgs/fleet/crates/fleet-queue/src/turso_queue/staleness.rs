@@ -30,6 +30,17 @@
 //! latency to every claim. `FLEET_STALENESS_CHECK=0` turns the
 //! whole check off; a packet with `staleness_check: false` opts out.
 //!
+//! Two packet shapes are exempt by construction (#14268): a packet
+//! carrying a `dedupe_override` reason is a deliberate parallel
+//! filing — the filer recorded that its work arises from the
+//! linked issue rather than being the issue's own canonical task,
+//! so the issue's state cannot complete it; and a feature slice
+//! (CompletionClass::Slice) delivers an artifact against a parent
+//! issue whose state is not the slice's completion — only the
+//! slice's own linked PR landing retires it. Both exemptions fail
+//! open the same way as the rest of the check: the claim proceeds
+//! exactly as before.
+//!
 //! Only the default pick runs the check. A by-id claim, a transfer
 //! and the handoff pick name their row deliberately — the override
 //! path #9178 keeps — so they claim as before.
@@ -239,8 +250,32 @@ pub fn staleness_verdict(
     if payload.get("staleness_check").and_then(|v| v.as_bool()) == Some(false) {
         return None;
     }
+    // #14268: a deliberate-parallel filing is never retired on its
+    // linked issue's state. `dedupe_override` is the filer's
+    // recorded assertion that this packet is not the issue's
+    // canonical task — its deliverables arise from the issue
+    // (follow-on filings, dispatched work), so the issue closing
+    // does not complete it. (Tasks 22913/22927: the #5834
+    // follow-on filing packet, eaten at claim because #5834 had
+    // just been closed by the lane that filed the packet.)
+    if dedupe_override(row).is_some() {
+        return None;
+    }
     let links = task_links(row);
     if links.is_empty() {
+        return None;
+    }
+    // #14268: a feature slice delivers an artifact; its parent
+    // issue's state is not the slice's completion
+    // (CompletionClass::Slice — the parent issue stays open by
+    // design and slices recur against it, #12233 F2c). An issue
+    // link alone never retires a slice; the slice's own PR
+    // landing still does, through the PR links. (Tasks
+    // 22966/22984: the #12428 NixOS handoff slices, eaten at
+    // claim because their parent issue was closed.)
+    if completion_class(&payload) == CompletionClass::Slice
+        && links.iter().all(|l| l.kind == LinkKind::Issue)
+    {
         return None;
     }
     let created_at = row
@@ -565,6 +600,77 @@ mod tests {
         assert!(
             staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
         );
+    }
+
+    #[test]
+    fn deliberate_parallel_override_is_never_retired() {
+        // #14268 (tasks 22913/22927): a triage packet filed with a
+        // dedupe_override reason carries NEW work arising from its
+        // already-closed issue — filing the design record's
+        // follow-ons. The override is the filer's recorded
+        // assertion that the packet is not the issue's canonical
+        // task, so the claim proceeds even though the issue landed
+        // before the task was created.
+        let t = row(
+            json!({"kind": "triage", "repo": "developing-today/code",
+                   "issue": {"number": 5},
+                   "dedupe_override": "deliberate parallel: files the record follow-ons"}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
+        );
+        // A boolean `true` is not an override (work_identity's
+        // parsing, asserted there too): the packet retires as
+        // before.
+        let t = row(
+            json!({"kind": "triage", "repo": "developing-today/code",
+                   "issue": {"number": 5}, "dedupe_override": true}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_some()
+        );
+    }
+
+    #[test]
+    fn feature_slice_is_not_retired_by_its_parent_issue() {
+        // #14268 (tasks 22966/22984): a slice packet whose parent
+        // issue is closed still has its artifact to deliver — the
+        // parent's closure is not the slice's completion.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5}}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
+        );
+        // The slice's own PR landing still retires it: with a PR
+        // link present the PR decides, as for a shepherd.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5}, "pr": {"number": 9}}),
+            "2026-11-10T00:00:00Z",
+        );
+        let mut look = |l: &Link| match l.kind {
+            LinkKind::Pr => landed("2026-10-01T00:00:00Z"),
+            LinkKind::Issue => Landing::Open,
+        };
+        assert!(staleness_verdict(&t, NOW, true, &mut look).is_some());
+    }
+
+    #[test]
+    fn filing_check_honours_the_same_exemptions() {
+        // The filing-time re-check shares the verdict, so a
+        // stamped slice packet with an old stamp files live even
+        // when its parent issue has landed.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5, "state_checked_at": "2026-11-18T09:00:00Z"}}),
+            "2026-11-18T11:30:00Z",
+        );
+        assert!(filing_verdict(&t, NOW, true, &mut |_| landed("2026-11-17T00:00:00Z")).is_none());
     }
 
     #[test]

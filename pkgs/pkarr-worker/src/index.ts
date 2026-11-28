@@ -6,6 +6,8 @@
 //   GET /pkarr/<z32>   fetch the current signed packet verbatim
 //   POST /dns-query    DoH for _iroh.<z32>.<ORIGIN> TXT lookups
 //   GET  /dns-query?dns=<base64url>   same, RFC 8484 GET form
+//   GET  /version      unauthenticated: {ok, service, version} naming
+//                      the deployed commit (#15793 criterion 1)
 //
 // It is a lookup service only: not a DHT node, not a DNS server, not a
 // relay for traffic. One SQLite-backed Durable Object per public key is
@@ -37,6 +39,11 @@ export interface Env {
   RETENTION_SECONDS: string;
   /** TTL (seconds) stamped on DoH TXT answers. */
   DNS_TTL: string;
+  /** The commit this deployment was built from, stamped per deploy at
+   * build time (cloudflare.config.ts; #15793 criterion 1); absent or
+   * blank when the deploy was unstamped, in which case /version
+   * answers "unknown". */
+  VERSION?: string;
 }
 
 const PACKET_CONTENT_TYPE = "application/x-pkarr-signed-packet";
@@ -320,6 +327,16 @@ Records are signed by the endpoint key and expire after a retention
 window without refresh.
 `;
 
+/** The #15793 criterion-1 answer: the deployed commit from the VERSION
+ * var (stamped per deploy at build time — see cloudflare.config.ts), or
+ * "unknown" when the deploy was unstamped; the edge probe records the
+ * commit only when one is named (commitOf in
+ * pm-stack/console/edge/src/worker-checks.ts reads the `version` field). */
+export function versionAnswer(env: { VERSION?: string }): { ok: true; service: string; version: string } {
+  const version = typeof env.VERSION === "string" ? env.VERSION.trim() : "";
+  return { ok: true, service: "pkarr", version: version || "unknown" };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -331,6 +348,12 @@ export default {
     if (path === "/healthz") {
       if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
       return new Response("ok", { status: 200 });
+    }
+    if (path === "/version") {
+      // #15793 criterion 1: unauthenticated, ahead of every other route
+      // — it reads no state and no secret.
+      if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return Response.json(versionAnswer(env));
     }
     if (path.startsWith("/pkarr/")) {
       const keyText = path.slice("/pkarr/".length);

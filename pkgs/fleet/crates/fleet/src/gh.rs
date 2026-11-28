@@ -28,6 +28,8 @@
 //!      When the call names a repo or org, that owner's installation
 //!      moves to the front of each App leg — an installation token
 //!      only sees its own installation's scope.
+//!      Additional `[[gh.apps]]` entries follow the built-ins in file
+//!      order, using configured owner lists and named key secrets.
 //!   2. the personal token, LAST (Drew, 2026-11-23, code#13310):
 //!      Drew's `gh` OAuth token, parsed out of the broker secret
 //!      named `github-cli.hosts-yml` (the hosts file itself, stored
@@ -42,7 +44,9 @@
 //!
 //! `fleet gh tiers` (a shadow subcommand; real `gh` has none)
 //! prints every rotation source with its core and GraphQL
-//! rate-limit headroom and exits 3 when any source is down.
+//! rate-limit headroom; `tiers --all` instead enumerates every
+//! installation of every configured App, including owners omitted
+//! from the rotation lists. Both exit 3 when any source is down.
 //!
 //! `fleet gh cache-serve` (also a shadow subcommand) runs the
 //! credential/token cache daemon (code#10742): secret resolutions
@@ -78,6 +82,30 @@
 //! the request may have landed, and repeating it could double-post.
 //! Reads repeat on any failure class.
 //!
+//! `fleet git-credential` (a root built-in routed to this module,
+//! code#16577) gives plain git the same failover: it implements the
+//! git credential protocol (`get`/`store`/`erase`) over this
+//! rotation. Upstream `gh auth git-credential` offers the single
+//! credential gh resolves as active, with no rotation and no repo
+//! check — on the laptop that was an App installation token that
+//! cannot see Drew's personal repos, and every plain `git fetch`
+//! died with "Repository not found" while `fleet gh` worked. The
+//! fleet helper instead walks the rotation in order and, when the
+//! credential query names the target repo (the `path` attribute,
+//! sent when git is configured with `credential.useHttpPath`),
+//! skips a candidate whose token provably cannot see that repo
+//! (the repos API answers 404 for it) and offers the next one.
+//! A candidate is skipped only on that proof: an inconclusive
+//! check (transport error, rate limit, 5xx) never skips — the
+//! candidate is offered, as before this helper existed. When no
+//! candidate can be proven to see the repo, the first resolvable
+//! credential is offered anyway, so git surfaces its own truthful
+//! error rather than a fleet invention. `store` and `erase` are
+//! no-ops: fleet keeps no credential store of its own — every
+//! `get` resolves fresh from the rotation. Non-github.com hosts
+//! are declined silently (empty answer), so the helper can sit in
+//! a global git config without disturbing other hosts.
+//!
 //! Tokens are never printed, logged, or written to a file: provider
 //! errors name the source and stage only, never values. Attempts
 //! are silent by default — the final attempt's stdout, stderr and
@@ -88,15 +116,24 @@
 //! (piped), not streamed, because the failure text is what
 //! classifies a failover.
 //!
-//! Controls (environment):
+//! Controls (environment; each beats the same-named persistent
+//! setting in the fleet config file's `[gh]` table, code#10311):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
+//!   FLEET_GH_SHIM_ACTIVE set to 1 on every child `gh` fleet
+//!                       spawns: the gh-fleet shim's recursion
+//!                       guard, so a PATH `gh` that is the shim
+//!                       execs the pristine gh instead of
+//!                       re-entering a second fleet (#14650)
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
+//!                       (`[gh.owners] app` persists it)
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
-//!                       `personal`, `app:<owner>` (fleet App),
-//!                       `devtoday:<owner>`, `backup:<owner>` entries
+//!                       `personal`, built-in `app:`, `devtoday:`,
+//!                       `backup:` and configured `<slug>:` entries
+//!                       (`[gh] order` persists it)
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
+//!                       (`[gh.owners] devtoday` / `backup` persist them)
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
 //!   FLEET_GH_RAW=1      raw mode (same as a leading `--raw`):
 //!                       exec the real gh with ambient credentials,
@@ -119,6 +156,18 @@
 //! close — the queue sweep's detective check is the net), and a
 //! build without the queue client skips the guard the same way.
 //!
+//! Stdin values (#15556): `gh secret set` / `gh variable set`
+//! without `--body` take the value from stdin — a one-shot stream
+//! the first rotation attempt consumes. Before this fix a retryable
+//! first attempt (rate limit / permission refusal) left the failover
+//! attempt reading EOF, and real gh stores that as an EMPTY value
+//! with exit 0: a silent provisioning failure. So when stdin is not
+//! a terminal and supplies the value, fleet reads it once, refuses
+//! an empty value loudly (exit 2, before any attempt), and replays
+//! the same bytes to every attempt. An explicitly empty `--body`
+//! is refused the same way. A terminal stdin is inherited as
+//! before, so gh's interactive prompt is unchanged.
+//!
 //! Metadata create path (#9073, design §12–§15): `issue create` and
 //! `pr create` bodies are stamped with the fleet Metadata block
 //! (gh_metadata.rs) before the rotation runs, and the full record
@@ -131,11 +180,13 @@
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_content_ledger;
 use crate::gh_guard;
 use crate::gh_metadata;
+use crate::gh_sync;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -146,6 +197,11 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
+/// The shared content-creation ledger refused the reservation, so
+/// the create did not run (code#2227). Mirrors gh-post's exit 5:
+/// an unledgered filing is the failure mode the ledger exists to
+/// kill, so the refusal is loud and counted, never silent.
+const EXIT_LEDGER: i32 = 5;
 
 fn usage_error(message: &str) -> i32 {
     eprintln!("error: {message}");
@@ -166,7 +222,7 @@ const GITHUB_API: &str = "https://api.github.com";
 
 const USAGE: &str = "\
 Usage: fleet gh <gh args...>
-       fleet gh tiers
+       fleet gh tiers [--all]
        fleet gh cache-serve [--bind <addr>]
        fleet gh cache-status
        fleet gh closures [<item>]
@@ -174,7 +230,7 @@ Usage: fleet gh <gh args...>
        fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
-under a token selected from the fleet rotation (the fleet's three
+under a token selected from the fleet rotation (built-in and configured
 GitHub Apps' installation tokens, then the personal token last).
 A rate-limit or
 permission failure fails over to the next token; the caller sees only
@@ -192,57 +248,92 @@ FLEET_GH_CACHE as a comma list; an address without a port gets port
 `fleet gh cache-status` probes the configured daemons. `--cache-addr`
 overrides every daemon address for one call; `--no-cache` resolves
 in-process. When no daemon answers, the call resolves in-process and
-says so on stderr — never silently.";
+says so on stderr — never silently.
 
-/// The fleet's GitHub Apps, in rotation order. Each carries its
-/// private key (and, except the fleet App whose ID is a public
-/// constant, its App ID) as broker secrets resolved by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+Sync verbs (code#10973, step 2.2 of #9016): the `sync-*` shadow
+verbs are the typed Queue/GitHub sync surface for scripted flows
+(pm-stack dispatch's fallback, the opencode claimant, job bodies).
+Each declares its whole command line, validates it strictly, and
+rewrites to the canonical gh call before the guard, closure and
+metadata layers run, inheriting the rotation and the retry-safety
+rule. `fleet gh sync-labels --repo OWNER/REPO <issue|pr> <n>` prints
+an item's label names as JSON; `sync-view` prints labels,state,title
+JSON; `sync-comment` posts a comment (`--body` or `--body-file`);
+`sync-issue-create`, `sync-issue-get`, `sync-labels-add`,
+`sync-label-ensure` and `sync-issue-close` (fleet closure reasons)
+cover the issue writes dispatch composes. See gh_sync.rs.";
+
+/// Built-in and config-defined GitHub Apps. Only secret names and
+/// public IDs are configured; private keys resolve through the broker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum GhApp {
     Fleet,
     DevToday,
     Backup,
+    Configured(String),
 }
 
 impl GhApp {
     const ALL: [GhApp; 3] = [GhApp::Fleet, GhApp::DevToday, GhApp::Backup];
 
     /// The FLEET_GH_ORDER / label prefix for this App's sources.
-    fn slug(&self) -> &'static str {
+    fn slug(&self) -> &str {
         match self {
             GhApp::Fleet => "app",
             GhApp::DevToday => "devtoday",
             GhApp::Backup => "backup",
+            GhApp::Configured(slug) => slug,
         }
     }
 
     /// Parse a slug back to its App (the cache wire names Apps by
     /// slug, so the daemon side resolves them without importing
     /// the rotation's enum spelling twice).
-    fn parse(slug: &str) -> Option<GhApp> {
+    fn parse(slug: &str, config: &Config) -> Option<GhApp> {
         match slug {
             "app" => Some(GhApp::Fleet),
             "devtoday" => Some(GhApp::DevToday),
             "backup" => Some(GhApp::Backup),
-            _ => None,
+            _ => config
+                .gh
+                .apps
+                .iter()
+                .find(|app| app.slug == slug)
+                .map(|app| GhApp::Configured(app.slug.clone())),
         }
     }
 
-    fn key_secret(&self) -> &'static str {
+    fn key_secret<'a>(&self, config: &'a Config) -> &'a str {
         match self {
             GhApp::Fleet => APP_KEY_SECRET_NAME,
             GhApp::DevToday => DEVTODAY_APP_KEY_SECRET_NAME,
             GhApp::Backup => BACKUP_APP_KEY_SECRET_NAME,
+            GhApp::Configured(slug) => {
+                &config
+                    .gh
+                    .apps
+                    .iter()
+                    .find(|app| app.slug == *slug)
+                    .expect("configured gh app")
+                    .key_secret
+            }
         }
     }
 
-    /// The secret carrying the App ID, when the ID is not a public
-    /// constant compiled in (the fleet App's is: 5612056).
-    fn id_secret(&self) -> Option<&'static str> {
+    /// The secret carrying the App ID, unless a public ID is used.
+    fn id_secret<'a>(&self, config: &'a Config) -> Option<&'a str> {
         match self {
             GhApp::Fleet => None,
             GhApp::DevToday => Some(DEVTODAY_APP_ID_SECRET_NAME),
             GhApp::Backup => Some(BACKUP_APP_ID_SECRET_NAME),
+            GhApp::Configured(slug) => config
+                .gh
+                .apps
+                .iter()
+                .find(|app| app.slug == *slug)
+                .expect("configured gh app")
+                .app_id_secret
+                .as_deref(),
         }
     }
 
@@ -251,6 +342,7 @@ impl GhApp {
             GhApp::Fleet => &DEFAULT_APP_OWNERS,
             GhApp::DevToday => &DEVTODAY_DEFAULT_OWNERS,
             GhApp::Backup => &BACKUP_DEFAULT_OWNERS,
+            GhApp::Configured(_) => &[],
         }
     }
 }
@@ -707,8 +799,9 @@ fn owner_hint(args: &[String]) -> Option<String> {
     None
 }
 
-/// Per-App owner overrides, from the FLEET_GH_*_OWNERS environment
-/// variables; None for an App means its compiled-in defaults.
+/// Per-App owner overrides: env beats the fleet config file
+/// beats the compiled-in defaults. None for an App means its
+/// compiled-in defaults; Some(empty) disables that App's legs.
 #[derive(Default)]
 struct Owners {
     fleet: Option<Vec<String>>,
@@ -717,27 +810,32 @@ struct Owners {
 }
 
 impl Owners {
-    fn from_env() -> Owners {
-        let parse = |name: &str| {
-            std::env::var(name).ok().map(|list| {
-                list.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-        };
+    /// Resolve against the fleet config (code#10311 ask (a)): each
+    /// App's env variable wins when set, else the file's
+    /// `[gh.owners]` entry, else the compiled-in default (None).
+    fn from_config(config: &Config) -> Owners {
         Owners {
-            fleet: parse("FLEET_GH_APP_OWNERS"),
-            devtoday: parse("FLEET_GH_DEVTODAY_OWNERS"),
-            backup: parse("FLEET_GH_BACKUP_OWNERS"),
+            fleet: config.gh_owners_for("app"),
+            devtoday: config.gh_owners_for("devtoday"),
+            backup: config.gh_owners_for("backup"),
         }
     }
 
-    fn for_app(&self, app: GhApp) -> Vec<String> {
+    fn for_app(&self, app: &GhApp, config: &Config) -> Vec<String> {
         let over = match app {
             GhApp::Fleet => &self.fleet,
             GhApp::DevToday => &self.devtoday,
             GhApp::Backup => &self.backup,
+            GhApp::Configured(slug) => {
+                return config
+                    .gh
+                    .apps
+                    .iter()
+                    .find(|app| app.slug == *slug)
+                    .expect("configured gh app")
+                    .owners
+                    .clone();
+            }
         };
         over.clone()
             .unwrap_or_else(|| app.default_owners().iter().map(|s| s.to_string()).collect())
@@ -746,22 +844,35 @@ impl Owners {
 
 /// The rotation for one invocation: each App's owners with the
 /// hinted owner (if any) leading each App leg, then the personal
-/// token LAST. `FLEET_GH_ORDER` replaces the whole order when set.
+/// token LAST. The persistent `[gh] order` / `[gh.owners]`
+/// settings (code#10311 ask (a)) select the rotation; the
+/// `FLEET_GH_ORDER` / `FLEET_GH_*_OWNERS` env variables stay
+/// per-process overrides and win when set.
 /// Oracle: code#8887's rotation definition as extended by Drew
 /// 2026-11-12 (personal + all three fleet Apps' installations),
 /// hint-first per the installation-scope fact; personal moved last
 /// by Drew 2026-11-23 (code#13310).
-fn rotation(args: &[String]) -> Vec<TokenSource> {
-    let order_env = std::env::var("FLEET_GH_ORDER").ok();
-    rotation_with(args, order_env.as_deref(), &Owners::from_env())
+fn rotation(args: &[String], config: &Config) -> Vec<TokenSource> {
+    let order = config.gh_rotation_order();
+    rotation_with_config(args, order.as_deref(), &Owners::from_config(config), config)
 }
 
 /// `rotation` with its environment inputs made explicit, so the
 /// order logic is testable without env mutation races.
+#[cfg(test)]
 fn rotation_with(
     args: &[String],
     order_env: Option<&str>,
     owners_env: &Owners,
+) -> Vec<TokenSource> {
+    rotation_with_config(args, order_env, owners_env, &Config::default())
+}
+
+fn rotation_with_config(
+    args: &[String],
+    order_env: Option<&str>,
+    owners_env: &Owners,
+    config: &Config,
 ) -> Vec<TokenSource> {
     if let Some(order) = order_env {
         let parsed: Vec<TokenSource> = order
@@ -769,8 +880,8 @@ fn rotation_with(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
-                for app in GhApp::ALL {
-                    if let Some(owner) = s.strip_prefix(&format!("{}:", app.slug())) {
+                if let Some((slug, owner)) = s.split_once(':') {
+                    if let Some(app) = GhApp::parse(slug, config) {
                         return TokenSource::app(app, owner);
                     }
                 }
@@ -783,20 +894,114 @@ fn rotation_with(
     }
     let hint = owner_hint(args);
     let mut out = Vec::new();
-    for app in GhApp::ALL {
-        let mut owners = owners_env.for_app(app);
+    let apps = GhApp::ALL.into_iter().chain(
+        config
+            .gh
+            .apps
+            .iter()
+            .map(|app| GhApp::Configured(app.slug.clone())),
+    );
+    for app in apps {
+        let mut owners = owners_env.for_app(&app, config);
         if let Some(hint) = &hint {
             if let Some(pos) = owners.iter().position(|o| o.eq_ignore_ascii_case(hint)) {
                 let owner = owners.remove(pos);
                 owners.insert(0, owner);
             }
         }
-        out.extend(owners.into_iter().map(|o| TokenSource::app(app, &o)));
+        out.extend(
+            owners
+                .into_iter()
+                .map(|o| TokenSource::app(app.clone(), &o)),
+        );
     }
     // Drew 2026-11-23 (code#13310): the personal token is the final
     // fallback, never the first identity tried.
     out.push(TokenSource::Personal);
     out
+}
+
+/// Add a hinted installation that exists live but is not present in
+/// that App's configured owner set. The configured rotation remains
+/// the fallback if an App's installation list could not be read.
+fn add_dynamic_hint_sources(
+    mut sources: Vec<TokenSource>,
+    args: &[String],
+    installations: &[(GhApp, Vec<String>)],
+) -> Vec<TokenSource> {
+    let Some(hint) = owner_hint(args) else {
+        return sources;
+    };
+    for (app, owners) in installations {
+        if sources.iter().any(|source| {
+            matches!(source, TokenSource::AppInstallation { app: source_app, owner }
+                if source_app == app && owner.eq_ignore_ascii_case(&hint))
+        }) {
+            continue;
+        }
+        let Some(owner) = owners
+            .iter()
+            .find(|owner| owner.eq_ignore_ascii_case(&hint))
+        else {
+            continue;
+        };
+        let source = TokenSource::app(app.clone(), owner);
+        let insert_at = sources
+            .iter()
+            .position(|existing| {
+                matches!(existing, TokenSource::AppInstallation { app: source_app, .. }
+                    if source_app == app)
+            })
+            .or_else(|| {
+                sources
+                    .iter()
+                    .position(|s| matches!(s, TokenSource::Personal))
+            })
+            .unwrap_or(sources.len());
+        sources.insert(insert_at, source);
+    }
+    sources
+}
+
+/// The effective rotation for one call: the configured order for
+/// the owners `hint_args` name, expanded — when no explicit order
+/// is configured — with live installations for a hinted owner
+/// outside an App's configured set. Shared by the passthrough
+/// runner and `fleet git-credential`, so plain git and `fleet gh`
+/// walk the same sources in the same order.
+fn rotation_sources(
+    config: &Config,
+    provider: &mut FleetTokenProvider,
+    hint_args: &[String],
+) -> Vec<TokenSource> {
+    let mut sources = rotation(hint_args, config);
+    // An explicit rotation is authoritative. Otherwise, when a call
+    // names an owner outside an App's configured set, consult that
+    // App's cached live installations and add its leg if present.
+    if config.gh_rotation_order().is_none() {
+        if let Some(hint) = owner_hint(hint_args) {
+            let owners_env = Owners::from_config(config);
+            let mut discovered = Vec::new();
+            for app in all_apps(config) {
+                if owners_env
+                    .for_app(&app, config)
+                    .iter()
+                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
+                {
+                    continue;
+                }
+                match provider.installation_owners(&app) {
+                    Ok(owners) => discovered.push((app, owners)),
+                    Err(error) => eprintln!(
+                        "fleet gh: could not check {} installations for owner hint: {error}",
+                        app.slug()
+                    ),
+                }
+            }
+            sources = add_dynamic_hint_sources(sources, hint_args, &discovered);
+        }
+    }
+    sources
 }
 
 /// May this failed attempt be repeated under the next token?
@@ -825,6 +1030,13 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
 /// with fake identities and a fake `gh` (the oracle tests below).
 trait TokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String>;
+
+    /// Owners with a live installation for this App. The runner uses
+    /// this only when an explicit owner hint is absent from the
+    /// configured owner list; failures leave the existing rotation intact.
+    fn installation_owners(&mut self, _app: &GhApp) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Raw credential operations, with no caching: the
@@ -870,25 +1082,41 @@ impl RawMinter {
             .map_err(|e| format!("secret '{name}' unresolved: {e}"))
     }
 
-    /// The App ID for one App: the fleet App's is a public constant
-    /// (FLEET_GH_APP_ID may override it); the other Apps carry
-    /// theirs in the broker next to their keys.
-    fn app_id(&self, app: GhApp) -> Result<String, String> {
+    /// Resolve and memoize an App ID. Configured Apps may use a public
+    /// literal or the same named-secret resolver as the built-in Apps.
+    fn app_id(&self, app: &GhApp) -> Result<String, String> {
+        self.app_id_with(app, |name| self.resolve_named(name))
+    }
+
+    fn app_id_with(
+        &self,
+        app: &GhApp,
+        resolve: impl FnOnce(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
         if let Some((_, id)) = self
             .app_ids
             .lock()
             .expect("gh app-id lock")
             .iter()
-            .find(|(a, _)| *a == app)
+            .find(|(a, _)| a == app)
         {
             return Ok(id.clone());
         }
-        let id = match app.id_secret() {
-            None => std::env::var("FLEET_GH_APP_ID")
+        let id = match app.id_secret(&self.config) {
+            None if matches!(app, GhApp::Fleet) => std::env::var("FLEET_GH_APP_ID")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_APP_ID.to_string()),
-            Some(name) => self.resolve_named(name)?.trim().to_string(),
+            Some(name) => resolve(name)?.trim().to_string(),
+            None => self
+                .config
+                .gh
+                .apps
+                .iter()
+                .find(|entry| entry.slug == app.slug())
+                .and_then(|entry| entry.app_id)
+                .expect("configured gh app id")
+                .to_string(),
         };
         if id.is_empty() {
             return Err(format!("app id for {} resolved empty", app.slug()));
@@ -896,7 +1124,7 @@ impl RawMinter {
         self.app_ids
             .lock()
             .expect("gh app-id lock")
-            .push((app, id.clone()));
+            .push((app.clone(), id.clone()));
         Ok(id)
     }
 }
@@ -912,9 +1140,10 @@ impl gh_cache::Backend for RawMinter {
     /// The TTL is the JWT's own lifetime minus the cache skew, so
     /// the cache serves it only within expiry.
     fn sign_jwt(&self, app: &str) -> Result<(String, u64), String> {
-        let app = GhApp::parse(app).ok_or_else(|| format!("unknown gh app {app:?}"))?;
-        let app_id = self.app_id(app)?;
-        let key_pem = self.resolve_named(app.key_secret())?;
+        let app =
+            GhApp::parse(app, &self.config).ok_or_else(|| format!("unknown gh app {app:?}"))?;
+        let app_id = self.app_id(&app)?;
+        let key_pem = self.resolve_named(app.key_secret(&self.config))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock before epoch".to_string())?
@@ -1025,6 +1254,13 @@ impl FleetTokenProvider {
         }
     }
 
+    /// One App's live installation list, through the process-local
+    /// cache (the daemon wire has no installations-list op, so this
+    /// always mints in-process; the TTL still applies per call).
+    fn installations(&self, app: &GhApp) -> Result<Vec<(String, i64)>, String> {
+        self.cache.installations(app.slug())
+    }
+
     /// Resolve one cache request: the first answering daemon wins;
     /// when none answers, the process-local cache mints instead —
     /// with one visible note on stderr, never silence (code#10742).
@@ -1056,6 +1292,11 @@ impl FleetTokenProvider {
 }
 
 impl TokenProvider for FleetTokenProvider {
+    fn installation_owners(&mut self, app: &GhApp) -> Result<Vec<String>, String> {
+        FleetTokenProvider::installations(self, app)
+            .map(|pairs| pairs.into_iter().map(|(owner, _)| owner).collect())
+    }
+
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
@@ -1236,15 +1477,200 @@ struct Attempt {
     stderr: Vec<u8>,
 }
 
+/// Remedy for a `gh` spawn failure (#10311 (d)): the binary is
+/// missing or not executable. Names the fix so the caller is not
+/// left guessing: install `gh`, or point FLEET_GH_BIN at it.
+fn spawn_failure_message(gh_bin: &str, e: &std::io::Error) -> String {
+    format!("failed to run '{gh_bin}': {e} (install gh, or set FLEET_GH_BIN to the gh binary)")
+}
+
+/// Distinct provider errors, first-seen order (#10311 (d)): every
+/// source that fails the same way (e.g. the same broker outage)
+/// reports once, then the summary line.
+fn distinct_errors(errors: &[String]) -> Vec<&str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for e in errors {
+        if !seen.contains(&e.as_str()) {
+            seen.push(e.as_str());
+        }
+    }
+    seen
+}
+
+/// The gh-fleet shim's recursion guard (pkgs/gh-fleet): a child
+/// `gh` that sees this set to 1 execs the pristine gh directly
+/// instead of routing through `fleet gh`. Fleet sets it on every
+/// `gh` it spawns — fleet IS the routing layer, so a child that
+/// re-entered fleet would run the call through a second, possibly
+/// different-revision fleet, which among other failures rejects
+/// this fleet's own generated closure arguments (#14650). An
+/// explicit FLEET_GH_BIN is untouched: the guard never changes
+/// which binary was chosen, it only tells the shim not to route.
+const SHIM_GUARD_ENV: &str = "FLEET_GH_SHIM_ACTIVE";
+
+/// The index and word of the `gh` command in `args`, past any
+/// inherited flags given before it (the scan `command_word` does,
+/// keeping the position so the subcommand after it can be read).
+fn command_word_at(args: &[String]) -> Option<(usize, &str)> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if a == "-R" || a == "--repo" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return Some((i, a));
+        }
+    }
+    None
+}
+
+/// Is this a `secret set` / `variable set` call — the two commands
+/// whose value can come from `--body`, an `--env-file`, or stdin
+/// (`gh secret set --help`, `gh variable set --help`)?
+fn is_value_set(args: &[String]) -> bool {
+    let Some((i, word)) = command_word_at(args) else {
+        return false;
+    };
+    (word == "secret" || word == "variable") && args.get(i + 1).map(|s| s.as_str()) == Some("set")
+}
+
+/// The `--body` value of a value-set call, when a body flag is
+/// present in any spelling (`--body V`, `--body=V`, `-b V`, `-bV`).
+fn body_value(args: &[String]) -> Option<Option<&str>> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--body" || a == "-b" {
+            return Some(args.get(i + 1).map(|s| s.as_str()));
+        }
+        if let Some(v) = a.strip_prefix("--body=") {
+            return Some(Some(v));
+        }
+        if a.starts_with("-b") && a.len() > 2 {
+            return Some(Some(&a[2..]));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The `--env-file` target of a value-set call, when present in any
+/// spelling (`--env-file F`, `--env-file=F`, `-f F`, `-fF`); `-`
+/// means gh reads the file from stdin.
+fn env_file_value(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--env-file" || a == "-f" {
+            return args.get(i + 1).map(|s| s.as_str());
+        }
+        if let Some(v) = a.strip_prefix("--env-file=") {
+            return Some(v);
+        }
+        if a.starts_with("-f") && a.len() > 2 {
+            return Some(&a[2..]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Does stdin supply this call's value? True for a value-set call
+/// with no `--body` whose `--env-file` is absent or `-`: real gh
+/// then reads the value from stdin (`gh secret set --help`: the
+/// body flag "reads from standard input if not specified").
+/// Oracle: those --help texts (#15556).
+fn stdin_supplies_value(args: &[String]) -> bool {
+    is_value_set(args)
+        && body_value(args).is_none()
+        && matches!(env_file_value(args), None | Some("-"))
+}
+
+/// The loud refusal for a value-set call that would store an empty
+/// value, or None when the call carries a non-empty value.
+/// `piped_stdin` is the stdin bytes fleet buffered for replay, or
+/// None when stdin is a terminal (gh prompts interactively; the
+/// prompt is the caller's own choice and is not second-guessed).
+/// An empty `--body` is refused regardless of stdin. Oracle:
+/// #15556 — real gh stores an empty stdin read / empty body as an
+/// empty secret and exits 0, so the failure is silent downstream.
+fn empty_value_error(args: &[String], piped_stdin: Option<&[u8]>) -> Option<String> {
+    if !is_value_set(args) {
+        return None;
+    }
+    if let Some(body) = body_value(args) {
+        return match body {
+            Some(v) if !v.is_empty() => None,
+            _ => Some(
+                "secret/variable set with an empty --body would store an empty value; \
+                 refusing (pass a non-empty --body, or pipe the value on stdin)"
+                    .to_string(),
+            ),
+        };
+    }
+    if !stdin_supplies_value(args) {
+        return None;
+    }
+    match piped_stdin {
+        Some(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => Some(
+            "secret/variable set reads its value from stdin, but stdin is empty; \
+             refusing to store an empty value (pipe the value, or pass --body)"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// Run the real `gh` once, under `token`, capturing output for
 /// classification. stdin is inherited so prompts behave; stdout and
-/// stderr are piped (see the module header for why).
+/// stderr are piped (see the module header for why). The child
+/// carries the shim recursion guard (SHIM_GUARD_ENV).
 fn run_gh_once(gh_bin: &str, args: &[String], token: &str) -> std::io::Result<Attempt> {
-    let out = Command::new(gh_bin)
+    run_gh_once_with_stdin(gh_bin, args, token, None)
+}
+
+/// `run_gh_once` with stdin bytes to replay (#15556): when
+/// `stdin_bytes` is Some, the child reads exactly those bytes from
+/// a pipe — the same bytes every attempt gets, so a failover after
+/// a stdin-consuming first attempt cannot observe EOF and store
+/// an empty value. The write runs on its own thread so a child
+/// filling its output pipes cannot deadlock the feed.
+fn run_gh_once_with_stdin(
+    gh_bin: &str,
+    args: &[String],
+    token: &str,
+    stdin_bytes: Option<&[u8]>,
+) -> std::io::Result<Attempt> {
+    let Some(bytes) = stdin_bytes else {
+        let out = Command::new(gh_bin)
+            .args(args)
+            .env("GH_TOKEN", token)
+            .env(SHIM_GUARD_ENV, "1")
+            .stdin(Stdio::inherit())
+            .output()?;
+        return Ok(Attempt {
+            code: out.status.code().unwrap_or(1),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        });
+    };
+    let mut child = Command::new(gh_bin)
         .args(args)
         .env("GH_TOKEN", token)
-        .stdin(Stdio::inherit())
-        .output()?;
+        .env(SHIM_GUARD_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut sin) = child.stdin.take() {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = sin.write_all(&bytes);
+        });
+    }
+    let out = child.wait_with_output()?;
     Ok(Attempt {
         code: out.status.code().unwrap_or(1),
         stdout: out.stdout,
@@ -1263,7 +1689,7 @@ fn run_with_provider<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
 ) -> i32 {
-    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false).0
+    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false, None).0
 }
 
 /// run_with_provider, additionally handing back the final attempt's
@@ -1278,6 +1704,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
     capture_stdout: bool,
+    stdin_bytes: Option<&[u8]>,
 ) -> (i32, Option<Vec<u8>>) {
     let read_only = is_read_call(args);
     let mut last: Option<Attempt> = None;
@@ -1296,10 +1723,10 @@ fn run_with_provider_capturing<P: TokenProvider>(
         if trace {
             eprintln!("fleet gh: attempt {} under {}", idx + 1, source.label());
         }
-        let attempt = match run_gh_once(gh_bin, args, &token) {
+        let attempt = match run_gh_once_with_stdin(gh_bin, args, &token, stdin_bytes) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
+                eprintln!("fleet gh: {}", spawn_failure_message(gh_bin, &e));
                 return (EXIT_UNRESOLVED, None);
             }
         };
@@ -1344,7 +1771,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         emit(&attempt);
         return (code, captured);
     }
-    for e in &provider_errors {
+    for e in distinct_errors(&provider_errors) {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
@@ -1363,11 +1790,15 @@ fn emit(attempt: &Attempt) {
 }
 
 const TIERS_USAGE: &str = "\
-Usage: fleet gh tiers
+Usage: fleet gh tiers [--all]
 
-Probe every token-rotation source (the fleet's three GitHub Apps'
+Probe every token-rotation source (built-in and configured GitHub Apps'
 installation tokens, then the personal token) and print each one's
-rate-limit headroom. Takes no arguments.";
+rate-limit headroom.
+
+  --all   List every installation of every configured App instead of
+          the configured rotation, so accounts outside the configured
+          owner lists get a row too.";
 
 const CLOSURES_USAGE: &str = "\
 Usage: fleet gh closures [<item>]
@@ -1380,11 +1811,21 @@ arguments.";
 /// core and GraphQL rate-limit headroom. Labels and numbers only —
 /// token values never leave the provider. Exit 0 when every source
 /// answers, EXIT_UNRESOLVED when any source is down.
-fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
+///
+/// With `all`, the source set is every installation of every App
+/// (built-in and configured, resolved live and paginated) plus the
+/// personal token, instead of the configured rotation — so owners
+/// outside the configured owner lists still get a row (#10311 (c)).
+fn run_tiers(config: &Config, addrs: Vec<String>, all: bool) -> i32 {
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&[]);
     let mut provider = FleetTokenProvider::new(config, addrs);
-    let mut any_down = false;
+    let mut listed_down = false;
+    let sources = if all {
+        tiers_all_sources(config, &mut provider, &mut listed_down)
+    } else {
+        rotation(&[], config)
+    };
+    let mut any_down = listed_down;
     for source in &sources {
         let label = source.label();
         let token = match provider.token_for(source) {
@@ -1419,12 +1860,74 @@ fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
                 any_down = true;
             }
             Err(e) => {
-                println!("{label}\tDOWN\tfailed to run '{gh_bin}': {e}");
+                println!("{label}\tDOWN\t{}", spawn_failure_message(&gh_bin, &e));
                 any_down = true;
             }
         }
     }
     if any_down { EXIT_UNRESOLVED } else { EXIT_OK }
+}
+
+/// Every App in tiers order: the built-ins, then the configured
+/// Apps in file order (the same order the rotation uses).
+fn all_apps(config: &Config) -> Vec<GhApp> {
+    GhApp::ALL
+        .into_iter()
+        .chain(
+            config
+                .gh
+                .apps
+                .iter()
+                .map(|app| GhApp::Configured(app.slug.clone())),
+        )
+        .collect()
+}
+
+/// The `--all` source set: every installation of every App (live,
+/// paginated, sorted per App for stable output), then the personal
+/// token. A listing failure prints its DOWN row immediately and
+/// sets `listed_down`, so the probe loop below only handles token
+/// and `gh` failures.
+fn tiers_all_sources(
+    config: &Config,
+    provider: &FleetTokenProvider,
+    listed_down: &mut bool,
+) -> Vec<TokenSource> {
+    let mut lists: Vec<(GhApp, Vec<String>)> = Vec::new();
+    for app in all_apps(config) {
+        match provider.installations(&app) {
+            Ok(pairs) => {
+                lists.push((app, pairs.into_iter().map(|(login, _)| login).collect()));
+            }
+            Err(e) => {
+                println!("{}\tDOWN\t{e}", app.slug());
+                *listed_down = true;
+            }
+        }
+    }
+    tiers_all_from_lists(&lists)
+}
+
+/// Pure `--all` builder, so the ordering contract is testable
+/// without network: per-App owners sorted for stable output,
+/// exact duplicates dropped, personal last.
+fn tiers_all_from_lists(entries: &[(GhApp, Vec<String>)]) -> Vec<TokenSource> {
+    let mut out = Vec::new();
+    for (app, owners) in entries {
+        let mut sorted = owners.clone();
+        sorted.sort();
+        sorted.dedup();
+        out.extend(
+            sorted
+                .into_iter()
+                .map(|owner| TokenSource::AppInstallation {
+                    app: app.clone(),
+                    owner,
+                }),
+        );
+    }
+    out.push(TokenSource::Personal);
+    out
 }
 
 /// Raw-mode split: returns the arguments to hand the real `gh`
@@ -1447,10 +1950,14 @@ fn raw_args(args: &[String], raw_env: bool) -> Option<Vec<String>> {
 /// environment untouched — no token resolved, none injected, no
 /// failover. Stdio is inherited (not captured) so interactive
 /// `gh` behaves exactly as it does unwrapped; the exit code is
-/// the child's own.
+/// the child's own. The one deliberate exception to "untouched"
+/// is the shim recursion guard (SHIM_GUARD_ENV): without it a
+/// PATH `gh` that is the gh-fleet shim re-enters fleet instead
+/// of reaching the pristine gh raw mode promises (#14650).
 fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     match Command::new(gh_bin)
         .args(args)
+        .env(SHIM_GUARD_ENV, "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1458,7 +1965,7 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("fleet gh --raw: failed to run '{gh_bin}': {e}");
+            eprintln!("fleet gh --raw: {}", spawn_failure_message(gh_bin, &e));
             EXIT_UNRESOLVED
         }
     }
@@ -1475,6 +1982,351 @@ fn closure_binding(
         }
     };
     gh_closure::Binding::from_resolved_session_id(resolved_session_id)
+}
+
+// ---------------------------------------------------------------------------
+// `fleet git-credential` — the git credential helper (code#16577).
+// ---------------------------------------------------------------------------
+
+const GIT_CREDENTIAL_USAGE: &str = "\
+Usage: fleet git-credential [--cache-addr <addr>...] [--no-cache] <get|store|erase>
+
+Git credential helper over the fleet gh token rotation: `get` answers
+git's credential query for github.com with the first rotation
+credential that can see the target repo, skipping any that provably
+cannot. `store` and `erase` are no-ops — fleet keeps no credential
+store; every `get` resolves fresh from the rotation.
+
+Configure it in git (the canonical seat gitconfig does this):
+
+  [credential \"https://github.com\"]
+      helper = !fleet git-credential
+      useHttpPath = true
+
+`useHttpPath` is what lets git tell the helper which repo a query is
+for; without it the helper cannot check visibility and offers the
+first resolvable credential, as `gh auth git-credential` does.";
+
+/// One parsed git credential query (the `get` input): `key=value`
+/// lines ended by a blank line or EOF. Only the fields the helper
+/// acts on are kept; the answer echoes protocol and host back.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct CredQuery {
+    protocol: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+}
+
+/// Parse a credential query. A `url` attribute stands in for the
+/// components when they are absent (git sends one form or the
+/// other). Unknown attributes are ignored, per the protocol.
+fn parse_cred_query(bytes: &[u8]) -> CredQuery {
+    let text = String::from_utf8_lossy(bytes);
+    let mut query = CredQuery::default();
+    let mut url: Option<String> = None;
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "protocol" => query.protocol = Some(value.to_string()),
+            "host" => query.host = Some(value.to_string()),
+            "path" => query.path = Some(value.to_string()),
+            "url" => url = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if (query.host.is_none() || query.path.is_none())
+        && let Some(url) = &url
+        && let Some((scheme, rest)) = url.split_once("://")
+    {
+        let (host, path) = match rest.split_once('/') {
+            Some((host, path)) => (host, Some(path.to_string())),
+            None => (rest, None),
+        };
+        // A userinfo part is not the host.
+        let host = host.rsplit('@').next().unwrap_or(host);
+        if query.protocol.is_none() {
+            query.protocol = Some(scheme.to_string());
+        }
+        if query.host.is_none() {
+            query.host = Some(host.to_string());
+        }
+        if query.path.is_none() {
+            query.path = path;
+        }
+    }
+    query
+}
+
+impl CredQuery {
+    /// Fleet credentials exist only for github.com over HTTPS.
+    fn is_github(&self) -> bool {
+        self.protocol
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+            && self
+                .host
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case("github.com"))
+    }
+}
+
+/// The (owner, repo) a query targets, from its path — the first
+/// two path segments, a trailing `.git` on the repo dropped. Both
+/// segments must be plain GitHub names; anything else is not a
+/// repo this helper can check, and the query is treated as
+/// repo-less (first resolvable credential wins).
+fn cred_repo(query: &CredQuery) -> Option<(String, String)> {
+    let path = query.path.as_deref()?;
+    let mut segments = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty());
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !plain(owner) || !plain(repo) {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// Whether one token can see one repo. `Unknown` is every outcome
+/// that proves nothing either way — the check must never skip a
+/// credential on a guess (code#16577).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoVisibility {
+    Visible,
+    NotVisible,
+    Unknown,
+}
+
+/// The repo-visibility seam, so tests drive the selection with
+/// fakes and no network.
+trait RepoVisibilityCheck {
+    fn visibility(&mut self, token: &str, owner: &str, repo: &str) -> RepoVisibility;
+}
+
+/// The live check: `GET /repos/{owner}/{repo}` under the candidate
+/// token. GitHub answers 404 both for a missing repo and for one
+/// the token cannot see — either way the credential is useless for
+/// this target, which is exactly the skip condition. 200 proves
+/// sight; anything else (rate limit, 5xx, transport) proves
+/// nothing.
+struct HttpRepoVisibility {
+    agent: ureq::Agent,
+}
+
+impl HttpRepoVisibility {
+    fn new() -> Self {
+        // Same agent shape as the minter's: platform root store,
+        // so a TLS-intercepting egress proxy does not fail the
+        // check into `Unknown` on every call.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .into();
+        HttpRepoVisibility { agent }
+    }
+}
+
+impl RepoVisibilityCheck for HttpRepoVisibility {
+    fn visibility(&mut self, token: &str, owner: &str, repo: &str) -> RepoVisibility {
+        let url = format!("{GITHUB_API}/repos/{owner}/{repo}");
+        match api_call(&self.agent, "GET", &url, token, None) {
+            Ok((200, _)) => RepoVisibility::Visible,
+            Ok((404, _)) => RepoVisibility::NotVisible,
+            _ => RepoVisibility::Unknown,
+        }
+    }
+}
+
+/// The outcome of walking the rotation for one credential query.
+enum CredSelection {
+    /// A candidate offered on positive or inconclusive evidence —
+    /// the normal answer.
+    Chosen { label: String, token: String },
+    /// Every resolvable candidate provably cannot see the repo;
+    /// the first of them is offered anyway (see the module
+    /// header), so git reports the refusal itself.
+    Fallback { label: String, token: String },
+    /// No source resolved at all; the errors are value-free.
+    Unresolved { errors: Vec<String> },
+}
+
+/// Walk the rotation for one `get` query. Oracle: code#16577 —
+/// a credential that cannot see the target repo is never the one
+/// offered while a later candidate can see it.
+fn select_credential<P: TokenProvider, V: RepoVisibilityCheck>(
+    provider: &mut P,
+    visibility: &mut V,
+    sources: &[TokenSource],
+    target: Option<&(String, String)>,
+    trace: bool,
+) -> CredSelection {
+    let mut errors: Vec<String> = Vec::new();
+    let mut first_resolved: Option<(String, String)> = None;
+    for source in sources {
+        let token = match provider.token_for(source) {
+            Ok(t) => t,
+            Err(e) => {
+                if trace {
+                    eprintln!("fleet git-credential: skipping {} ({e})", source.label());
+                }
+                errors.push(e);
+                continue;
+            }
+        };
+        if first_resolved.is_none() {
+            first_resolved = Some((source.label(), token.clone()));
+        }
+        let Some((owner, repo)) = target else {
+            // The query names no repo: nothing can be checked, so
+            // the first resolvable credential is the answer — the
+            // pre-helper behavior, kept for path-less queries.
+            return CredSelection::Chosen {
+                label: source.label(),
+                token,
+            };
+        };
+        match visibility.visibility(&token, owner, repo) {
+            RepoVisibility::Visible | RepoVisibility::Unknown => {
+                return CredSelection::Chosen {
+                    label: source.label(),
+                    token,
+                };
+            }
+            RepoVisibility::NotVisible => {
+                if trace {
+                    eprintln!(
+                        "fleet git-credential: skipping {} (cannot see {owner}/{repo})",
+                        source.label()
+                    );
+                }
+            }
+        }
+    }
+    match first_resolved {
+        Some((label, token)) => CredSelection::Fallback { label, token },
+        None => CredSelection::Unresolved { errors },
+    }
+}
+
+/// The credential answer for one chosen token: the token travels
+/// as the password under the `x-access-token` username — the shape
+/// GitHub accepts for OAuth and installation tokens alike, and the
+/// one upstream gh's helper uses for environment tokens.
+fn cred_answer(query: &CredQuery, token: &str) -> String {
+    format!(
+        "protocol={}\nhost={}\nusername=x-access-token\npassword={token}\n\n",
+        query.protocol.as_deref().unwrap_or("https"),
+        query.host.as_deref().unwrap_or("github.com"),
+    )
+}
+
+/// `fleet git-credential`: the git credential helper over the gh
+/// rotation (code#16577). Git invokes it as
+/// `fleet git-credential <get|store|erase>` with the query on
+/// stdin; seats configure it as the credential helper for
+/// github.com in place of `gh auth git-credential`.
+pub fn run_git_credential(config: &Config, args: &[String]) -> i32 {
+    let flags = match split_cache_flags(args) {
+        Ok(f) => f,
+        Err(e) => return usage_error(&e),
+    };
+    let rest = &flags.rest;
+    match rest.first().map(|s| s.as_str()) {
+        Some("--help" | "-h") if rest.len() == 1 => {
+            println!("{GIT_CREDENTIAL_USAGE}");
+            EXIT_OK
+        }
+        // Stateless: fleet stores no credentials of its own, so
+        // there is nothing to store and nothing to erase. The
+        // query on stdin is drained so git never writes into a
+        // closed pipe; exit 0 tells git the operation is handled.
+        Some("store" | "erase") if rest.len() == 1 => {
+            use std::io::Read;
+            let mut sink = Vec::new();
+            let _ = std::io::stdin().lock().read_to_end(&mut sink);
+            EXIT_OK
+        }
+        Some("get") if rest.len() == 1 => run_git_credential_get(config, &flags),
+        _ => usage_error(
+            "expected exactly one operation for 'fleet git-credential': get, store or erase",
+        ),
+    }
+}
+
+fn run_git_credential_get(config: &Config, flags: &CacheFlags) -> i32 {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Err(e) = std::io::stdin().lock().read_to_end(&mut buf) {
+        eprintln!("fleet git-credential: reading the credential query failed: {e}");
+        return EXIT_UNRESOLVED;
+    }
+    let query = parse_cred_query(&buf);
+    if !query.is_github() {
+        // Not a target fleet holds credentials for: answer with
+        // nothing, so git asks the next helper (or prompts).
+        return EXIT_OK;
+    }
+    let target = cred_repo(&query);
+    let hint_args: Vec<String> = match &target {
+        Some((owner, repo)) => vec!["--repo".to_string(), format!("{owner}/{repo}")],
+        None => Vec::new(),
+    };
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
+    let mut provider = FleetTokenProvider::new(config, cache_addrs(config, flags));
+    let sources = rotation_sources(config, &mut provider, &hint_args);
+    let mut visibility = HttpRepoVisibility::new();
+    let token = match select_credential(
+        &mut provider,
+        &mut visibility,
+        &sources,
+        target.as_ref(),
+        trace,
+    ) {
+        CredSelection::Chosen { token, .. } => token,
+        CredSelection::Fallback { label, token } => {
+            if trace {
+                eprintln!(
+                    "fleet git-credential: no candidate can see the target repo; \
+                     offering {label} (first resolvable)"
+                );
+            }
+            token
+        }
+        CredSelection::Unresolved { errors } => {
+            for e in distinct_errors(&errors) {
+                eprintln!("fleet git-credential: {e}");
+            }
+            eprintln!("fleet git-credential: no token source could be resolved");
+            return EXIT_UNRESOLVED;
+        }
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(cred_answer(&query, &token).as_bytes());
+    let _ = out.flush();
+    EXIT_OK
 }
 
 pub fn run(config: &Config, args: &[String]) -> i32 {
@@ -1508,13 +2360,16 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             println!("{TIERS_USAGE}");
             return EXIT_OK;
         }
+        if args.len() == 2 && args[1] == "--all" {
+            return run_tiers(config, cache_addrs(config, &flags), true);
+        }
         if args.len() > 1 {
             return usage_error(&format!(
                 "unexpected argument '{}' for 'fleet gh tiers'",
                 args[1]
             ));
         }
-        return run_tiers(config, cache_addrs(config, &flags));
+        return run_tiers(config, cache_addrs(config, &flags), false);
     }
     if args.first().is_some_and(|a| a == "cache-serve") {
         return run_cache_serve(config, &args[1..]);
@@ -1525,6 +2380,24 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "closures") {
         return run_closures(&args[1..]);
     }
+    // Sync verbs (#10973, step 2.2 of #9016): strictly-parsed typed
+    // verbs that rewrite to the canonical gh call. The rewrite is
+    // applied here, before the close guard, the closure layer and
+    // the metadata create path parse the arguments, so a sync call
+    // inherits every passthrough control — and the rotation below —
+    // exactly as the hand-written call it replaces would have.
+    let sync_rewrite;
+    let args: &[String] = match gh_sync::parse(args) {
+        Ok(Some(canonical)) => {
+            sync_rewrite = canonical;
+            &sync_rewrite
+        }
+        Ok(None) => args,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
     let guard_intent = match gh_guard::parse(args) {
         Ok(intent) => intent,
         Err(e) => {
@@ -1570,18 +2443,73 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(prepared) => prepared.args.clone(),
         None => call_args,
     };
+    // Content-creation ledger (code#2227): a classified create
+    // reserves its shared-ledger row BEFORE any GitHub write. The
+    // ledger owns the failure mode — a reservation failure refuses
+    // the create (exit 5), never an unledgered filing.
+    let ledger_pending = match gh_content_ledger::start(&call_args) {
+        Ok(pending) => pending,
+        Err(e) => {
+            eprintln!(
+                "fleet gh: content-ledger reserve failed ({e}); \
+                 refusing to post unledgered (code#2227)"
+            );
+            return EXIT_LEDGER;
+        }
+    };
+    // Stdin values (#15556): a value-set call taking its value from
+    // piped stdin gets those bytes buffered once, here — an empty
+    // value is refused before any attempt, and the buffered bytes
+    // are replayed to every rotation attempt, so a failover cannot
+    // turn the value into an empty store. A terminal stdin stays
+    // inherited (gh prompts), and every other call is untouched.
+    let stdin_replay: Option<Vec<u8>> =
+        if stdin_supplies_value(&call_args) && !std::io::stdin().is_terminal() {
+            let mut buf = Vec::new();
+            match std::io::stdin().read_to_end(&mut buf) {
+                Ok(_) => Some(buf),
+                Err(e) => {
+                    eprintln!("fleet gh: reading the value from stdin failed: {e}");
+                    return EXIT_UNRESOLVED;
+                }
+            }
+        } else {
+            None
+        };
+    if let Some(message) = empty_value_error(&call_args, stdin_replay.as_deref()) {
+        eprintln!("fleet gh: {message}");
+        return EXIT_USAGE;
+    }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&call_args);
-    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
+    let sources = rotation_sources(config, &mut provider, &call_args);
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let (code, final_stdout) = run_with_provider_capturing(
         &mut provider,
         &gh_bin,
         &call_args,
         &sources,
         trace,
-        prepared_create.is_some(),
+        // The ledger's verify step reads the created item's URL
+        // from stdout (code#2227); capture changes nothing
+        // user-visible — emit() still streams every byte.
+        prepared_create.is_some() || ledger_pending.is_some(),
+        stdin_replay.as_deref(),
     );
+    // Content-creation ledger (code#2227): finalise the reservation
+    // with what actually happened, on every path below. The row
+    // records the truth; gh's exit code stands either way (the
+    // metadata create path's posture).
+    if let Some(pending) = &ledger_pending {
+        match gh_content_ledger::finish(pending, code, final_stdout.as_deref()) {
+            Ok(Some(notice)) => eprintln!("fleet gh: {notice}"),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "fleet gh: content-ledger finalize failed ({e}); \
+                 the create stands, the ledger is short one outcome"
+            ),
+        }
+    }
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -2359,6 +3287,273 @@ mod tests {
         );
     }
 
+    // oracle: code#10311 ask (a) — the persistent `[gh] order` /
+    // `[gh.owners]` settings drive the rotation, and the
+    // `FLEET_GH_*` env variables stay per-process overrides.
+    // This is the only gh test that touches those env variables;
+    // no other test in this binary reads them, so the
+    // set/restore here cannot race a concurrent reader.
+    #[test]
+    fn rotation_reads_persistent_config_with_env_override() {
+        // SAFETY: this is the only test in the binary that reads
+        // these variables (all other rotation tests drive
+        // `rotation_with` with explicit inputs), so no concurrent
+        // reader can observe the transient values.
+        unsafe fn scrub(k: &str) {
+            unsafe { std::env::remove_var(k) };
+        }
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
+        let mut config = Config::default();
+        config.gh.order = Some(vec!["app:dezren39".to_string(), "personal".to_string()]);
+        config
+            .gh
+            .owners
+            .insert("backup".to_string(), vec!["layercloud".to_string()]);
+        let order = rotation(&[], &config);
+        assert_eq!(
+            order,
+            vec![
+                TokenSource::app(GhApp::Fleet, "dezren39"),
+                TokenSource::Personal,
+            ]
+        );
+        unsafe { std::env::set_var("FLEET_GH_ORDER", "personal") };
+        assert_eq!(rotation(&[], &config), vec![TokenSource::Personal]);
+        unsafe { std::env::remove_var("FLEET_GH_ORDER") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["layercloud".to_string()]));
+        assert_eq!(owners.fleet, None);
+        unsafe { std::env::set_var("FLEET_GH_BACKUP_OWNERS", "dezren39") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["dezren39".to_string()]));
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
+    }
+
+    #[test]
+    fn dynamic_owner_hint_adds_only_apps_with_a_live_installation() {
+        // Oracle: a hinted owner gets an App leg exactly when the
+        // provider's live-installation list contains that owner; the
+        // personal token remains the final fallback.
+        let args: Vec<String> = ["api", "repos/layercloud/private-repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let base = rotation_with_config(&args, None, &Owners::default(), &Config::default());
+        let with_live = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[
+                (GhApp::Fleet, vec!["LayerCloud".to_string()]),
+                (GhApp::DevToday, vec!["another-org".to_string()]),
+                (GhApp::Backup, vec!["layercloud".to_string()]),
+            ],
+        );
+        assert_eq!(with_live[0], TokenSource::app(GhApp::Fleet, "LayerCloud"));
+        assert!(with_live.contains(&TokenSource::app(GhApp::Backup, "layercloud")));
+        assert!(!with_live.contains(&TokenSource::app(GhApp::DevToday, "layercloud")));
+        assert_eq!(with_live.last(), Some(&TokenSource::Personal));
+
+        let no_match = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[(GhApp::Fleet, vec!["other-org".to_string()])],
+        );
+        assert_eq!(no_match, base);
+        assert_eq!(
+            add_dynamic_hint_sources(base.clone(), &["api".to_string()], &[]),
+            base
+        );
+    }
+
+    fn configured_apps_fixture() -> Config {
+        let mut config = Config::default();
+        config.gh.apps = vec![
+            fleet_config::GhAppConfig {
+                slug: "extra".to_string(),
+                app_id: Some(123456),
+                app_id_secret: None,
+                key_secret: "github.extra.key".to_string(),
+                owners: vec!["first-org".to_string(), "layercloud".to_string()],
+            },
+            fleet_config::GhAppConfig {
+                slug: "secret-id".to_string(),
+                app_id: None,
+                app_id_secret: Some("github.secret-id.id".to_string()),
+                key_secret: "github.secret-id.key".to_string(),
+                owners: vec!["second-org".to_string()],
+            },
+        ];
+        config
+    }
+
+    // Oracle: #10311 (c) requires every installation, independently
+    // of the configured rotation owner set, in stable App/owner order.
+    #[test]
+    fn tiers_all_lists_every_installation_then_personal() {
+        let config = configured_apps_fixture();
+        let apps = all_apps(&config);
+        assert_eq!(apps.len(), 5);
+        assert_eq!(apps[3].slug(), "extra");
+        assert_eq!(apps[4].slug(), "secret-id");
+
+        let sources = tiers_all_from_lists(&[
+            (GhApp::Fleet, vec!["z-org".into(), "a-org".into()]),
+            (GhApp::Configured("extra".into()), vec!["a-org".into()]),
+        ]);
+        assert_eq!(
+            sources.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            ["app:a-org", "app:z-org", "extra:a-org", "personal"]
+        );
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &config)
+                .iter()
+                .map(TokenSource::label)
+                .collect::<Vec<_>>(),
+            [
+                "app:developing-today",
+                "app:developing-today-forks",
+                "app:dezren39",
+                "devtoday:developing-today",
+                "devtoday:dezren39",
+                "backup:developing-today",
+                "extra:first-org",
+                "extra:layercloud",
+                "secret-id:second-org",
+                "personal"
+            ]
+        );
+    }
+
+    // Oracle: #10311's additive App contract: built-ins unchanged,
+    // configured Apps in file order before personal, hint reorders only.
+    #[test]
+    fn configured_apps_rotation_and_order() {
+        let config = configured_apps_fixture();
+        for (hint, expected) in [
+            ("layercloud", vec!["extra:layercloud", "extra:first-org"]),
+            ("LAYERCLOUD", vec!["extra:layercloud", "extra:first-org"]),
+            ("unknown", vec!["extra:first-org", "extra:layercloud"]),
+        ] {
+            let args = vec!["--repo".to_string(), format!("{hint}/repo")];
+            let sources = rotation_with_config(&args, None, &Owners::default(), &config);
+            let builtins = rotation_with(&args, None, &Owners::default());
+            assert_eq!(&sources[..6], &builtins[..6]);
+            assert_eq!(
+                sources[6..8]
+                    .iter()
+                    .map(TokenSource::label)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(sources.last(), Some(&TokenSource::Personal));
+            assert_eq!(sources[8].label(), "secret-id:second-org");
+            assert_eq!(sources.len(), 10);
+        }
+        let fixed = rotation_with_config(
+            &[],
+            Some("secret-id:other,personal,extra:layercloud,app:dezren39"),
+            &Owners::default(),
+            &config,
+        );
+        assert_eq!(
+            fixed.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            [
+                "secret-id:other",
+                "personal",
+                "extra:layercloud",
+                "app:dezren39"
+            ]
+        );
+        let mut no_owners = config.clone();
+        no_owners
+            .gh
+            .apps
+            .iter_mut()
+            .for_each(|app| app.owners.clear());
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &no_owners),
+            rotation_with(&[], None, &Owners::default())
+        );
+    }
+
+    // Oracle: cache requests carry only the stable slug; the daemon's
+    // own config must map it back to the same ID/key secret names.
+    #[test]
+    fn configured_apps_cache_slug_and_credentials() {
+        let config = configured_apps_fixture();
+        for entry in &config.gh.apps {
+            let request = gh_cache::request("token", Some(&entry.slug), Some("layercloud"), None);
+            let wire: serde_json::Value = serde_json::from_str(&request.to_string()).unwrap();
+            let app = GhApp::parse(wire["app"].as_str().unwrap(), &config).unwrap();
+            assert_eq!(app.slug(), entry.slug);
+            assert_eq!(app.key_secret(&config), entry.key_secret);
+            assert_eq!(app.id_secret(&config), entry.app_id_secret.as_deref());
+        }
+        assert_eq!(GhApp::parse("absent", &config), None);
+        assert_eq!(GhApp::parse("extra", &Config::default()), None);
+        let minter = RawMinter::new(&config);
+        let literal = GhApp::parse("extra", &config).unwrap();
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_ids.lock().unwrap().len(), 1);
+        let secret = GhApp::parse("secret-id", &config).unwrap();
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |name| {
+                    assert_eq!(name, "github.secret-id.id");
+                    Ok(" 789012\n".to_string())
+                })
+                .unwrap(),
+            "789012"
+        );
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |_| panic!("ID must be memoized"))
+                .unwrap(),
+            "789012"
+        );
+        let empty = RawMinter::new(&config);
+        assert_eq!(
+            empty
+                .app_id_with(&secret, |_| Ok(" \n".to_string()))
+                .unwrap_err(),
+            "app id for secret-id resolved empty"
+        );
+    }
+
+    proptest::proptest! {
+        // Oracle: every valid non-reserved configured slug round-trips
+        // through order labels and the existing cache wire's app field.
+        #[test]
+        fn configured_app_slug_round_trip(suffix in "[a-z0-9-]{1,30}") {
+            let mut config = configured_apps_fixture();
+            let slug = format!("custom-{suffix}");
+            config.gh.apps[0].slug = slug.clone();
+            let order = format!("{slug}:layercloud");
+            let sources = rotation_with_config(&[], Some(&order), &Owners::default(), &config);
+            proptest::prop_assert_eq!(sources.len(), 1);
+            proptest::prop_assert_eq!(sources[0].label(), order);
+            let request = gh_cache::request("token", Some(&slug), Some("layercloud"), None);
+            let app = GhApp::parse(request["app"].as_str().unwrap(), &config).unwrap();
+            proptest::prop_assert_eq!(app.slug(), slug.as_str());
+            proptest::prop_assert_eq!(app.key_secret(&config), "github.extra.key");
+        }
+    }
+
     // oracle: gh's hosts.yml shape (user block carrying oauth_token)
     // — the parser takes the token line and nothing else.
     #[test]
@@ -2471,6 +3666,184 @@ mod tests {
         )
     }
 
+    // oracle: the shared-ledger contract in gh_content_ledger — a
+    // reservation must be committed before the external create starts;
+    // empty stdout on exit 0 is finalized failed without rewriting gh's
+    // exit code. CONTENT_LEDGER_PATH points into this test's isolated dir.
+    #[test]
+    fn create_reserves_before_gh_and_empty_output_records_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-gh-ledger-e2e-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.sqlite");
+        let probe = dir.join("probe");
+        let script = format!(
+            "#!/bin/sh\n\
+             python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
+             touch \"{}\"\n\
+             exit 0\n",
+            ledger.display(),
+            probe.display()
+        );
+        let script_path = place_script(&dir, "ledger-gh", &script);
+        let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let pending = gh_content_ledger::start_at(&args, &ledger)
+            .expect("reserve succeeds")
+            .unwrap();
+        let attempt = run_gh_once(&script_path, &[], "test-token").expect("fake gh runs");
+        assert_eq!(attempt.code, 0, "gh's exit code is preserved");
+        assert!(probe.exists(), "fake gh ran after observing reservation");
+        gh_content_ledger::finish(&pending, attempt.code, Some(&attempt.stdout))
+            .expect("finalize reservation");
+        let conn = rusqlite::Connection::open(&ledger).unwrap();
+        let (outcome, detail): (String, String) = conn
+            .query_row("SELECT outcome, detail FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            outcome, "failed",
+            "empty successful output is not a created item"
+        );
+        assert_eq!(detail, "gh exited 0 with empty output");
+    }
+
+    /// Place an executable script the way fake_gh does: the text
+    /// goes to a side file and a separate `cp` (exited before we
+    /// return) writes the file that is executed, so no descriptor
+    /// this process holds open can make a child's exec fail with
+    /// ETXTBSY (#11834). Returns the script's path.
+    fn place_script(dir: &std::path::Path, name: &str, text: &str) -> String {
+        let source = dir.join(format!("{name}.src"));
+        std::fs::write(&source, text).unwrap();
+        let script = dir.join(name);
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the script");
+        assert!(copied.success(), "cp of {name} failed: {copied}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script.to_string_lossy().to_string()
+    }
+
+    /// Build the #14650 shim world: a directory holding three
+    /// executables that reproduce the production gh-fleet boundary
+    /// with the shim's real guard semantics (pkgs/gh-fleet): `gh`
+    /// is the shim — guarded (FLEET_GH_SHIM_ACTIVE=1) it execs the
+    /// pristine gh, unguarded it exports FLEET_GH_BIN + the guard
+    /// and execs `fleet gh`; `fleet` stands in for the nested
+    /// fleet a re-entry would create (it logs the re-entry, then
+    /// does what that fleet would do — run its resolved
+    /// FLEET_GH_BIN); `pristine-gh` is the real gh. Every hop
+    /// appends one line to a log whose path is baked into the
+    /// scripts (no shared env, so parallel tests cannot race).
+    /// Returns (dir, shim path).
+    fn shim_world(tag: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join(format!("fleet-gh-shim-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let log = log.display();
+        let pristine_path = dir.join("pristine-gh").display().to_string();
+        let fleet_path = dir.join("fleet").display().to_string();
+        let pristine = format!(
+            "#!/bin/sh\n\
+             echo \"pristine $*\" >> \"{log}\"\n\
+             echo 'pristine gh output'\n\
+             exit 0\n"
+        );
+        let fleet = format!(
+            "#!/bin/sh\n\
+             echo \"fleet-reentry $*\" >> \"{log}\"\n\
+             exec \"$FLEET_GH_BIN\" \"$@\"\n"
+        );
+        let shim = format!(
+            "#!/bin/sh\n\
+             if [ \"${{FLEET_GH_SHIM_ACTIVE:-}}\" = \"1\" ]; then\n\
+             exec \"{pristine_path}\" \"$@\"\n\
+             fi\n\
+             export FLEET_GH_BIN=\"{pristine_path}\"\n\
+             export FLEET_GH_SHIM_ACTIVE=1\n\
+             exec \"{fleet_path}\" gh \"$@\"\n"
+        );
+        place_script(&dir, "pristine-gh", &pristine);
+        place_script(&dir, "fleet", &fleet);
+        let shim_path = place_script(&dir, "gh", &shim);
+        (dir.to_string_lossy().to_string(), shim_path)
+    }
+
+    // oracle: #14650 — a direct `fleet gh` whose `gh` is the
+    // gh-fleet shim must reach the pristine gh in ONE hop. The
+    // production shim's guard semantics are the truth: guarded,
+    // the shim execs the pristine gh; unguarded, it re-enters
+    // fleet. The scripts' log decides — any "fleet-reentry" line
+    // (or a second line at all) means the guard was not set.
+    #[test]
+    fn run_gh_once_does_not_reenter_fleet_through_the_shim() {
+        // The guard must start absent from the ambient environment,
+        // or the child would inherit it and the test could not tell
+        // whether run_gh_once set it. Nothing else in this crate
+        // reads the variable, so clearing it cannot race a reader.
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("once");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let attempt = run_gh_once(&shim, &args, "tok-test").unwrap();
+        assert_eq!(attempt.code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&attempt.stdout),
+            "pristine gh output\n"
+        );
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
+    }
+
+    // oracle: #14650, raw path — the same guard duty on run_raw:
+    // raw mode hands the caller the pristine gh, never a nested
+    // fleet. run_raw inherits stdio, so the scripts' log (not
+    // captured output) is the evidence.
+    #[test]
+    fn run_raw_does_not_reenter_fleet_through_the_shim() {
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("raw");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let code = run_raw(&shim, &args);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
+    }
+
     // oracle: code#8887's headline acceptance — a rate-limited
     // first attempt fails over and the caller sees only the final
     // result (exit 0, the succeeding attempt's output).
@@ -2490,6 +3863,125 @@ mod tests {
         assert_eq!(code, 0);
         let calls = std::fs::read_to_string(&log).unwrap();
         assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
+    }
+
+    // oracle: #15556 — `gh secret set --help` / `gh variable set
+    // --help`: the value comes from stdin exactly when there is no
+    // --body and no real --env-file; `--env-file -` is stdin too.
+    #[test]
+    fn stdin_supplies_value_shapes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(stdin_supplies_value(&v(&["secret", "set", "NAME"])));
+        assert!(stdin_supplies_value(&v(&[
+            "-R", "o/r", "secret", "set", "NAME"
+        ])));
+        assert!(stdin_supplies_value(&v(&["variable", "set", "NAME"])));
+        assert!(stdin_supplies_value(&v(&[
+            "secret",
+            "set",
+            "NAME",
+            "--env-file",
+            "-"
+        ])));
+        assert!(!stdin_supplies_value(&v(&[
+            "secret", "set", "NAME", "--body", "x"
+        ])));
+        assert!(!stdin_supplies_value(&v(&[
+            "secret", "set", "NAME", "--body=x"
+        ])));
+        assert!(!stdin_supplies_value(&v(&["secret", "set", "-f", ".env"])));
+        assert!(!stdin_supplies_value(&v(&["secret", "list"])));
+        assert!(!stdin_supplies_value(&v(&["issue", "list"])));
+    }
+
+    // oracle: #15556's evidence — real gh stores an empty stdin
+    // read (or an empty --body) as an empty secret and exits 0, so
+    // fleet must refuse both before any attempt; a non-empty piped
+    // value, a non-empty body, and the interactive (terminal)
+    // prompt path are all left alone.
+    #[test]
+    fn empty_value_error_shapes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let set = v(&["secret", "set", "NAME", "--repo", "o/r"]);
+        assert!(empty_value_error(&set, Some(b"")).is_some());
+        assert!(empty_value_error(&set, Some(b"  \n")).is_some());
+        assert!(empty_value_error(&set, Some(b"the-value\n")).is_none());
+        assert!(empty_value_error(&set, None).is_none(), "terminal prompt");
+        let body = v(&["secret", "set", "NAME", "--body", ""]);
+        assert!(empty_value_error(&body, None).is_some());
+        let body_ok = v(&["secret", "set", "NAME", "--body=x"]);
+        assert!(empty_value_error(&body_ok, Some(b"")).is_none());
+        let list = v(&["secret", "list"]);
+        assert!(empty_value_error(&list, Some(b"")).is_none());
+    }
+
+    // oracle: #15556 at the exec boundary — a fake gh that reads
+    // its stdin dry and then fails with a rate limit under the
+    // first token (the failover shape): the second attempt must
+    // receive the SAME stdin bytes, not EOF. Before the replay,
+    // the second attempt logged an empty value and real gh stored
+    // it as an empty secret with exit 0.
+    #[test]
+    fn stdin_replayed_to_failover_attempt() {
+        let dir =
+            std::env::temp_dir().join(format!("fleet-gh-test-{}-stdin-replay", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stdin.log");
+        let script = dir.join("fake-gh");
+        let script_text = format!(
+            "#!/bin/sh\n\
+             v=$(cat)\n\
+             echo \"$GH_TOKEN|$v\" >> \"{log}\"\n\
+             if [ \"$GH_TOKEN\" = \"tok-personal\" ]; then\n\
+             \techo 'GraphQL: API rate limit exceeded' >&2\n\
+             \texit 1\n\
+             fi\n\
+             exit 0\n",
+            log = log.display()
+        );
+        // Same ETXTBSY guard as fake_gh: write a side file, place
+        // the executable with a separate `cp` process.
+        let source = dir.join("fake-gh.src");
+        std::fs::write(&source, script_text).unwrap();
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the fake gh");
+        assert!(copied.success(), "cp of the fake gh failed: {copied}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = script.to_string_lossy().to_string();
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["secret", "set", "NAME", "--repo", "o/r"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let sources = vec![
+            TokenSource::Personal,
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+        ];
+        let (code, _) = run_with_provider_capturing(
+            &mut provider,
+            &script,
+            &args,
+            &sources,
+            false,
+            false,
+            Some(b"the-value"),
+        );
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls, "tok-personal|the-value\ntok-app:developing-today|the-value\n",
+            "both attempts received the full stdin value: {calls:?}"
+        );
     }
 
     // oracle: the #8887 retry-safety rule — a write whose failure
@@ -2584,6 +4076,233 @@ mod tests {
         assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
     }
 
+    /// Fake repo-visibility for the credential-helper tests:
+    /// keyed on the fake token strings FakeProvider mints
+    /// (`tok-<label>`), so a test names exactly which identities
+    /// cannot see the target repo. Unlisted tokens are Visible;
+    /// `unknown` tokens answer Unknown (an inconclusive check).
+    struct FakeVisibility {
+        not_visible: Vec<String>,
+        unknown: Vec<String>,
+        calls: usize,
+    }
+
+    impl FakeVisibility {
+        fn new(not_visible: &[&str]) -> Self {
+            FakeVisibility {
+                not_visible: not_visible.iter().map(|s| s.to_string()).collect(),
+                unknown: Vec::new(),
+                calls: 0,
+            }
+        }
+    }
+
+    impl RepoVisibilityCheck for FakeVisibility {
+        fn visibility(&mut self, token: &str, _owner: &str, _repo: &str) -> RepoVisibility {
+            self.calls += 1;
+            if self.unknown.iter().any(|t| t == token) {
+                RepoVisibility::Unknown
+            } else if self.not_visible.iter().any(|t| t == token) {
+                RepoVisibility::NotVisible
+            } else {
+                RepoVisibility::Visible
+            }
+        }
+    }
+
+    // oracle: the git credential protocol as git sends it
+    // (gitcredentials(7)): key=value lines, a blank-line
+    // terminator, `path` present only with useHttpPath, and a
+    // `url` attribute standing in for the components.
+    #[test]
+    fn cred_query_parse_and_repo() {
+        let q = parse_cred_query(
+            b"protocol=https\nhost=github.com\npath=dezren39/hatch-personal.git\n\n",
+        );
+        assert!(q.is_github());
+        assert_eq!(
+            cred_repo(&q),
+            Some(("dezren39".to_string(), "hatch-personal".to_string()))
+        );
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\n\n");
+        assert!(q.is_github());
+        assert_eq!(cred_repo(&q), None);
+        let q = parse_cred_query(b"url=https://github.com/developing-today/code.git\n\n");
+        assert!(q.is_github());
+        assert_eq!(
+            cred_repo(&q),
+            Some(("developing-today".to_string(), "code".to_string()))
+        );
+        let q = parse_cred_query(b"protocol=https\nhost=example.com\npath=o/r\n\n");
+        assert!(!q.is_github());
+        // CRLF line endings and a missing blank-line terminator.
+        let q = parse_cred_query(b"protocol=https\r\nhost=github.com\r\npath=o/r");
+        assert_eq!(cred_repo(&q), Some(("o".to_string(), "r".to_string())));
+        // A path that is not a plain owner/repo is not checkable.
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\npath=ow ner/re po\n\n");
+        assert_eq!(cred_repo(&q), None);
+    }
+
+    // oracle: code#16577's invariant — a credential that cannot
+    // see the target repo is never the one offered while a later
+    // candidate can see it. The rotation order is the fleet's
+    // standing one (App installations first, personal last).
+    #[test]
+    fn git_credential_skips_credential_that_cannot_see_the_repo() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        // The developing-today installation token cannot see
+        // dezren39/hatch-personal (the laptop failure); the
+        // dezren39 installation token can.
+        let mut visibility = FakeVisibility::new(&["tok-app:developing-today"]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::app(GhApp::Fleet, "dezren39"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Chosen { label, token } => {
+                assert_eq!(label, "app:dezren39");
+                assert_eq!(token, "tok-app:dezren39");
+            }
+            _ => panic!("expected the dezren39 installation to be chosen"),
+        }
+        assert_eq!(
+            visibility.calls, 2,
+            "checked until the first that can see it"
+        );
+    }
+
+    // oracle: code#16577 — without a repo in the query there is
+    // nothing to check: the first resolvable credential is
+    // offered and the visibility check never runs.
+    #[test]
+    fn git_credential_without_repo_offers_first_resolvable() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        match select_credential(&mut provider, &mut visibility, &sources, None, false) {
+            CredSelection::Chosen { label, .. } => {
+                assert_eq!(label, "app:developing-today")
+            }
+            _ => panic!("expected the first source to be chosen"),
+        }
+        assert_eq!(visibility.calls, 0);
+    }
+
+    // oracle: code#16577 — an inconclusive visibility check
+    // (transport error, rate limit) never skips a credential:
+    // the candidate is offered on the evidence available.
+    #[test]
+    fn git_credential_inconclusive_check_never_skips() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        visibility.unknown = vec!["tok-app:developing-today".to_string()];
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Chosen { label, .. } => {
+                assert_eq!(label, "app:developing-today")
+            }
+            _ => panic!("expected the first source to be offered despite the inconclusive check"),
+        }
+    }
+
+    // oracle: code#16577 — when every candidate provably cannot
+    // see the repo, the first resolvable credential is the
+    // fallback answer, so git surfaces the refusal itself
+    // instead of the helper inventing an error.
+    #[test]
+    fn git_credential_all_invisible_falls_back_to_first_resolvable() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&["tok-app:developing-today", "tok-personal"]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Fallback { label, token } => {
+                assert_eq!(label, "app:developing-today");
+                assert_eq!(token, "tok-app:developing-today");
+            }
+            _ => panic!("expected the fallback answer"),
+        }
+    }
+
+    // oracle: code#16577 — a source that cannot even resolve is
+    // skipped like the passthrough runner skips it; when none
+    // resolve, the selection is Unresolved with the provider
+    // errors, never an invented credential.
+    #[test]
+    fn git_credential_unresolved_when_no_source_resolves() {
+        let mut provider = FakeProvider {
+            fail_sources: vec!["app:developing-today".to_string(), "personal".to_string()],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Unresolved { errors } => assert_eq!(errors.len(), 2),
+            _ => panic!("expected Unresolved"),
+        }
+    }
+
+    // oracle: the credential answer's shape — the chosen token
+    // travels as the password under `x-access-token`, with the
+    // query's protocol and host echoed, blank-line terminated
+    // (gitcredentials(7); the username shape is upstream gh's
+    // environment-token answer).
+    #[test]
+    fn cred_answer_shape() {
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\npath=o/r\n\n");
+        assert_eq!(
+            cred_answer(&q, "tok-fake"),
+            "protocol=https\nhost=github.com\nusername=x-access-token\npassword=tok-fake\n\n"
+        );
+    }
+
     // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING
     // `--raw` is fleet's and is stripped; `--raw` anywhere else
     // is gh's own argument and must not trigger the bypass;
@@ -2623,6 +4342,55 @@ mod tests {
             format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
+    }
+
+    // oracle: #10311 (d) — a missing `gh` binary must name the
+    // remedy (install gh, or set FLEET_GH_BIN); the spawn-error
+    // path returns exit 3 with no attempt made.
+    #[test]
+    fn missing_gh_error_names_the_remedy() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let msg = spawn_failure_message("gh", &e);
+        assert!(msg.contains("install gh"), "no install remedy: {msg}");
+        assert!(
+            msg.contains("FLEET_GH_BIN"),
+            "no FLEET_GH_BIN remedy: {msg}"
+        );
+        assert!(msg.contains("'gh'"), "binary name lost: {msg}");
+    }
+
+    #[test]
+    fn missing_gh_spawn_returns_unresolved() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let sources = vec![TokenSource::Personal];
+        let code = run_with_provider(
+            &mut provider,
+            "/nonexistent/fleet-gh-test-gh",
+            &args,
+            &sources,
+            false,
+        );
+        assert_eq!(code, EXIT_UNRESOLVED, "spawn failure must exit 3");
+    }
+
+    // oracle: #10311 (d) — the no-credentials path prints each
+    // distinct provider error once, first-seen order.
+    #[test]
+    fn provider_errors_printed_once() {
+        let errors = vec![
+            "broker unreachable".to_string(),
+            "broker unreachable".to_string(),
+            "cache daemon down".to_string(),
+            "broker unreachable".to_string(),
+        ];
+        assert_eq!(
+            distinct_errors(&errors),
+            vec!["broker unreachable", "cache daemon down"]
+        );
+        assert!(distinct_errors(&[]).is_empty());
     }
 }
 

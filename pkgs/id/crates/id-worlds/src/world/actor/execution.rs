@@ -12,7 +12,12 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap};
 use tokio::sync::oneshot;
 
+mod delivery;
+mod moderation;
 mod portal;
+
+// Re-exported so `execution::DeliveryOutcome` paths keep working (#16255 slice 8).
+pub(in crate::world::actor) use delivery::DeliveryOutcome;
 
 impl WorldActor {
     /// Durably record `entry`, or turn the world read-only.
@@ -140,6 +145,7 @@ impl WorldActor {
             JoinCapability,
             Vec<u8>,
             Option<SessionId>,
+            Option<String>,
             Option<serde_json::Value>,
             oneshot::Sender<Result<WorldEvent>>,
         );
@@ -150,17 +156,25 @@ impl WorldActor {
                     token,
                     input,
                     session_id,
+                    caller_account,
                     device_input,
                     signed_move: None,
                     reply,
-                } => Some((token, input, session_id, device_input, reply)),
+                } => Some((
+                    token,
+                    input,
+                    session_id,
+                    caller_account,
+                    device_input,
+                    reply,
+                )),
                 // The run loop only drains unsigned Inputs into a batch.
                 _ => None,
             })
             .collect();
         if let Err(error) = self.check_writable() {
             let message = format!("{error:#}");
-            for (_, _, _, _, reply) in items {
+            for (_, _, _, _, _, reply) in items {
                 let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
             }
             return;
@@ -173,7 +187,9 @@ impl WorldActor {
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_spends: HashMap<u64, u32> = HashMap::new();
         let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
-        while let Some((token, input, session_id, device_input, reply)) = items.pop_front() {
+        while let Some((token, input, session_id, caller_account, device_input, reply)) =
+            items.pop_front()
+        {
             let sequence = self.core.sequence + staged.len() as u64 + 1;
             let candidate =
                 match self
@@ -202,12 +218,9 @@ impl WorldActor {
             }
             self.acting = Some(candidate.participant_id);
             self.acting_session = session_id;
+            self.acting_account = caller_account;
             self.acting_device_input = device_input;
-            match self
-                .program
-                .update(&candidate)
-                .and_then(|()| program_records(self.program.as_mut()))
-            {
+            match self.update_for_caller(&candidate) {
                 Ok(records) => {
                     self.core
                         .note_staged_spend(candidate.participant_id, &mut staged_spends);
@@ -218,8 +231,21 @@ impl WorldActor {
                     });
                 }
                 Err(error) => {
-                    self.program_healthy = false;
-                    failed = Some((reply, error.context("world program rejected input")));
+                    if super::is_fuel_rate_refusal(&error) {
+                        // Recoverable admission refusal (#1067): the
+                        // program never ran and stays healthy, so the
+                        // failing input is answered with the refusal and
+                        // the inputs after it go through the single
+                        // path, where the same refusal — not an
+                        // unavailable program — answers them too.
+                        failed = Some((
+                            reply,
+                            error.context("world program refused input at its fuel rate"),
+                        ));
+                    } else {
+                        self.program_healthy = false;
+                        failed = Some((reply, error.context("world program rejected input")));
+                    }
                     break;
                 }
             }
@@ -269,11 +295,12 @@ impl WorldActor {
         }
         // Whatever the batch did not stage goes through the single-command
         // path, in order, with its semantics untouched.
-        for (token, input, session_id, device_input, reply) in items {
+        for (token, input, session_id, caller_account, device_input, reply) in items {
             self.handle(WorldCommand::Input {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move: None,
                 reply,
@@ -687,95 +714,9 @@ impl WorldActor {
     pub(super) fn republished(&mut self, records: Records, sequence: u64) {
         publish_records(&self.records_sender, sequence, records);
     }
+}
 
-    /// Deliver a host-originated event to the program: journal it first is
-    /// impossible (the program must accept it for the journal to be true), so
-    /// the order is update, then journal, exactly like participant input.
-    /// Returns whether the program accepted the event and it was journaled.
-    /// A read-only replica never delivers: host events are authoritative
-    /// program effects and must not originate from a replica.
-    pub(super) async fn deliver(&mut self, text: String) -> bool {
-        self.deliver_system(text, None).await
-    }
-
-    /// Deliver a form response and durably spend the authenticated submitter's
-    /// use budget only after the system event was accepted and journaled.
-    pub(super) async fn deliver_form_result(
-        &mut self,
-        text: String,
-        participant_id: Option<u64>,
-    ) -> bool {
-        self.deliver_system(text, participant_id).await
-    }
-
-    pub(super) async fn deliver_system(
-        &mut self,
-        text: String,
-        participant_id: Option<u64>,
-    ) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if !self.program_healthy || self.storage_failed {
-            return false;
-        }
-        if text.len() > crate::world_caps::MAX_EVENT_BYTES {
-            tracing::error!("world event exceeds the delivery bound; dropped");
-            return false;
-        }
-        let event = WorldEvent {
-            sequence: 0,
-            participant_id: 0,
-            kind: WorldEventKind::System { event: text },
-        };
-        if let Err(error) = self.program.update(&event) {
-            self.program_healthy = false;
-            tracing::error!("world program rejected a host event: {error:#}");
-            return false;
-        }
-        match program_records(self.program.as_mut()) {
-            Ok(records) => {
-                let records = records.unwrap_or_default();
-                publish_records(&self.records_sender, self.core.sequence, records);
-            }
-            Err(error) => {
-                self.program_healthy = false;
-                tracing::error!("world program records failed: {error:#}");
-                return false;
-            }
-        }
-        let journaled = self
-            .persist(JournalEntry::System {
-                event: event.clone(),
-            })
-            .is_ok();
-        if journaled {
-            if let Some(participant_id) = participant_id {
-                self.core.spend(participant_id);
-            }
-            self.core.record_admin_history(event);
-            self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
-        }
-        let _ = self.view_changed.send(self.core.sequence);
-        journaled
-    }
-
-    /// Pending forms intentionally are not durable. On reopen, tell a program
-    /// that had form authority to clear stale views and re-present them with
-    /// fresh tokens; otherwise it could leave an unanswerable form on screen.
-    pub(super) async fn invalidate_restored_form_presentations(&mut self) {
-        if !self.core.ledger.is_granted("form.result") {
-            return;
-        }
-        let event = serde_json::json!({
-            "cap": "form.result",
-            "event": "invalidated",
-            "reason": "restarted",
-        })
-        .to_string();
-        let _ = self.deliver(event).await;
-    }
-
+impl WorldActor {
     /// Recompute the program's `wants` and serve the delta: new subscriptions
     /// (armed or refused), new requests (executed, result delivered). Passes
     /// repeat while the program reacts to delivered results, so a chain of
@@ -788,6 +729,10 @@ impl WorldActor {
         if self.read_only || !self.holds_live_do_lease() {
             return;
         }
+        // Capability results a fuel-rate refusal queued (see
+        // `deliver_result`) go first, so the program reacts to them
+        // in this same pass.
+        self.retry_pending_results().await;
         for _ in 0..64 {
             if !self.program_healthy || self.storage_failed {
                 break;
@@ -864,7 +809,7 @@ impl WorldActor {
                         &request.id,
                         Err(CapError::actor_denied_with("restarted")),
                     );
-                    self.deliver(refusal).await;
+                    self.deliver_result(refusal).await;
                     continue;
                 }
                 if crate::world_caps::PROVIDER_REGISTRY
@@ -882,13 +827,13 @@ impl WorldActor {
                         Ok(()) => {}
                         Err(error) => {
                             let refusal = crate::world_caps::result_event(&request.id, Err(error));
-                            self.deliver(refusal).await;
+                            self.deliver_result(refusal).await;
                         }
                     }
                     continue;
                 }
                 let outcome = self.execute(&request);
-                self.deliver(crate::world_caps::result_event(&request.id, outcome))
+                self.deliver_result(crate::world_caps::result_event(&request.id, outcome))
                     .await;
             }
         }
@@ -949,7 +894,7 @@ impl WorldActor {
                     &completion.guest_request_id,
                     completion.outcome,
                 );
-                self.deliver(event).await;
+                self.deliver_result(event).await;
             }
             self.after_change().await;
         }
@@ -1133,9 +1078,19 @@ impl WorldActor {
     /// fire is delivered as a tick is, and its schedule is consumed only after
     /// that delivery is journaled. A refused fire, or one that could not be
     /// journaled, leaves its schedule pending, so the next run delivers it.
-    /// A read-only replica never fires: schedules are writer authority.
+    /// A fuel-rate refusal backs the next attempt off until the window
+    /// rolls (see `fuel_retry_not_before`): without the backoff the run
+    /// loop would retry the same refused fire on every pass until
+    /// rollover. A read-only replica never fires: schedules are writer
+    /// authority.
     pub(crate) async fn fire_schedules(&mut self) {
         if self.read_only || !self.holds_live_do_lease() {
+            return;
+        }
+        if self
+            .fuel_retry_not_before
+            .is_some_and(|deadline| self.core.clock().now_instant() < deadline)
+        {
             return;
         }
         let now = self.core.clock().now_ms();
@@ -1154,7 +1109,14 @@ impl WorldActor {
                 continue;
             };
             let delivered = match &schedule.target {
-                None => self.deliver(schedule_fired_event(&id, late)).await,
+                None => match self.deliver(schedule_fired_event(&id, late)).await {
+                    DeliveryOutcome::Delivered => true,
+                    DeliveryOutcome::FuelRefused => {
+                        self.note_fuel_refusal();
+                        false
+                    }
+                    DeliveryOutcome::Failed => false,
+                },
                 Some(target) => {
                     // Cross-world (#1355 part 2): consent is re-checked at
                     // fire time — a grant revoked or an isolation change
@@ -1494,6 +1456,7 @@ impl WorldActor {
         &mut self,
         token: Option<JoinCapability>,
         session_id: Option<SessionId>,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
         let participant_id = if let Some(token) = token {
@@ -1580,8 +1543,11 @@ impl WorldActor {
         );
         self.acting = participant_id;
         self.acting_session = participant_id.and(session_id);
+        self.acting_account = caller_account;
         ensure!(
-            self.deliver_form_result(event, participant_id).await,
+            self.deliver_form_result(event, participant_id)
+                .await
+                .delivered(),
             "form.result event was not delivered"
         );
         if valid {
@@ -1824,6 +1790,7 @@ impl WorldActor {
             .ok_or(CapError::bad_args())?;
         let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
         let hash = super::super::blob_id(&bytes);
+        self.check_blob_boundary()?;
         if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
             tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
@@ -1857,6 +1824,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         let data = match self.core.blobs.get(hash) {
             None => serde_json::Value::Null,
             Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
@@ -1878,6 +1846,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         if !self.core.blobs.contains_key(hash) {
             return Ok(serde_json::json!({"hash": hash, "deleted": false}));
         }
@@ -1891,6 +1860,12 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    fn check_blob_boundary(&self) -> Result<(), CapError> {
+        self.core
+            .check_blob_boundary_for(self.acting)
+            .map_err(|error| CapError::bad_args_with(format!("{error:#}")))
     }
 
     /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
@@ -2032,6 +2007,7 @@ impl WorldActor {
         if !self
             .deliver(schedule_fired_event_from(id, late, Some(source)))
             .await
+            .delivered()
         {
             return false;
         }
@@ -2225,176 +2201,5 @@ impl WorldActor {
             self.deliver(presence_event(participant, &name, now_present))
                 .await;
         }
-    }
-
-    pub(super) fn require_moderation(&self, authority: &Authority, what: &str) -> Result<()> {
-        let directory = self.core.directory();
-        let allowed = match authority {
-            Authority::Admin => true,
-            Authority::Signed(key) => directory
-                .account_for_key(key)
-                .is_some_and(|account| directory.is_moderator(&account)),
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err(crate::directory::Refusal::Forbidden(format!(
-                "only an admin or a moderator {what}"
-            ))
-            .into())
-        }
-    }
-
-    pub(super) fn set_isolation(
-        &mut self,
-        authority: &Authority,
-        isolation: Isolation,
-    ) -> Result<Isolation> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes isolation")?;
-        self.persist(JournalEntry::Isolation { isolation })?;
-        self.core.isolation = isolation;
-        Ok(isolation)
-    }
-
-    pub(super) fn set_cross_world_write(
-        &mut self,
-        authority: &Authority,
-        enabled: bool,
-    ) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes cross-world writes")?;
-        if !enabled && self.core.cross_world_forced && *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "the admin forced cross-world writes on; only the admin can turn them off"
-                    .to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::CrossWorldWrite { enabled })?;
-        self.core.cross_world_write = enabled;
-        if !enabled {
-            self.core.cross_world_forced = false;
-        }
-        Ok(self.core.policy())
-    }
-
-    pub(super) fn force_cross_world_write(&mut self, authority: &Authority) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        if *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only the admin forces cross-world writes".to_owned(),
-            )
-            .into());
-        }
-        if self.core.isolation == Isolation::Isolated {
-            return Err(crate::directory::Refusal::Forbidden(
-                "an isolated world cannot be forced to accept cross-world writes; unisolate it first"
-                    .to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::CrossWorldWriteForced)?;
-        self.core.cross_world_write = true;
-        self.core.cross_world_forced = true;
-        Ok(self.core.policy())
-    }
-
-    pub(super) fn set_file_scope(
-        &mut self,
-        authority: &Authority,
-        scope: FileScope,
-        write_override: Option<bool>,
-    ) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes the file scope")?;
-        if write_override.is_some() && *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only the admin sets the file write override".to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::FileScope { scope })?;
-        self.core.file_scope = scope;
-        if let Some(enabled) = write_override {
-            self.persist(JournalEntry::FileWriteOverride { enabled })?;
-            self.core.file_write_override = enabled;
-        }
-        Ok(self.core.policy())
-    }
-
-    /// Replace the world's capability ceiling. It takes effect now: uses and
-    /// subscriptions the ceiling excludes are refused from here on. Grants are
-    /// kept, so lifting the ceiling again restores them.
-    pub(super) fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
-        self.check_writable()?;
-        crate::world_caps::validate_ceiling_names(&ceiling)?;
-        let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
-        self.persist(JournalEntry::CapsCeiling {
-            ceiling: ceiling.iter().cloned().collect(),
-        })?;
-        self.core.caps_ceiling = ceiling;
-        self.core.sync_ledger_ceiling();
-        self.reconcile_subscriptions();
-        self.caps_report()
-    }
-
-    /// Re-check subscriptions after an authority change. An armed one that is
-    /// no longer granted is dropped and its tick disarmed. Every refused one is
-    /// dropped too, so the next pass decides it again: a refusal that still
-    /// holds is announced again, and one the change now grants is armed.
-    pub(super) fn reconcile_subscriptions(&mut self) {
-        let ledger = &self.core.ledger;
-        let refused = &self.denied_subs;
-        self.active_subs
-            .retain(|sub| !refused.contains(&sub.spec()) && ledger.is_granted(sub.cap()));
-        self.denied_subs.clear();
-        let active = &self.active_subs;
-        self.ticks
-            .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
-        // Location watches disarm alongside ticks (#2341, PR #8643
-        // Codex P1): a watch whose capability authority was removed
-        // must stop delivering readings, not merely lose its
-        // subscription record.
-        self.loc_watches
-            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
-    }
-
-    /// The capability report an admin sees.
-    pub(super) fn caps_report(&mut self) -> Result<CapsReport> {
-        let requested = match self.program.wants() {
-            Ok(Some(text)) => crate::world_caps::parse_wants(&text)
-                .map(|wants| wants.caps().into_iter().collect::<Vec<_>>())
-                .unwrap_or_default(),
-            Ok(None) => Vec::new(),
-            Err(_) => Vec::new(),
-        };
-        let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-        let effective: Vec<String> = self.core.ledger.effective().into_iter().collect();
-        let missing: Vec<String> = requested
-            .iter()
-            .filter(|cap| !effective.contains(cap))
-            .cloned()
-            .collect();
-        Ok(CapsReport {
-            granted,
-            requested,
-            missing,
-            usage: self.core.ledger.usage().clone(),
-            policy: if self.core.ledger.grant_on_use() {
-                "grant-on-use"
-            } else {
-                "deny"
-            }
-            .to_owned(),
-            catalog: crate::world_caps::PROVIDER_REGISTRY
-                .ordered_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            ceiling: self.core.caps_ceiling.iter().cloned().collect(),
-            effective,
-            view_failures: self.view_failures,
-        })
     }
 }

@@ -328,7 +328,11 @@ async fn main() -> Result<()> {
                 world_checkpoint_every,
                 world_max_open,
                 world_max_sessions,
+                world_max_per_account,
+                world_storage_max_per_account,
                 world_idle_secs,
+                world_host,
+                world_partition,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -380,7 +384,11 @@ async fn main() -> Result<()> {
                 world_checkpoint_every,
                 world_max_open,
                 world_max_sessions,
+                world_max_per_account,
+                world_storage_max_per_account,
                 world_idle_secs,
+                world_host,
+                world_partition,
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
@@ -445,9 +453,20 @@ async fn main() -> Result<()> {
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
+        Some(Command::Nav(args)) => id::commands::cmd_nav(&args),
+        Some(Command::Talk { json, command }) => {
+            id::commands::cmd_talk(cli.event_store, json, command).await
+        }
+        Some(Command::Hosted { json, command }) => {
+            id::commands::cmd_hosted(cli.event_store, json, command).await
+        }
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }
+        Some(Command::Compact {
+            json,
+            retain_recent,
+        }) => id::commands::cmd_compact(cli.event_store, json, retain_recent).await,
         Some(Command::Publish {
             world,
             listen,
@@ -473,6 +492,7 @@ async fn main() -> Result<()> {
         #[cfg(not(feature = "sandbox"))]
         Some(Command::MatchAudit(_)) => anyhow::bail!("this build has no sandbox support"),
         Some(Command::Walk(command)) => id::commands::cmd_walk(command).await,
+        Some(Command::Host(command)) => id::commands::cmd_host(command).await,
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]

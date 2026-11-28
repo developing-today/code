@@ -262,6 +262,7 @@ describe("the summary", () => {
     census: { hands: [{}, {}, {}], reviews: [{}], other: [{}, {}, {}, {}, {}] },
     asks: [{ status: "answered" }, { status: "working" }, { status: "done" }, { status: "queued" }],
     questionCount: { total: 7, sets: 2 },
+    pipeline: { unreadInstructions: 3 },
   };
 
   test("counts and the top lines, with the same needs sum as the app's badge", () => {
@@ -279,6 +280,8 @@ describe("the summary", () => {
       next: { count: 2, top: ["N1", "N2"] },
       // 7 questions + (3 hands + 2 sessions waiting) + 1 review; "other" is the fleet's to decide.
       needs: { total: 13, questions: 7, hands: 5, reviews: 1 },
+      // The pipeline section's count, carried through whole (#14377).
+      messages: { unreadInstructions: 3 },
       asks: { answered: 1, waiting: 2 },
     });
   });
@@ -290,6 +293,7 @@ describe("the summary", () => {
       now: { count: 0, top: [] },
       next: { count: 0, top: [] },
       needs: { total: 0, questions: 0, hands: 0, reviews: 0 },
+      messages: { unreadInstructions: 0 },
       asks: { answered: 0, waiting: 0 },
     });
     const long = summary({ board: { counts: {}, now: [{ title: "x".repeat(300), step: "y".repeat(300) }] } }, 1) as {
@@ -314,9 +318,12 @@ describe("over HTTP, without the sign-in", () => {
           "asks",
           "questionCount",
           "questions",
+          "questionSets",
           "prs",
           "priorities",
+          "done",
           "agents",
+          "pipeline",
           "services",
           "more",
         ].map((name) => [
@@ -330,7 +337,9 @@ describe("over HTTP, without the sign-in", () => {
                 ? { counts: { claimed: 2, queued: 1 }, now: [{ title: "T" }], next: [] }
                 : name === "questionCount"
                   ? { total: 3 }
-                  : [];
+                  : name === "pipeline"
+                    ? { unreadInstructions: 2 }
+                    : [];
             },
           },
         ]),
@@ -400,20 +409,21 @@ describe("over HTTP, without the sign-in", () => {
         now: { count: 2, top: [{ title: "T", step: "" }] },
         next: { count: 1, top: [] },
         needs: { total: 3, questions: 3, hands: 0, reviews: 0 },
+        messages: { unreadInstructions: 2 },
         asks: { answered: 0, waiting: 0 },
       });
       // Only the sections the summary is built from were read.
-      expect([...w.reads].sort()).toEqual(["asks", "board", "census", "questionCount", "sessions"]);
+      expect([...w.reads].sort()).toEqual(["asks", "board", "census", "pipeline", "questionCount", "sessions"]);
       // Read again at once: served from memory.
       await w.read(token);
-      expect(w.reads).toHaveLength(5);
+      expect(w.reads).toHaveLength(6);
       // A widget's read does not count as someone looking: the loop stays idle.
       w.now.t += 60_000;
       w.docs.tick();
-      expect(w.reads).toHaveLength(5);
+      expect(w.reads).toHaveLength(6);
       // The next read, after the sections have aged, reads them again and waits for them.
       expect(((await (await w.read(token)).json()) as { at: string }).at).toBe(new Date(w.now.t).toISOString());
-      expect(w.reads).toHaveLength(10);
+      expect(w.reads).toHaveLength(12);
     } finally {
       w.done();
     }

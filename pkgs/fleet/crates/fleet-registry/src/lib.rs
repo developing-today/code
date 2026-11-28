@@ -87,6 +87,16 @@ pub enum Capability {
     /// runner-side agent, and the egress helper. A working-seat
     /// client surface, so full only.
     Actions,
+    /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
+    Orgs,
+    /// `fleet kv …` — identity-scoped key/value bytes in the host-local
+    /// store (code#13314). A working-seat client surface, so full only.
+    Kv,
+    /// `fleet id …` — the iroh-native ID transport surface (design
+    /// #10391 pass 2): session key lifecycle + stamping first
+    /// (code#15430, §4.1); proxy, initiator and serve-ws verbs land
+    /// as later slices of the same design. Full only.
+    Id,
 }
 
 impl Capability {
@@ -115,6 +125,9 @@ impl Capability {
             Capability::Laptop => "laptop",
             Capability::Cert => "cert",
             Capability::Actions => "actions",
+            Capability::Orgs => "orgs",
+            Capability::Kv => "kv",
+            Capability::Id => "id",
         }
     }
 
@@ -142,6 +155,9 @@ impl Capability {
         Capability::Laptop,
         Capability::Cert,
         Capability::Actions,
+        Capability::Orgs,
+        Capability::Kv,
+        Capability::Id,
     ];
 }
 
@@ -182,6 +198,28 @@ pub fn serve_capabilities() -> CapabilitySet {
 /// The `fleet-connect` build: the proxy client and nothing else (§2).
 pub fn connect_capabilities() -> CapabilitySet {
     capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice])
+}
+
+/// Versioned Python CLI compatibility contract (developing-today/code#16088).
+///
+/// `pkgs/fleet/laptop-agent.py` is a strict compatibility selector: it execs
+/// `<fleet> laptop-agent …` only when `fleet capabilities` advertises this
+/// marker AND the laptop-agent domain is available. Advertising it promises
+/// the entire legacy Python CLI's semantics — health, exec, exec-batch, run
+/// (including accepted `--timeout`), poll, kill, jobs, fetch with `--chunk`
+/// and resume, argument boundaries, stdio/exit conventions, and the
+/// detached-job ownership/cursors — never just verb names.
+pub const LAPTOP_AGENT_PYTHON_CLI_CONTRACT: &str = "laptop-agent-python-cli/v1";
+
+/// The `compatibility_contracts` list for `fleet capabilities`: the Python
+/// CLI contract when the laptop-agent domain is available to this
+/// invocation, empty otherwise. Availability alone never advertises.
+pub fn compatibility_contracts_for(laptop_agent_available: bool) -> &'static [&'static str] {
+    if laptop_agent_available {
+        &[LAPTOP_AGENT_PYTHON_CLI_CONTRACT]
+    } else {
+        &[]
+    }
 }
 
 /// A shipped build variant (§2). The variant is a property of the
@@ -269,12 +307,14 @@ pub const DOMAINS: &[Domain] = &[
             "validate",
             "enqueue",
             "list",
+            "meta",
             "claim",
             "release",
             "lane",
             "bind",
             "heartbeat",
             "checkpoint",
+            "reprioritize",
             "park",
             "wake",
             "block",
@@ -282,6 +322,7 @@ pub const DOMAINS: &[Domain] = &[
             "dep-recheck",
             "quarantine-recheck",
             "repair",
+            "resolution-backfill",
             "cancel",
             "revive",
             "fail",
@@ -289,7 +330,11 @@ pub const DOMAINS: &[Domain] = &[
             "verify-disposition",
             "timeline",
             "history",
+            "staleness",
+            "needs-user",
             "show",
+            "note",
+            "link",
             "models",
             "health",
             "signal",
@@ -316,7 +361,7 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put/copy).",
         capabilities: &[
             Capability::ProxyServe,
             Capability::ProxyConnect,
@@ -324,7 +369,9 @@ pub const DOMAINS: &[Domain] = &[
         ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh", "splice", "get", "put"],
+        subcommands: &[
+            "serve", "connect", "init", "ssh", "splice", "get", "put", "copy",
+        ],
     },
     Domain {
         name: "dispatch",
@@ -356,7 +403,20 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Gh],
         primary: Capability::Gh,
         aliases: &[],
-        subcommands: &["tiers", "cache-serve", "cache-status", "closures"],
+        subcommands: &[
+            "tiers",
+            "cache-serve",
+            "cache-status",
+            "closures",
+            "sync-labels",
+            "sync-view",
+            "sync-comment",
+            "sync-issue-create",
+            "sync-issue-get",
+            "sync-labels-add",
+            "sync-label-ensure",
+            "sync-issue-close",
+        ],
     },
     Domain {
         name: "bridge",
@@ -367,6 +427,44 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &[
             "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
         ],
+    },
+    Domain {
+        name: "orgs",
+        summary: "Turso-backed GitHub org, App and installation registry.",
+        capabilities: &[Capability::Orgs],
+        primary: Capability::Orgs,
+        aliases: &[],
+        subcommands: &["list", "sync"],
+    },
+    Domain {
+        name: "kv",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override, rebase and revert, per --namespace; snapshot and restore back up the whole host store. --global pins get, set, list and delete to the central store (#13316): authoritative-head reads and compare-and-swap writes; sync sweeps local intents to central, and namespace/blob administer the central plane.",
+        capabilities: &[Capability::Kv],
+        primary: Capability::Kv,
+        aliases: &[],
+        subcommands: &[
+            "get",
+            "set",
+            "list",
+            "delete",
+            "clear-override",
+            "rebase",
+            "revert",
+            "sync",
+            "backup",
+            "snapshot",
+            "restore",
+            "namespace",
+            "blob",
+        ],
+    },
+    Domain {
+        name: "id",
+        summary: "Iroh-native ID transport (design #10391 pass 2): session-key mints this session's NodeId stamp (FLEET_ID_NODE_ID / FLEET_ID_SECRET, §4.1); proxy-mode reports the §4.2 mode rule and proxy moves bytes to an ID peer (modes 1-2; mode 3 is the initiator surface).",
+        capabilities: &[Capability::Id],
+        primary: Capability::Id,
+        aliases: &[],
+        subcommands: &["session-key", "proxy-mode", "proxy"],
     },
     Domain {
         name: "agent",
@@ -390,7 +488,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &["search", "get-chunk", "serve"],
+        subcommands: &["search", "get-chunk", "serve", "backup"],
     },
     Domain {
         name: "cert",
@@ -416,7 +514,16 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopAgent],
         primary: Capability::LaptopAgent,
         aliases: &["laptop-agent"],
-        subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
+        subcommands: &[
+            "health",
+            "jobs",
+            "kill",
+            "exec-batch",
+            "exec",
+            "run",
+            "poll",
+            "fetch",
+        ],
     },
     Domain {
         name: "commander",
@@ -440,7 +547,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopSsh],
         primary: Capability::LaptopSsh,
         aliases: &[],
-        subcommands: &["health", "exec", "close"],
+        subcommands: &["health", "sessions", "sweep", "exec", "close"],
     },
     Domain {
         name: "laptop",
@@ -449,6 +556,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Laptop,
         aliases: &[],
         subcommands: &["tiers", "exec"],
+    },
+    Domain {
+        name: "host",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &[],
     },
     Domain {
         name: "actions",

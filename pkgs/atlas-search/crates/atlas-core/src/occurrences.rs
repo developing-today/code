@@ -15,9 +15,12 @@
 
 use serde_json::Value as Json;
 
+use rusqlite::Connection;
+
 use crate::error::{Error, Result};
 use crate::filters::Sensitivity;
 use crate::shards::{ShardSet, Tier, TierCeiling};
+use crate::source_registry::resolve_source;
 use crate::types::{Stmt, Value};
 
 /// One recorded place a chunk's content was found (#3125 rule 3).
@@ -37,13 +40,21 @@ pub struct ChunkOccurrence {
     pub span_end: i64,
     /// When the aggregator observed the content.
     pub observed_at: String,
+    /// When the lookup ran with a source registry attached
+    /// (#3125 slice 6) and `source` is registered under a root,
+    /// that root's id. `None` when no registry was attached or the
+    /// locator is unregistered — the occurrence is then unattributed,
+    /// never misattributed.
+    pub root_id: Option<String>,
 }
 
 impl ChunkOccurrence {
     /// The wire form `get-chunk` attaches as one `occurrences`
-    /// array element.
+    /// array element. `root_id` is present only when the lookup
+    /// attributed the occurrence to a registered root, so the
+    /// no-registry wire shape is unchanged.
     pub fn to_json(&self) -> Json {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "shard": self.shard,
             "tier": self.tier.name(),
             "canonical_hash": self.canonical_hash,
@@ -51,7 +62,11 @@ impl ChunkOccurrence {
             "span_start": self.span_start,
             "span_end": self.span_end,
             "observed_at": self.observed_at,
-        })
+        });
+        if let Some(root_id) = &self.root_id {
+            v["root_id"] = Json::String(root_id.clone());
+        }
+        v
     }
 }
 
@@ -70,11 +85,23 @@ impl ChunkOccurrence {
 /// physical shard can contain chunks classified above the caller's
 /// ceiling (promotion names the shard from unit.sensitivity but
 /// writes each chunk's effective sensitivity separately).
+///
+/// `registry` is the phase-4-catalog-side source registry (#3125
+/// slice 6: `source_registry`'s tables in whichever database the
+/// caller opens). When attached, each occurrence's `source` locator
+/// is resolved to its registered root and carried as `root_id`;
+/// unregistered locators stay unattributed (`None`), never guessed.
+/// `None` keeps the pre-registry behavior exactly: unattributed rows
+/// and no wire change. A registry that answers with a genuine
+/// failure fails the lookup — same fail-closed philosophy as a
+/// failing shard: a partial attribution presented as complete would
+/// be as wrong as a partial search answer.
 pub fn lookup_by_hash(
     set: &ShardSet,
     tier_ceiling: TierCeiling,
     caller_ceiling: Sensitivity,
     canonical_hash: &str,
+    registry: Option<&Connection>,
 ) -> Result<Vec<ChunkOccurrence>> {
     let mut out = Vec::new();
     for shard in set.select(tier_ceiling, None)? {
@@ -118,8 +145,9 @@ pub fn lookup_by_hash(
                 )));
             };
             // Fail-closed: unrecognized sensitivity -> SecretBearing (excluded by caller_ceiling)
+            // Published occurrence labels dual-read canonical spellings (#13506 stage 2).
             let chunk_sensitivity =
-                Sensitivity::from_name(chunk_sens).unwrap_or(Sensitivity::SecretBearing);
+                Sensitivity::from_published_name(chunk_sens).unwrap_or(Sensitivity::SecretBearing);
             if chunk_sensitivity > caller_ceiling {
                 // This occurrence references a chunk above the caller's ceiling — withhold.
                 continue;
@@ -132,6 +160,10 @@ pub fn lookup_by_hash(
                 span_start: r.get_i64("span_start").unwrap_or_default(),
                 span_end: r.get_i64("span_end").unwrap_or_default(),
                 observed_at: observed_at.to_string(),
+                root_id: match registry {
+                    Some(conn) => resolve_source(conn, &source)?.map(|r| r.root_id),
+                    None => None,
+                },
             });
         }
     }

@@ -2,9 +2,22 @@ name = "id-d1-journal-poc"
 main = "worker.mjs"
 compatibility_date = "2025-03-01"
 
-# This placeholder ID is used only by local Wrangler with --local. The smoke
-# always supplies its own temporary --persist-to directory and never deploys.
+# These placeholder IDs are used only by local Wrangler with --local. The
+# smoke always supplies its own temporary --persist-to directory and never
+# deploys. DB is the original journal-fit database; TENANT_A_DB and
+# TENANT_B_DB are the two per-tenant event-store databases for the #15538
+# slice-3 binding-isolation proof (separate databases, separate bindings).
 [[d1_databases]]
 binding = "DB"
 database_name = "id-d1-journal-poc"
 database_id = "00000000-0000-0000-0000-000000000001"
+
+[[d1_databases]]
+binding = "TENANT_A_DB"
+database_name = "id-d1-journal-poc-tenant-a"
+database_id = "00000000-0000-0000-0000-0000000000a1"
+
+[[d1_databases]]
+binding = "TENANT_B_DB"
+database_name = "id-d1-journal-poc-tenant-b"
+database_id = "00000000-0000-0000-0000-0000000000b1"

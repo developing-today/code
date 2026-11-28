@@ -24,6 +24,10 @@ import {
   defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
+  parseModelsDev,
+  fetchJson,
+  readCappedBody,
+  FETCH_JSON_MAX_BYTES,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -562,4 +566,99 @@ test('runSync diffs the merged effective config when a runtime overlay exists (#
   });
   assert.equal(bare.report.runtime_overlay, null);
   assert.equal(bare.report.providers.google, undefined);
+});
+
+test('parseModelsDev accepts the catalog shape and rejects drift (#7983 item 8)', () => {
+  const good = { openai: { models: { 'gpt-x': { limit: { context: 1 } } } }, bare: {} };
+  assert.equal(parseModelsDev(good), good);
+  assert.deepEqual(parseModelsDev({}), {});
+  for (const [bad, re] of [
+    [null, /got null/],
+    [[], /got array/],
+    ['x', /got string/],
+    [{ openai: [] }, /"openai" must be an object, got array/],
+    [{ openai: null }, /"openai" must be an object, got null/],
+    [{ openai: { models: [] } }, /"openai"\.models must be an object keyed by model id, got array/],
+    [{ openai: { models: null } }, /"openai"\.models must be an object keyed by model id, got null/],
+  ]) {
+    assert.throws(() => parseModelsDev(bad), re, JSON.stringify(bad));
+  }
+});
+
+test('a drifted models.dev file is reported as unavailable, not read as zero models (#7983 item 8)', async () => {
+  const { configPath, sourceDir, modelsDev } = controlFixture();
+  fs.writeFileSync(modelsDev, JSON.stringify({ openai: { models: ['gpt-x'] } }));
+  const { report } = await runSync({ configPath, modelsDevSpec: modelsDev, sourceDir });
+  assert.match(report.models_dev, /^unavailable \(models\.dev provider "openai"\.models must be an object/);
+});
+
+// #16505: fetchJson must bound bytes, not just time — a timeout does not
+// stop a fast endpoint from delivering an OOM-sized body inside the window.
+const stubFetch = (res) => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => res;
+  return () => {
+    globalThis.fetch = original;
+  };
+};
+
+test('fetchJson parses a small JSON body through the capped reader (#16505)', async () => {
+  const restore = stubFetch(
+    new Response(JSON.stringify({ data: [{ id: 'm1' }] }), { status: 200 }),
+  );
+  try {
+    assert.deepEqual(await fetchJson('http://127.0.0.1:1/v1/models', 1000), {
+      data: [{ id: 'm1' }],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('fetchJson fails closed on an over-cap body without buffering it all (#16505)', async () => {
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(256).fill(97);
+  const body = {
+    getReader() {
+      return {
+        async read() {
+          pulled += chunk.byteLength;
+          return { done: false, value: chunk };
+        },
+        async cancel() {
+          cancelled = true;
+        },
+      };
+    },
+  };
+  const restore = stubFetch({ ok: true, status: 200, body, headers: new Headers() });
+  try {
+    await assert.rejects(
+      fetchJson('https://models.dev/api.json', 1000, 1024),
+      /response body exceeded 1024 bytes/,
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(cancelled, true);
+  assert.ok(pulled <= 1024 + chunk.byteLength, `pulled ${pulled} bytes past the 1024-byte cap`);
+});
+
+test('readCappedBody rejects a declared content-length past the cap before reading (#16505)', async () => {
+  let reads = 0;
+  const res = {
+    body: {
+      getReader: () => ({
+        async read() {
+          reads += 1;
+          return { done: true };
+        },
+      }),
+      async cancel() {},
+    },
+    headers: new Headers({ 'content-length': String(FETCH_JSON_MAX_BYTES + 1) }),
+  };
+  await assert.rejects(readCappedBody(res), /response body exceeded/);
+  assert.equal(reads, 0);
 });

@@ -271,11 +271,79 @@ describe("dashboard assembly deadline (#5664)", () => {
       expect((await after(new Request("http://localhost/program"), stalled)).status).toBe(503);
     });
 
+    it("serves the disk copy after the cold grace, not the full deadline, on a cold first request", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await before(new Request("http://localhost/api/program.json"), async () => Response.json({ projects: ["id"] }));
+
+      // Oracle: with a 60 s assembly deadline, a cold request whose
+      // assembly never settles must still answer with the disk copy in
+      // roughly the cold grace (50 ms here), not after 60 s.
+      const after = createDashboardResponseDeadline({ timeoutMs: 60_000, coldStaleGraceMs: 50, persistDir: dir });
+      const start = performance.now();
+      const page = await after(new Request("http://localhost/api/program.json"), stalled);
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeLessThan(5_000);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("x-aggregator-stale")).toBe("true");
+      const body = JSON.parse(await page.text());
+      expect(body).toMatchObject({ projects: ["id"], stale: true });
+      expect(body.staleReason).toContain("still running");
+      expect(body.staleReason).toContain("saved before the dashboard restarted");
+    });
+
+    it("prefers a fresh assembly that finishes inside the cold grace over the disk copy", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await before(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "old" }));
+
+      // Oracle: a fast fresh assembly on the cold first request is
+      // served fresh and unmarked — the disk copy is only the fallback
+      // for an assembly that outlives the grace.
+      const after = createDashboardResponseDeadline({ timeoutMs: 60_000, coldStaleGraceMs: 500, persistDir: dir });
+      const fresh = await after(new Request("http://localhost/api/program.json"), async () =>
+        Response.json({ v: "new" }),
+      );
+      expect(fresh.status).toBe(200);
+      expect(fresh.headers.get("x-aggregator-stale")).toBeNull();
+      expect(await fresh.json()).toEqual({ v: "new" });
+    });
+
+    it("seeds the in-memory last-good from a cold request's late assembly", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await before(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "old" }));
+
+      const after = createDashboardResponseDeadline({ timeoutMs: 100, coldStaleGraceMs: 20, persistDir: dir });
+      const cold = await after(new Request("http://localhost/api/program.json"), async () => {
+        await Bun.sleep(60);
+        return Response.json({ v: "late" });
+      });
+      expect(JSON.parse(await cold.text())).toMatchObject({ v: "old", stale: true });
+      // The background assembly settles and seeds memory; the next
+      // stalled request is served the late response as ordinary
+      // in-memory stale (no pre-restart wording).
+      await Bun.sleep(80);
+      const stale = await after(new Request("http://localhost/api/program.json"), stalled);
+      const body = JSON.parse(await stale.text());
+      expect(body).toMatchObject({ v: "late", stale: true });
+      expect(body.staleReason).not.toContain("restarted");
+    });
+
     it("prefers a fresh in-process response over the disk copy", async () => {
       const dir = mkdtempSync(join(tmpdir(), "last-good-"));
       const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
       await before(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "old" }));
-      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      // The seeding call below must return via its assembly, not via its
+      // deadline: seeding finishes with the disk persist (mkdir + write +
+      // rename), which under CI load can outlive a 10 ms deadline. If it
+      // does, the shared run is still in flight when the stalled call
+      // arrives, and that call joins the run (#7065) and receives the
+      // fresh response unmarked — correct behaviour, but the premise of
+      // this test (a stale serve) never happens and staleReason is
+      // absent. A 250 ms deadline gives the persist tail ample headroom;
+      // the stalled call still outlives it and takes the fallback.
+      const after = createDashboardResponseDeadline({ timeoutMs: 250, persistDir: dir });
       await after(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "new" }));
       const stale = await after(new Request("http://localhost/api/program.json"), stalled);
       const body = JSON.parse(await stale.text());

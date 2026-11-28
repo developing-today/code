@@ -237,8 +237,12 @@ describe("github-ci worker", () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
-    // + mirror column probe (1) + mirror writes batch (1)
-    for (let i = 0; i < 5; i++) {
+    // + mirror column probe (1) + stored-row read for the Q7
+    // history diff (1) + mirror writes batch (1) + C2-S1 derived
+    // issue_new row (1) + drain count-leg reads — cursor (1) +
+    // depth (1); the depth read answers no rows (0), below the
+    // count threshold, so no drain-due write follows.
+    for (let i = 0; i < 9; i++) {
       queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
         seen.push(String(opts.body));
         return tursoOk();
@@ -273,8 +277,9 @@ describe("github-ci worker", () => {
     const seen: string[] = [];
     const queueMock = fetchMock.get(QUEUE);
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
-    // + mirror column probe (1) + mirror writes batch (1)
-    for (let i = 0; i < 5; i++) {
+    // + mirror column probe (1) + stored-row read for the Q7
+    // history diff (1) + mirror writes batch (1)
+    for (let i = 0; i < 6; i++) {
       queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
         seen.push(String(opts.body));
         return tursoOk();
@@ -295,5 +300,59 @@ describe("github-ci worker", () => {
     const all = seen.join("\n");
     expect(all).toContain("UPDATE github_mirror_issues SET");
     expect(all).toContain("31337");
+  });
+
+  it("sub_issues on a fleet repo moves the mirror parent projection (#14170 Q7)", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + stored-row read (1) + mirror
+    // writes batch (1)
+    for (let i = 0; i < 6; i++) {
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
+    }
+    const p = JSON.stringify({
+      action: "parent_issue_added",
+      sub_issue: { number: 8581, updated_at: "2026-11-11T03:00:00Z" },
+      parent_issue: { number: 8580 },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "sub_issues", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    // The mock answers every read with no rows, so the child is a
+    // first sight: seeded minimal with its parent projection.
+    expect(all).toContain("parent_number");
+    expect(all).toContain("INSERT INTO github_mirror_meta");
+  });
+});
+
+describe("GET /version (#15793)", () => {
+  // Oracle: the edge probe (pm-stack/console/edge/src/worker-checks.ts
+  // commitOf) reads the `version` field, and #15793 criterion 1 requires
+  // each in-service Worker to name its deployed commit there,
+  // unauthenticated.
+  async function getVersion(extraEnv: Record<string, unknown> = {}): Promise<Response> {
+    const req = new Request("https://github-ci.test/version", { method: "GET" });
+    const ctx = createExecutionContext();
+    const workerEnv = { ...env, ...extraEnv } as unknown as Parameters<typeof worker.fetch>[1];
+    const res = await worker.fetch(req, workerEnv);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  it("answers unauthenticated with the deployed commit", async () => {
+    const res = await getVersion({ VERSION: "abc123def456" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, service: "github-ci", version: "abc123def456" });
+  });
+
+  it("names no commit when the deploy did not stamp one", async () => {
+    const res = await getVersion();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, service: "github-ci", version: "unknown" });
   });
 });

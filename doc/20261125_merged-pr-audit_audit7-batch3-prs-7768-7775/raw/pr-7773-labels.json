@@ -1,0 +1,79 @@
+[
+  {
+    "id": 12834267441,
+    "node_id": "LA_kwDOJWP4788AAAAC_PthMQ",
+    "url": "https://api.github.com/repos/developing-today/code/labels/kind/bug",
+    "name": "kind/bug",
+    "color": "ededed",
+    "default": false,
+    "description": "Something isn't working (prefixed form of the classic bug label)",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834277118,
+    "node_id": "LA_kwDOJWP4788AAAAC_PuG_g",
+    "url": "https://api.github.com/repos/developing-today/code/labels/task/small-fix",
+    "name": "task/small-fix",
+    "color": "008672",
+    "default": false,
+    "description": "Queue packet kind: bounded fix with reproduction and targeted tests",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834286196,
+    "node_id": "LA_kwDOJWP4788AAAAC_PuqdA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/source/creator",
+    "name": "source/creator",
+    "color": "0e8a16",
+    "default": false,
+    "description": "Filed by the new-issue-creator job",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834291076,
+    "node_id": "LA_kwDOJWP4788AAAAC_Pu9hA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/priority/normal",
+    "name": "priority/normal",
+    "color": "ededed",
+    "default": false,
+    "description": "Ordinary priority (the default)",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834312156,
+    "node_id": "LA_kwDOJWP4788AAAAC_PwP3A",
+    "url": "https://api.github.com/repos/developing-today/code/labels/app/id",
+    "name": "app/id",
+    "color": "1d76db",
+    "default": false,
+    "description": "Package/app: id (pkgs/ or apps/ in this repo)",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 12834737880,
+    "node_id": "LA_kwDOJWP4788AAAAC_QKO2A",
+    "url": "https://api.github.com/repos/developing-today/code/labels/effort/xs",
+    "name": "effort/xs",
+    "color": "c5def5",
+    "default": false,
+    "description": "Trivial: expected under 30 minutes of work",
+    "archived_at": null,
+    "archived_by": null
+  },
+  {
+    "id": 13198400136,
+    "node_id": "LA_kwDOJWP4788AAAADEq-aiA",
+    "url": "https://api.github.com/repos/developing-today/code/labels/audit:complete",
+    "name": "audit:complete",
+    "color": "0e8a16",
+    "default": false,
+    "description": "PR fully implemented spawning issue",
+    "archived_at": null,
+    "archived_by": null
+  }
+]

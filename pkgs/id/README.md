@@ -1,6 +1,6 @@
 # id
 
-The `id` platform and Rust facade, built with [Iroh](https://iroh.computer). It includes peer-to-peer file sharing, a sandboxed world runtime, directory and group services, sync, currency registry, and optional web editing. The command layer lives in `id-cli` and is re-exported by the facade.
+A peer-to-peer collaboration platform built with [Iroh](https://iroh.computer). Its file core stores, retrieves and shares files across a decentralized network; the same binary also ships the layers above it — signed event logs addressed as `id://` records, multiplayer worlds, the directory, groups and group encryption, the currency registry, and an optional collaborative web UI. The `id` Rust facade re-exports the workspace API at historical `id::` paths; the command layer lives in `id-cli`.
 
 ## The book
 
@@ -21,7 +21,7 @@ package's front door.
 - **Remote Operations**: Run commands against remote peers by node ID
 - **Collaborative Editor**: Real-time multi-user text editing via WebSocket (web UI)
 - **Interactive REPL**: Shell-like interface with pipes, subshells, and heredocs
-- **Peer Discovery**: Automatic local network peer discovery
+- **Peer Discovery**: Gossip-based wide-area discovery and mDNS local discovery (both on by default), with opt-in mainline DHT address lookup and publishing
 - **Content Modes**: Smart rendering for text, markdown, images, video, audio, and PDF
 - **Themes**: Terminal-inspired UI themes (sneak, arch, mech)
 
@@ -32,11 +32,11 @@ package's front door.
 ```bash
 nix develop   # Enter dev shell with all tools
 
-# Library-only build (no web dependencies)
+# Lib variant (no web dependencies)
 just build-lib
 just serve-lib
 
-# Full build with web UI (requires Bun)
+# Web variant (requires Bun)
 just build
 just serve
 ```
@@ -44,16 +44,20 @@ just serve
 ### With Cargo
 
 ```bash
-# Default build: sandbox and world included, no web UI
-# (--no-default-features would also remove sandbox and world)
+# Lib variant (no web UI): the default features (sandbox and world included)
+# (--no-default-features is not the variant switch: it would also remove sandbox and world)
 cargo build
 cargo run -- serve
 
-# With web UI (build assets first)
+# Web variant (build assets first)
 cd web && bun install && bun run build && cd ..
 cargo build --features web
 cargo run --features web -- serve --web
 ```
+
+The lib/web split is the `web` feature. `--no-default-features` is not that
+switch: it turns off the default `sandbox` and `world` features and leaves
+the web feature off, so it builds neither variant.
 
 ## Five-minute path
 
@@ -298,17 +302,23 @@ it is — a valid world capability, minted by the host's admin with
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
 | `key`          |                                | Export or import a passphrase-wrapped identity key      |
-| `keyset`       |                                | Show or change the identity's admin and device keys    |
+| `keyset`       |                                | Show or change the identity's admin and device keys     |
 | `peers`        |                                | Discover and list known peers                           |
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
+| `petname`      |                                | List the petnames one owner gave, read-only             |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
 | `walk`         |                                | The #9106 walking skeleton, driven by hand              |
+| `host`         |                                | Host mode: run a data root of worlds and operate it     |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
+| `compact`      |                                | Reclaim live-class event bytes (one retention pass)     |
+| `nav`          |                                | Navigate the typed object graph (links, threads, paths) |
+| `talk`         |                                | Talk pages: post on and list an object's discussion     |
+| `hosted`       |                                | Push to and pull from a hosted instance over the bridge |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands
@@ -379,15 +389,18 @@ This provides: Rust 1.99.1, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-
 
 ```bash
 just test              # All fast tests (Rust + TypeScript unit + typecheck)
-just test-rust         # Rust tests only (~408 unit + ~93 integration)
-just test-unit         # Unit tests only (fast, ~408 tests)
-just test-integration  # Integration tests only (~93 tests)
-just test-web-unit     # TypeScript unit tests (~304 assertions)
-just test-e2e          # Playwright E2E (chromium + firefox, 276 tests)
-just test-nix          # nix flake check (27 checks — runs everything)
+just test-rust         # Rust tests only (unit + integration)
+just test-unit         # Unit tests only (fast)
+just test-integration  # Integration tests only
+just test-web-unit     # TypeScript unit tests
+just test-e2e          # Playwright E2E (chromium + firefox)
+just test-nix          # nix flake check (all checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
 ```
+
+Test totals are not stated here: a count is a measurement of one run on one
+date, and the book's building chapter records counts that way or not at all.
 
 See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference: 6 test layers, browser coverage matrix, environment comparison, and when to add tests where.
 
@@ -396,7 +409,7 @@ See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testin
 ```bash
 just build-nix                  # Build web variant (nix build)
 just build-nix-lib              # Build lib variant (nix build .#id-lib)
-just test-nix                   # All 27 CI checks in sandbox (nix flake check)
+just test-nix                   # All CI checks in sandbox (nix flake check)
 just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 ```
 
@@ -437,24 +450,24 @@ web/                     # TypeScript frontend
 │                        # world surface
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests (138 tests × 2 browsers = 276)
-├── tests/autosave.spec.ts        # 7 autosave tests
-├── tests/basic.spec.ts           # 20 UI fundamental tests
-├── tests/editor-features.spec.ts # 47 editor feature tests
-├── tests/file-operations.spec.ts # 20 file/tag operation tests
-├── tests/navigation.spec.ts      # 17 navigation + SPA tests
-├── tests/websocket.spec.ts       # 22 WS + collaboration tests
-├── tests/world-surface.spec.ts   # 5 world surface tests
+e2e/                     # Playwright E2E tests
+├── tests/autosave.spec.ts        # autosave
+├── tests/basic.spec.ts           # UI fundamentals
+├── tests/editor-features.spec.ts # editor features
+├── tests/file-operations.spec.ts # file/tag operations
+├── tests/navigation.spec.ts      # navigation + SPA
+├── tests/websocket.spec.ts       # WebSocket + collaboration
+├── tests/world-surface.spec.ts   # world surface
 └── playwright.config.ts          # 3-mode config: local / nix sandbox / VM test
 
 nix/tests/                   # NixOS VM integration tests
-├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
-├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
+├── serve-test.nix           # HTTP API test (curl)
+├── e2e-test.nix             # Chromium --dump-dom DOM test
 ├── integration-test.nix     # Full cli_integration suite including serve_tests
-└── playwright-e2e-test.nix  # 4-VM full Playwright (276 interactive tests)
+└── playwright-e2e-test.nix  # 4-VM full Playwright
 
 tests/
-└── cli_integration.rs   # ~93 integration tests
+└── cli_integration.rs   # Integration tests
 ```
 
 ## Documentation

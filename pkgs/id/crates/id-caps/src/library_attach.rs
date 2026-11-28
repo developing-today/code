@@ -144,16 +144,22 @@ pub struct LibraryOffer {
 impl LibraryOffer {
     /// Build an offer from a parsed [`LibraryManifest`]: identity is
     /// the manifest hash, the footprint is its declared requirement
-    /// names, and the version is parsed fail-closed.
+    /// names, the version is parsed fail-closed, and the migration
+    /// flag is derived from the manifest's `migrate` declarations —
+    /// a version declares a migration by naming a source version, so
+    /// the flag is manifest data, never a caller assertion. A
+    /// `migrate from` that is not a parseable version fails the
+    /// build: the registry must never admit an offer whose migration
+    /// source it cannot name.
     ///
     /// # Errors
     ///
-    /// [`VersionParseError`] when the manifest's version string is
-    /// not parseable.
-    pub fn from_manifest(
-        manifest: &LibraryManifest,
-        declares_migration: bool,
-    ) -> Result<Self, VersionParseError> {
+    /// [`VersionParseError`] when the manifest's version string — or
+    /// one of its migration sources — is not parseable.
+    pub fn from_manifest(manifest: &LibraryManifest) -> Result<Self, VersionParseError> {
+        for migration in &manifest.migrations {
+            LibraryVersion::parse(&migration.from)?;
+        }
         Ok(Self {
             library_id: manifest.hash.clone(),
             version: LibraryVersion::parse(&manifest.version)?,
@@ -162,7 +168,7 @@ impl LibraryOffer {
                 .iter()
                 .map(|requirement| requirement.name.clone())
                 .collect(),
-            declares_migration,
+            declares_migration: !manifest.migrations.is_empty(),
         })
     }
 }
@@ -1138,11 +1144,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"save-data".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]
@@ -1175,11 +1177,7 @@ mod tests {
             registry.drop_inert("owner-1", "entity-1", "lib-hash-1", 1),
             Ok(1)
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
         // After the drop, a reattach revives nothing.
         let _ = attached(&mut registry, offer("1.0.0", &["chat.say"]));
         assert_eq!(registry.get_state("entity-1", "lib-hash-1"), None);
@@ -1226,11 +1224,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"v1-state".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]
@@ -1260,11 +1254,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"v1-state".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]
@@ -1305,12 +1295,49 @@ mod tests {
             }],
             subtypes: Vec::new(),
             attachments: Vec::new(),
+            migrations: Vec::new(),
             source_url: None,
         };
-        let offer = LibraryOffer::from_manifest(&manifest, false).expect("offer builds");
+        let offer = LibraryOffer::from_manifest(&manifest).expect("offer builds");
         assert_eq!(offer.library_id, "hash-of-chess-clock");
         assert_eq!(offer.version, LibraryVersion::parse("1.2.0").unwrap());
         assert_eq!(offer.requirements, caps(&["records.read"]));
+        assert!(!offer.declares_migration);
+    }
+
+    #[test]
+    fn offer_from_manifest_derives_migration_from_declarations() {
+        // Oracle: #12640 — declares_migration is manifest data: a
+        // manifest naming a migration source offers a migration, a
+        // bare manifest offers none, and an unparsable source fails
+        // the build instead of admitting a migration to nowhere.
+        let text = r#"
+library "clock" version="1.1.0" {
+    kind "source-library"
+    build-mode "compile-in"
+    hash "blake3:11"
+    license "MIT"
+    platform {
+        requires "records.read"
+    }
+    migrate from="1.0.0"
+}
+"#;
+        let manifest = LibraryManifest::parse(text).expect("manifest parses");
+        let offer = LibraryOffer::from_manifest(&manifest).expect("offer builds");
+        assert!(offer.declares_migration);
+
+        let bare = LibraryManifest::parse(&text.replace("    migrate from=\"1.0.0\"\n", ""))
+            .expect("bare manifest parses");
+        let bare_offer = LibraryOffer::from_manifest(&bare).expect("bare offer builds");
+        assert!(!bare_offer.declares_migration);
+
+        let bad = LibraryManifest::parse(&text.replace("1.0.0", "one-point-oh"))
+            .expect("bad-source manifest parses");
+        assert!(
+            LibraryOffer::from_manifest(&bad).is_err(),
+            "an unparsable migration source must fail the offer build"
+        );
     }
 
     #[test]

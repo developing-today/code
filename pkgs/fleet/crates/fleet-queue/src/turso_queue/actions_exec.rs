@@ -130,6 +130,143 @@ const MAX_POLL_WAIT_S: i64 = 25;
 /// larger than this is a client bug, not data).
 const MAX_IO_CHUNK: usize = 64 * 1024;
 
+// ---------------------------------------------------------------------------
+// Signed decide envelope — S1 of #14043 (broker half).
+//
+// The aggregator-side applier carries Drew's recorded answer to the
+// broker's decide verb. Seat calls stay exactly as they were (no
+// `sig` field). A call carrying `sig` must also carry `answer_id`
+// and `answered_at`, and `sig` must be the lowercase hex of
+// HMAC-SHA256 over
+//
+//     handle|approve|answer_id|answered_at
+//
+// where `approve` is the literal string "true" or "false" matching
+// the request's `approve` boolean, and `answered_at` is the house
+// ISO stamp (`YYYY-MM-DDTHH:MM:SSZ`, the broker's `iso()` shape —
+// a valid RFC 3339 profile). The HMAC key is the secret named by
+// `APPLY_KEY_SECRET_NAME_DEFAULT` (overridable for rotation via
+// `FLEET_ACTIONS_EXEC_APPLY_KEY_NAME`), resolved by name through
+// fleet-secrets — the value never appears in the repo, logs, or
+// the issue record. `answered_at` must fall inside
+// `SIGNED_DECIDE_WINDOW_S` back from now (plus a small future
+// skew for clock drift); anything older is refused as a replay.
+// The window bounds replay; exactly-once across retries is the
+// applier ledger's job (S3), keyed by `answer_id`. The signed form
+// is accepted only on /actions-exec-extend-decide.
+// ---------------------------------------------------------------------------
+
+/// fleet-secrets name of the applier HMAC key (design §2; the
+/// example name there is kept as the default — a slice that settles
+/// a different name records it, never a value, on #14043).
+pub(crate) const APPLY_KEY_SECRET_NAME_DEFAULT: &str = "pm-aggregator.actions-exec-apply-key";
+/// Replay window for the signed envelope: an `answered_at` older
+/// than this is refused.
+pub(crate) const SIGNED_DECIDE_WINDOW_S: i64 = 600;
+/// Clock-skew allowance into the future for `answered_at`.
+pub(crate) const SIGNED_DECIDE_FUTURE_SKEW_S: i64 = 60;
+
+/// Canonical signed message (design §2 envelope): the exact bytes
+/// the aggregator signs and the broker verifies. `approve` renders
+/// as "true"/"false" to match the JSON boolean. The S3 signer must
+/// produce byte-identical input; `signed_decide_message_canonical`
+/// pins it.
+pub(crate) fn signed_decide_message(
+    handle: &str,
+    approve: bool,
+    answer_id: &str,
+    answered_at: &str,
+) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        handle,
+        if approve { "true" } else { "false" },
+        answer_id,
+        answered_at
+    )
+}
+
+fn apply_key_secret_name() -> String {
+    std::env::var("FLEET_ACTIONS_EXEC_APPLY_KEY_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| APPLY_KEY_SECRET_NAME_DEFAULT.to_string())
+}
+
+fn resolve_apply_key() -> Result<Vec<u8>, String> {
+    let name = apply_key_secret_name();
+    let config = fleet_config::Config::load().unwrap_or_default();
+    fleet_secrets::Resolver::default_chain(&config)
+        .resolve(&name)
+        .map(|v| v.expose().as_bytes().to_vec())
+        .map_err(|e| format!("applier apply key {name}: {e}"))
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.is_empty() || s.len() % 2 != 0 {
+        return None;
+    }
+    let b = s.as_bytes();
+    let val = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let mut i = 0;
+    while i < b.len() {
+        out.push((val(b[i])? << 4) | val(b[i + 1])?);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// Verify the signed envelope on a decide request carrying `sig`.
+/// Pure over the key and the caller-supplied `now` so tests inject
+/// both and no test touches the secrets chain. Returns the fail
+/// Value to answer with on any refusal.
+fn check_signed_envelope(req: &Value, key: &[u8], now: i64) -> Result<(), Value> {
+    let Some(sig_hex) = req.get("sig").and_then(|v| v.as_str()) else {
+        return Err(fail(2, "sig is required for a signed decide".to_string()));
+    };
+    let Some(answer_id) = req_str(req, "answer_id").filter(|s| !s.is_empty()) else {
+        return Err(fail(2, "answer_id is required with sig".to_string()));
+    };
+    let Some(answered_at) = req_str(req, "answered_at").filter(|s| !s.is_empty()) else {
+        return Err(fail(2, "answered_at is required with sig".to_string()));
+    };
+    let Some(stamp_unix) = parse_iso(answered_at) else {
+        return Err(fail(
+            2,
+            "answered_at must be an ISO stamp (YYYY-MM-DDTHH:MM:SSZ)".to_string(),
+        ));
+    };
+    if stamp_unix < now - SIGNED_DECIDE_WINDOW_S || stamp_unix > now + SIGNED_DECIDE_FUTURE_SKEW_S {
+        return Err(fail(
+            4,
+            "signed decide envelope is outside the acceptance window (replay limit)".to_string(),
+        ));
+    }
+    let Some(handle) = req_str(req, "handle").filter(|h| !h.is_empty()) else {
+        return Err(fail(2, "handle is required".to_string()));
+    };
+    let approve = req.get("approve").and_then(|v| v.as_bool()) == Some(true);
+    let msg = signed_decide_message(handle, approve, answer_id, answered_at);
+    let Some(sig) = hex_decode(sig_hex) else {
+        return Err(fail(4, "sig is not hex HMAC-SHA256".to_string()));
+    };
+    let vkey = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    ring::hmac::verify(&vkey, msg.as_bytes(), &sig).map_err(|_| {
+        fail(
+            4,
+            "signed decide envelope signature does not verify".to_string(),
+        )
+    })
+}
+
 static RAND_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Random-enough identifier material for handles and command ids:
@@ -1189,10 +1326,41 @@ pub(crate) fn verb_actions_exec_extend_request(t: &TursoBackend, req: &Value) ->
 }
 
 pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> Value {
+    verb_actions_exec_extend_decide_with(t, req, &resolve_apply_key)
+}
+
+/// [`verb_actions_exec_extend_decide`] with the apply-key resolver
+/// injected: production resolves the named secret through
+/// fleet-secrets; tests inject a fixed key so no test touches the
+/// secrets chain or the network.
+pub(crate) fn verb_actions_exec_extend_decide_with(
+    t: &TursoBackend,
+    req: &Value,
+    resolve_key: &dyn Fn() -> Result<Vec<u8>, String>,
+) -> Value {
     let row = match require_session_settled(t, req) {
         Ok(r) => r,
         Err(v) => return v,
     };
+    // A signed applier envelope authenticates before the state
+    // machine reads: a bad signature or a stale envelope is an
+    // auth refusal whatever the session state, while a valid
+    // envelope flows through the same terminal outcomes a seat
+    // sees (silence-approved / settled / no-pending), which the
+    // applier reads as superseded/rejected. Any presence of the
+    // `sig` field selects the signed path; without it the call is
+    // a seat call with byte-identical behaviour to before.
+    let via_signed = req.get("sig").is_some();
+    if via_signed {
+        let key = match resolve_key() {
+            Ok(k) => k,
+            Err(e) => return fail(4, format!("signed decide unavailable: {e}")),
+        };
+        if let Err(v) = check_signed_envelope(req, &key, now_unix()) {
+            return v;
+        }
+    }
+    let via = if via_signed { "signed-apply" } else { "seat" };
     // A tier-2 request whose deny window lapsed was settled by
     // require_session_settled: nothing is left to decide, and a
     // late deny must not read as if it landed.
@@ -1202,6 +1370,7 @@ pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> 
             "approved": true,
             "tier": 2,
             "outcome": "silence-approved",
+            "via": via,
             "note": "the deny window lapsed before this decision arrived; the extension was auto-approved at window end",
         }));
     }
@@ -1237,10 +1406,11 @@ pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> 
                     "approved": true,
                     "tier": tier,
                     "outcome": "approved",
+                    "via": via,
                     "max_until": new_max,
                     "lease_until": new_lease,
                 })),
-                None => Ok(json!({"decided": false, "approved": true})),
+                None => Ok(json!({"decided": false, "approved": true, "via": via})),
             }
         } else {
             let res = t.exec(
@@ -1254,6 +1424,7 @@ pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> 
                 "approved": false,
                 "tier": tier,
                 "outcome": "denied",
+                "via": via,
             }))
         }
     })();
@@ -2133,5 +2304,156 @@ mod tests {
         assert_eq!(poll["session"]["state"], "expired", "{poll}");
         let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
         assert_eq!(stream["session"]["state"], "expired");
+    }
+
+    // S1 (#14043) oracle helpers: the applier envelope over a
+    // fixed test key. Production resolves the named secret through
+    // fleet-secrets; tests inject the key so nothing touches the
+    // secrets chain or the network.
+    fn test_sign(
+        key: &[u8],
+        handle: &str,
+        approve: bool,
+        answer_id: &str,
+        answered_at: &str,
+    ) -> String {
+        let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+        let tag = ring::hmac::sign(
+            &k,
+            signed_decide_message(handle, approve, answer_id, answered_at).as_bytes(),
+        );
+        tag.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn pending_manual(t: &TursoBackend, h: &str) {
+        assert_eq!(open_session(t, h, 60, 120)["ok"], true);
+        verb_actions_exec_bind(t, &json!({"handle": h, "run_id": 1, "run_attempt": 1}));
+        let out = verb_actions_exec_extend_request(t, &json!({"handle": h, "extend_s": 7200}));
+        assert_eq!(out["tier"], 3, "{out}");
+        assert_eq!(out["outcome"], "pending-manual", "{out}");
+    }
+
+    #[test]
+    fn signed_decide_message_is_canonical() {
+        // Pins the cross-language contract: the S3 (aggregator)
+        // signer must produce byte-identical input.
+        assert_eq!(
+            signed_decide_message("fx-h", true, "ans-1", "2026-11-24T05:00:00Z"),
+            "fx-h|true|ans-1|2026-11-24T05:00:00Z"
+        );
+        assert_eq!(
+            signed_decide_message("fx-h", false, "ans-2", "2026-11-24T05:00:00Z"),
+            "fx-h|false|ans-2|2026-11-24T05:00:00Z"
+        );
+    }
+
+    #[test]
+    fn signed_decide_accepts_a_valid_envelope() {
+        let t = backend();
+        let key = b"test-apply-key-s1";
+        let resolve = || Ok::<Vec<u8>, String>(key.to_vec());
+        let h = "fx-test-signed-ok";
+        pending_manual(&t, h);
+        let before = verb_actions_exec_stream(&t, &json!({"handle": h}))["session"]["max_unix"]
+            .as_i64()
+            .unwrap();
+        let at = now_iso();
+        let sig = test_sign(key, h, true, "ans-1", &at);
+        let out = verb_actions_exec_extend_decide_with(
+            &t,
+            &json!({
+                "handle": h, "approve": true,
+                "answer_id": "ans-1", "answered_at": at, "sig": sig,
+            }),
+            &resolve,
+        );
+        assert_eq!(out["approved"], true, "{out}");
+        assert_eq!(out["via"], "signed-apply", "{out}");
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(
+            stream["session"]["max_unix"].as_i64().unwrap(),
+            before + 1800,
+            "{stream}"
+        );
+        assert_eq!(stream["session"]["ext_state"], "approved");
+    }
+
+    #[test]
+    fn signed_decide_refuses_a_bad_signature_and_keeps_pending() {
+        let t = backend();
+        let key = b"test-apply-key-s1";
+        let resolve = || Ok::<Vec<u8>, String>(key.to_vec());
+        let h = "fx-test-signed-bad";
+        pending_manual(&t, h);
+        let at = now_iso();
+        // Signed under a different key: the envelope is well-formed
+        // but the HMAC does not verify.
+        let sig = test_sign(b"wrong-key", h, true, "ans-9", &at);
+        let out = verb_actions_exec_extend_decide_with(
+            &t,
+            &json!({
+                "handle": h, "approve": true,
+                "answer_id": "ans-9", "answered_at": at, "sig": sig,
+            }),
+            &resolve,
+        );
+        assert_eq!(out["ok"], false, "{out}");
+        // The request is still pending: the refusal decided nothing.
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "pending", "{stream}");
+    }
+
+    #[test]
+    fn signed_decide_refuses_stale_and_future_envelopes() {
+        let t = backend();
+        let key = b"test-apply-key-s1";
+        let resolve = || Ok::<Vec<u8>, String>(key.to_vec());
+        // Stale: correctly signed but an hour old — a replay.
+        let h = "fx-test-signed-old";
+        pending_manual(&t, h);
+        let old = iso(now_unix() - 3_600);
+        let sig = test_sign(key, h, true, "ans-old", &old);
+        let out = verb_actions_exec_extend_decide_with(
+            &t,
+            &json!({
+                "handle": h, "approve": true,
+                "answer_id": "ans-old", "answered_at": old, "sig": sig,
+            }),
+            &resolve,
+        );
+        assert_eq!(out["ok"], false, "{out}");
+        // Far-future: correctly signed but beyond the skew allowance.
+        let h2 = "fx-test-signed-new";
+        pending_manual(&t, h2);
+        let future = iso(now_unix() + 3_600);
+        let sig2 = test_sign(key, h2, true, "ans-new", &future);
+        let out = verb_actions_exec_extend_decide_with(
+            &t,
+            &json!({
+                "handle": h2, "approve": true,
+                "answer_id": "ans-new", "answered_at": future, "sig": sig2,
+            }),
+            &resolve,
+        );
+        assert_eq!(out["ok"], false, "{out}");
+        for h in [h, h2] {
+            let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+            assert_eq!(stream["session"]["ext_state"], "pending", "{stream}");
+        }
+    }
+
+    #[test]
+    fn unsigned_seat_decide_still_works() {
+        // The signed path changes nothing for seat calls: no `sig`
+        // field, same verbs, same outcomes, now labelled via seat.
+        let t = backend();
+        let h = "fx-test-seat-still";
+        pending_manual(&t, h);
+        let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": true}));
+        assert_eq!(out["decided"], true, "{out}");
+        assert_eq!(out["approved"], true, "{out}");
+        assert_eq!(out["via"], "seat", "{out}");
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "approved", "{stream}");
     }
 }

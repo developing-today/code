@@ -18,18 +18,96 @@ Implements the fleet architecture spec v0.3
   requires `--root` and `--root-key-dir`.
 - `fleet cert leaf issue|inspect|list` — profiles mirroring
   `pkgs/idp-pki`'s idp-ca: `server`, `client`, `saml-signing`,
-  `oidc-signing`; requires `--issuer-key-dir`.
+  `oidc-signing`; requires `--issuer-key-dir`. `--ip` adds IP SANs and
+  `--csr <file>` certifies a key made elsewhere (no key is generated or
+  written; the manifest records `host-local` custody). The broker TLS
+  profiles `broker-server`/`broker-client` (P-256, 90d, renewed with
+  30d left) take a CSR only, issue only from a Base (`general`) issuer
+  set, and require `.internal` DNS names plus a tailnet IP SAN, with
+  wildcards and public names refused (#14399).
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
+- `fleet cert ocsp sign|inspect|test` — RFC 6960 responses from
+  issuer bundles: direct issuer signing or a delegated responder
+  certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
+  - NoCheck, 30d default), verified against the crate chain code.
+    This is the §4.3 functional responder core; it embeds no OCSP URL.
+- `fleet cert trust export|stage|ack|activate|retire|status` —
+  the §3.5 trust bundle and the broker-client trust store (#14400):
+  export assembles a versioned trust bundle (roots-classical /
+  roots-all / roots-pq / cross-certs) from verified root sets;
+  the store runs the §27.3 item 9 two-phase rollover — stage
+  (verify; a failed distribution never touches the active
+  anchors), acknowledge (binds version to content hash),
+  activate (refused without a matching ack; the displaced
+  version is kept as last-known-good), retire.
+- `fleet cert key generate|inspect|import|export|rotate` — standalone key
+  ceremonies (§6.1). `generate` and `import` write PKCS#8 DER to a
+  new owner-only file and never replace one; `import` takes PKCS#8
+  DER or a PEM `PRIVATE KEY` block and refuses a key that does not
+  load under the named `--algorithm`. `export` writes the public
+  half only, as SubjectPublicKeyInfo PEM (default) or DER
+  (`--format der`); private-key export stays behind the #9155
+  custody gates. `rotate` checks that the `--in` key loads under
+  `--algorithm`, then writes a fresh key of that algorithm to a new
+  owner-only `--out` file and reports both public-key fingerprints;
+  the old key is kept, and retiring it is a separate step.
+- `fleet cert root|issuer|leaf renew|rotate` — the
+  §5.2 lifecycle verbs. `renew` reissues on the same key (only with
+  `--allow-key-reuse`), keeps the generation and bumps the revision
+  (`r2`); `rotate` makes new keys in the next generation (`g2`) with
+  the same names, slots and policy. Each new bundle records the one
+  it follows (`predecessor`). A CSR-issued leaf rotates from a new
+  CSR (`--csr`). A renewed root set still anchors the issuer sets of
+  its predecessor; a rotated one starts fresh, with the old set left
+  in place for its issuers and leaves. `issuer rotate --root <new>`
+  moves an issuer set onto a rotated root set, and with
+  `--overlap-root <old> --overlap-root-key-dir <keys>` the old roots
+  also certify each new issuer key, so relying parties that still
+  trust only the old roots validate the new leaves during the move.
+- `fleet cert root replace` and `issuer replace` — the §5.2
+  orchestration in one step. `root replace` rotates the root set,
+  moves every `--issuer` set onto it with the overlap, verifies every
+  new chain (primaries to the new roots, overlap certificates to the
+  old ones) and prints the distribution, leaf-rotation and retirement
+  steps with the date the old material can retire. `issuer replace`
+  does the same for issuer sets under their current roots. Output
+  goes to one new directory, removed again if any step fails.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
+- `fleet cert inventory list|show|search|audit` — read-only
+  cross-bundle inventory (§6.1): drift (checksum/size/missing/
+  orphaned/unreferenced), upcoming expiries (CA 5y, leaf 90d
+  Gregorian horizons, overridable per run), orphaned material;
+  audit exits 1 iff expired>0 or drift>0. Nothing writes.
+- `fleet cert format convert|verify` — certificate PEM/DER conversion
+  plus password-protected PKCS#12 export from a verified bundle,
+  PKCS#12 import back to DER files, archive verification, and
+  public-only JWK conversion for Ed25519 and P-256 keys (RSA and
+  ML-DSA are rejected, never silently dropped). Export
+  requires exactly one in-bundle identity and a `--password-file`;
+  output is created owner-only and never overwrites an existing file.
+  Import (`convert --from pkcs12 --in <archive> --password-file <f>
+--out <new-dir>`) writes `certificate.der`, owner-only
+  `private-key.pk8`, and `chain-NN.der` files without replacing an
+  existing directory. The API requires a matching cert/key pair,
+  preserves additional certificates as the CA chain, and rejects malformed
+  archives. Verification redacts keys. JWK export
+  (`convert --to jwk --algorithm <id> [--in <key> | --bundle <dir>]`)
+  reads a validated PKCS#8 key or the bundle's exactly-one matching
+  private-key identity and writes the canonical public JWK; JWK import
+  (`convert --from jwk --to pem|der`) rewrites it as SubjectPublicKeyInfo;
+  `verify --in <key.jwk> --algorithm <id> --key <key.pk8>` proves the
+  JWK matches the canonical DER key material.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`ocsp`, `publish`, `dns`, `trust`, `key`, `format`, profile
-validate/scaffold, algorithm benchmark/doctor, `batch`,
-`inventory`, renew/rotate verbs, bundle pack/unpack/diff/migrate.
+`dns`, `key` escrow/restore and private export,
+profile validate/scaffold, algorithm benchmark/doctor,
+`batch`, bundle pack/unpack/diff/migrate,
+publish apply/status (production-gated; slice 1 ships plan +
+verify read-only).
 
 ## Design decisions worth knowing
 
@@ -70,9 +148,11 @@ validate/scaffold, algorithm benchmark/doctor, `batch`,
 
 ## Evidence
 
-`cargo test -p fleet-cert` — 19 unit tests (registry, time
-grammar, naming, graph arithmetic, profiles, bundle round-trip)
-and 7 integration tests in `tests/hierarchy.rs`, each naming its
+`cargo test -p fleet-cert` — 30 unit tests (registry, time
+grammar, naming, graph arithmetic, profiles, bundle round-trip,
+inventory horizons) and 17 integration tests
+(`tests/hierarchy.rs` 7, `tests/ocsp.rs` 3, `tests/publish.rs` 2,
+`tests/inventory.rs` 5), each naming its
 oracle: spec inventory arithmetic (§§3.2/24.2), the crate
 validator, the system `openssl` as an independent implementation
 (classical, PQ, and cross-signed paths), the §24.1/§24.3 policy

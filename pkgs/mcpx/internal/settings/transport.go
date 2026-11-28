@@ -35,6 +35,38 @@ func transportSettings() []Setting {
 				"design -- not OAuth (#1950) and not per-server upstream auth (#1926).",
 		},
 		{
+			Path: "auth.mode", Scope: ScopeDaemon, Kind: KindEnum, Default: "off",
+			Enum:     []string{"off", "permissive", "required"},
+			Commands: []string{"daemon"},
+			Name:     "Auth mode",
+			Short:    "whether the daemon's HTTP surface honours or requires per-user keys",
+			Long: "Per-user daemon keys (#13659, docs/daemon-auth.md). off, the default, " +
+				"is the behaviour before keys existed: only transport.bearerToken, when set, " +
+				"gates the daemon. permissive honours an mcpx key presented as 'Authorization: " +
+				"Bearer mcpx_key_...', refuses an unknown or revoked one 401, and still serves an " +
+				"unauthenticated loopback caller. required refuses every HTTP caller without a " +
+				"valid key 401 with a WWW-Authenticate header. In both, the unix socket stays " +
+				"filesystem-permission authentication: its caller is the owner and needs no key. " +
+				"Keys are stored only as SHA-256 hashes in auth.json (0600) in the state " +
+				"directory and are re-read when that file changes, so a revocation takes effect " +
+				"on the next request. transport.bearerToken, when set, is still honoured in " +
+				"every mode as the legacy-transport-token key.",
+		},
+		{
+			Path: "auth.capabilityCeilings", Scope: ScopeDaemon, Kind: KindString,
+			Default:  `[{"name":"full","tools":["*"]},{"name":"discovery","tools":[]},{"name":"admin","tools":[]}]`,
+			Commands: []string{"daemon"}, Hot: true,
+			Name:  "Capability ceilings",
+			Short: "named daemon key ceilings and the upstream tools each permits",
+			Long: "A JSON array of {name, tools} objects. Each tool entry is an exact " +
+				"namespace:tool pair; '*' permits every upstream tool. The defaults keep " +
+				"the legacy full key compatible and give discovery/admin keys no upstream " +
+				"tool calls. Unknown ceiling names, duplicate names, malformed JSON, and " +
+				"malformed policies fail closed for authenticated calls. Example: " +
+				`[{"name":"docs","tools":["docs:search"]}]` +
+				". Configure with auth.capabilityCeilings or --auth-capability-ceilings.",
+		},
+		{
 			Path: "transport.allowedOrigins", Scope: ScopeDaemon, Kind: KindList,
 			Default: defaults.CSV(defaults.TransportAllowedOrigins), Repeatable: true,
 			Commands: []string{"daemon"},

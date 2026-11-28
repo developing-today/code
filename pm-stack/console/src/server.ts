@@ -15,7 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -38,20 +38,20 @@ import {
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Plan } from "./plan.ts";
+import { ownerSettingsAdopted } from "./settings.ts";
 import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
 import { Named } from "./named.ts";
 import { EdgeLink } from "./sync.ts";
+import { memoryShelf, Trends } from "./trends.ts";
 import { Work } from "./work.ts";
+import appFiles from "../public/files.json";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
-const STATIC = new Map([
-  ["app.js", "text/javascript; charset=utf-8"],
-  ["outbox.js", "text/javascript; charset=utf-8"],
-  ["app.css", "text/css; charset=utf-8"],
-  ["icon.svg", "image/svg+xml"],
-  ["sw.js", "text/javascript; charset=utf-8"],
-]);
+/** The app's files and what each is served as: public/files.json is the
+ * one list of them (the Worker, its build and the service worker read
+ * the same one). */
+const STATIC = new Map<string, string>(appFiles.files.map((f) => [f.path, f.type]));
 
 const APK_NAME = "pm-console.apk";
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -107,6 +107,18 @@ function file(req: Request, name: string, type: string): Response {
 }
 
 export { assetLinks, type Phones };
+
+/** The history behind the Trends screen, for these dependencies: made
+ * once and kept (in memory: a machine reads it again when it starts). */
+const trendsKept = new WeakMap<Deps, Trends>();
+function trendsOf(deps: Deps): Trends {
+  let trends = trendsKept.get(deps);
+  if (!trends) {
+    trends = new Trends(deps.ops, memoryShelf());
+    trendsKept.set(deps, trends);
+  }
+  return trends;
+}
 
 /** The plan's reader for these dependencies: the one given, or one made
  * from the same `ops` and `work` and kept. */
@@ -229,7 +241,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
 
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
-  if (path === `${BASE}/health` && method === "GET") return json({ ok: true });
+  // Which commit this console was started from, where it knows:
+  // install.sh waits for the console to answer as the release it has
+  // just put into service.
+  if (path === `${BASE}/health` && method === "GET") return json({ ok: true, version: deps.self?.version ?? null });
   if (path === "/manifest.webmanifest" && method === "GET") return manifest();
   // Not behind the sign-in, and checked here instead: a linked phone.
   if (deps.phones && deps.docs) {
@@ -312,11 +327,16 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
+          // When the store tokens run out (#14255). A machine's to
+          // read: only a machine can fetch every token by name, so the
+          // edge passes this on to one.
+          case "tokens":
+            return json(await ops.tokenExpiries());
         }
       }
       // What needs only GitHub and the queue store: the same code
       // answers these at the edge without this machine.
-      const read = await platformRead(seg, query, ops, planOf(deps));
+      const read = await platformRead(seg, query, ops, planOf(deps), trendsOf(deps));
       if (read !== undefined) return json(read);
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
         return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);
@@ -466,6 +486,13 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
             : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
         }
+        // Something that may have changed is not done unasked once it
+        // is more than ten minutes old (#13501), sent straight here or
+        // relayed by the edge (which passes the device's body on as it
+        // came, and holds the device to the same rule first).
+        if (before === null && staleAct(kind, body, Date.now())) {
+          return json({ error: STALE_ACT_ERROR, stale: true }, 409);
+        }
         return await act(
           kind || "unknown",
           kept,
@@ -549,9 +576,15 @@ export function loaders(
       },
     },
     questions: { ttlMs: 15_000, load: () => work.questions() },
+    // Decision-set discovery belongs to the edge's Worker reader.
+    questionSets: { ttlMs: 45_000, load: async () => null },
     prs: { ttlMs: 45_000, load: () => ops.prs() },
     priorities: { ttlMs: 120_000, load: () => ops.priorities() },
+    done: { ttlMs: 60_000, load: () => work.done() },
     agents: { ttlMs: 30_000, load: () => ops.agents() },
+    // The pipeline counted down to its unread instructions (#14377):
+    // all the phone's summary takes from the feed.
+    pipeline: { ttlMs: 30_000, load: () => ops.unreadInstructions() },
     services: { ttlMs: 20_000, load: () => ops.services() },
     more: { ttlMs: 3_600_000, load: async () => more },
   };
@@ -664,10 +697,27 @@ export function androidBuild(path: string) {
   };
 }
 
+/** What a release laid out by redeploy.sh says of itself, in the file
+ * beside its code: the commit of main it is, and its console's tree.
+ * Null for anything that is not such a file. */
+export function releaseSaid(text: string): { commit: string; tree: string | null } | null {
+  const commit = /^commit=([0-9a-f]{40})$/m.exec(text)?.[1];
+  if (!commit) return null;
+  return { commit, tree: /^tree=([0-9a-f]{40})$/m.exec(text)?.[1] ?? null };
+}
+
 /** The commit this console was started from, or nothing if it cannot
- * be told (not a checkout, no git). The service is restarted when a
- * merge is put into service, so this is the code that is running. */
+ * be told. In service it runs from a release, which says; started from
+ * a checkout (by hand, or in a test), the checkout is asked. The
+ * service is restarted when a release is put into service, so this is
+ * the code that is running. */
 async function runningCommit(): Promise<string | undefined> {
+  try {
+    const said = releaseSaid(readFileSync(join(import.meta.dir, "..", ".release"), "utf8"));
+    if (said) return said.commit.slice(0, 12);
+  } catch {
+    // Not a release: a checkout.
+  }
   try {
     const git = Bun.spawn(["git", "-C", import.meta.dir, "rev-parse", "--short=12", "HEAD"], {
       stdout: "pipe",
@@ -691,7 +741,13 @@ if (import.meta.main) {
   const docs = new Docs(loaders(ops, work, await morePages()));
   const state = dirname(cfg.auditFile);
   const push = new Push(fileStore(join(state, "push.json")), contact(cfg.repo));
-  const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
+  const notifier = new Notifier(
+    docs,
+    push,
+    fileStore(join(state, "notified.json")),
+    Date.now,
+    async () => (await ops.tokenExpiries()).tokens,
+  );
   const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {
     cfg,
@@ -714,6 +770,9 @@ if (import.meta.main) {
   // What this machine is called: what it was told to be, or its own name.
   const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
   deps.self = self;
+  // What this machine runs with of the settings the owner may change,
+  // before the owner's changes: its environment's, or main's.
+  const ownSettings = { promptLabel: cfg.promptLabel, needsRepos: [...cfg.needsRepos] };
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
@@ -725,6 +784,16 @@ if (import.meta.main) {
         named,
         docs,
         phones: devices,
+        // The owner's changes to the settings the owner may change, as
+        // the edge says them, run with in place of this machine's own;
+        // its own again once they are put back (#14957).
+        adopt: (said) => {
+          const adopted = ownerSettingsAdopted(ownSettings, said);
+          if (adopted === null) return null;
+          cfg.promptLabel = adopted.values.promptLabel;
+          cfg.needsRepos = adopted.values.needsRepos;
+          return adopted.rev;
+        },
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,

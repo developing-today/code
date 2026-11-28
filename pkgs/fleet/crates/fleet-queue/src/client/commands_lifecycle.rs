@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use super::*;
 
 pub(super) fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_verb_args(
+    let args = parse_verb_args_multi(
         "claim",
         rest,
         &[
@@ -20,6 +20,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "lease-seconds",
             "lane",
             "task",
+            "tasks",
             "count",
             "from-session",
             "platform",
@@ -31,8 +32,11 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "pool",
             "launched-by",
             "remaining-budget-minutes",
+            "manual-override",
         ],
-        &["handoff", "bind"],
+        &["handoff", "bind", "take-over"],
+        // #9178 §3: --task repeats to name a batch of tasks.
+        &["task"],
     );
     reject_extra_pos("claim", &args, 0);
     // #8606: a zero-intent claim refuses before any broker
@@ -147,8 +151,81 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // ordinary predicate, or a sink row). The opencode claimant
     // uses this to collect handed-off tasks out of the sink; a
     // plain claim never names a task.
-    if let Some(task) = args.get_i64("task") {
-        body["task_id"] = json!(task);
+    // A repeated (or comma-joined) --task names a by-ids batch
+    // instead (derived below); only a single --task is a by-id
+    // claim of exactly one row.
+    let repeated_task_batch = args.get("tasks").is_none() && args.get_list("task").len() > 1;
+    if !repeated_task_batch {
+        if let Some(task) = args.get_i64("task") {
+            body["task_id"] = json!(task);
+        }
+    }
+    // --tasks <id,id,...> (#9178 §3): by-ids batch claim — claim
+    // several NAMED tasks for this session in one operation; the
+    // broker answers with a per-task result for every id. It
+    // names its rows explicitly, so it combines with no other
+    // naming or picking shape; --take-over is its one modifier.
+    let task_ids = match parse_task_ids_flag(args.get("tasks")) {
+        Ok(ids) => ids,
+        Err(e) => die(2, &e),
+    };
+    // Repeated --task <id> (#9178 §3, ported from PR #16396): the
+    // section's example form — `--task <id1> --task <id2>` — names
+    // the same batch as --tasks; the multi parser accumulated the
+    // occurrences comma-joined, so get_list reads every id.
+    let task_ids = if task_ids.is_empty() && repeated_task_batch {
+        args.get_list("task")
+            .iter()
+            .map(|raw| match parse_i64_flag("task", raw) {
+                Ok(n) if n > 0 => n,
+                Ok(_) => die(2, "claim: --task ids must be positive task ids (#9178 §3)"),
+                Err(msg) => die(2, &msg),
+            })
+            .collect::<Vec<i64>>()
+    } else {
+        task_ids
+    };
+    if !task_ids.is_empty() {
+        if (args.has("task") && !repeated_task_batch)
+            || args.has("handoff")
+            || args.get("from-session").is_some()
+            || args.get("manual-override").is_some()
+            || args.has("bind")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --tasks cannot combine with --task, --handoff, \
+                 --from-session, --manual-override, --count, or --bind (#9178 §3)",
+            );
+        }
+        body["task_ids"] = json!(task_ids);
+        if args.has("take-over") {
+            body["take_over"] = json!(true);
+        }
+    } else if args.has("take-over") {
+        die(
+            2,
+            "claim: --take-over requires a by-ids batch (--tasks <id,id,...> or repeated --task) (#9178 §3)",
+        );
+    }
+    if let Some(reason) = args.get("manual-override") {
+        if args.get_i64("task").filter(|task| *task > 0).is_none() {
+            die(2, "claim: --manual-override requires --task <positive-id>");
+        }
+        if reason.trim().is_empty() {
+            die(2, "claim: --manual-override reason must not be empty");
+        }
+        if args.get("from-session").is_some()
+            || args.has("handoff")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --manual-override cannot combine with transfer, handoff, or batch",
+            );
+        }
+        body["manual_override"] = json!(reason.trim());
     }
     // --count <n> (#8217): batch claim — the broker runs the same
     // atomic pick n times and answers with every claimed row. The
@@ -220,6 +297,21 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             }
         }
         return claim_batch_output(&resp, &worker, count);
+    }
+    if !task_ids.is_empty() {
+        // #9178 §3: timeline appends for the rows this operation
+        // newly claimed (already-owned rows keep the binding
+        // window their original claim opened).
+        if let Some(results) = resp.get("results").and_then(|r| r.as_array()) {
+            for result in results {
+                if result.get("outcome").and_then(|v| v.as_str()) == Some("claimed") {
+                    if let Some(row) = result.get("row") {
+                        claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+                    }
+                }
+            }
+        }
+        return claim_by_ids_output(&resp, &worker, task_ids.len() as i64);
     }
     // #9046: mirror the claim's binding + stamp into the
     // timeline (a no-op when the broker stamped in-op).
@@ -314,6 +406,14 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             code
         }
         GuardOutcome::Serve => {
+            // #4986: the claim is the placement for queue work (#8187).
+            // Best-effort placement-record emission: it logs to stderr
+            // (and FLEET_PLACEMENT_LOG) and never alters the claim.
+            placement_emit::emit_placement_record(
+                &out,
+                &worker,
+                body.get("lane").and_then(|v| v.as_str()).unwrap_or(""),
+            );
             attach_mode_line(&mut out, "claim", legs_served(true, true));
             print_json(&out);
             code
@@ -384,6 +484,150 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
             crate::BATCH_CLAIM_MAX
         )),
     }
+}
+
+/// #9178 §3: --tasks <id,id,...> parsing for the by-ids batch
+/// claim. Pure so the shape is unit-testable: a comma-separated
+/// list of positive task ids; anything else is a usage error.
+/// Absent flag is an empty list (not a by-ids claim at all).
+pub(super) fn parse_task_ids_flag(raw: Option<String>) -> Result<Vec<i64>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        let id: i64 = part
+            .parse()
+            .map_err(|_| format!("claim --tasks: {part:?} is not a task id (#9178 §3)"))?;
+        if id <= 0 {
+            return Err(format!(
+                "claim --tasks: task ids must be positive (got {id}) (#9178 §3)"
+            ));
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Err("claim --tasks must name at least one task id (#9178 §3)".to_string());
+    }
+    Ok(ids)
+}
+
+/// The by-ids batch claim's response handling (#9178 §3): the
+/// broker resolved every named id to a per-task outcome. Rows
+/// this session now holds go through the same payload defense
+/// and #6741 fallback guard as a single claim; a guard-held row
+/// is blocked back and its outcome is rewritten to guard-held so
+/// the printed results never claim a serve the guard refused.
+/// Prints {"results": [...], "tasks": [...], "claimed": k,
+/// "requested": n, "guard_held": [...]}. Exit 0 when the session
+/// holds at least one of the named tasks afterwards (claimed or
+/// already-owned); NO_CLAIM_EXIT otherwise.
+pub(super) fn claim_by_ids_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let mut results = resp
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    let mut github_read = true;
+    for result in results.iter_mut() {
+        let outcome = result
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if outcome != "claimed" && outcome != "already-owned-by-this-session" {
+            continue;
+        }
+        let Some(row) = result.get("row").cloned() else {
+            continue;
+        };
+        // Payload defense in depth, as in claim_output (#5444).
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(&row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(&row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert("outcome".to_string(), json!("guard-held"));
+                    obj.insert("held_by".to_string(), json!(holder));
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                github_read = false;
+                let mut row = row;
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row),
+        }
+    }
+    let claimed = results
+        .iter()
+        .filter(|r| r.get("outcome").and_then(|v| v.as_str()) == Some("claimed"))
+        .count();
+    let held_by_session = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.get("outcome").and_then(|v| v.as_str()),
+                Some("claimed") | Some("already-owned-by-this-session")
+            )
+        })
+        .count();
+    let mut out = json!({
+        "results": results,
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    });
+    attach_mode_line(&mut out, "claim", legs_served(true, github_read));
+    print_json(&out);
+    if held_by_session == 0 {
+        eprint("repo-queue: by-ids claim held none of the named tasks (#9178 §3)");
+        return NO_CLAIM_EXIT;
+    }
+    0
 }
 
 /// The batch claim's response handling (#8217): the broker ran the
@@ -500,9 +744,17 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
 /// the reason on a `released` event. Dispatch uses it for an item
 /// whose sub-task failed to launch or bind: the item goes back to
 /// the pool in the same touch instead of sitting claimed and idle
-/// until its lease expires.
+/// until its lease expires. With `--limit-platform <family>
+/// --limit-reason <text>` (#14993) the release also records a
+/// platform limitation on the task, so a task routed to a seat
+/// the releaser is not stops being offered to the wrong family.
 pub(super) fn cmd_release(rest: &[String]) -> i32 {
-    let args = parse_verb_args("release", rest, &["worker", "lane", "reason"], &[]);
+    let args = parse_verb_args(
+        "release",
+        rest,
+        &["worker", "lane", "reason", "limit-platform", "limit-reason"],
+        &[],
+    );
     reject_extra_pos("release", &args, 1);
     let Some(reason) = args.get("reason") else {
         die(
@@ -520,9 +772,11 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
             "worker": opt_worker(&args),
             "lane": lane_arg(&args),
             "reason": reason,
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
         }),
     ));
-    let row = require_row(&resp, "release_repo_task");
+    let row = served_row(require_row(&resp, "release_repo_task"), "release");
     // #9046: a release closes the binding window on the timeline.
     unbound_append(&opt_worker(&args), &row, "release");
     print_json(&row);
@@ -679,7 +933,10 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&require_row(&resp, "assign_repo_task_lane"));
+    print_json(&served_row(
+        require_row(&resp, "assign_repo_task_lane"),
+        "lane",
+    ));
     0
 }
 
@@ -753,7 +1010,10 @@ pub(super) fn cmd_bind(rest: &[String]) -> i32 {
             }),
         );
     }
-    print_json(&require_row(&resp, "bind_repo_task_lane_session"));
+    print_json(&served_row(
+        require_row(&resp, "bind_repo_task_lane_session"),
+        "bind",
+    ));
     0
 }
 
@@ -923,7 +1183,37 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "park");
     }
-    row_or_ledger(&resp, "park_task");
+    row_or_ledger(&resp, "park_task", "park");
+    0
+}
+
+/// Change a task's queue priority and request the broker's linked
+/// GitHub synchronization.
+pub(super) fn cmd_reprioritize(rest: &[String]) -> i32 {
+    let args = parse_verb_args("reprioritize", rest, &["worker", "reason"], &[]);
+    reject_extra_pos("reprioritize", &args, 2);
+    let id = args.pos_i64(0, "task_id");
+    let raw = args
+        .pos(1)
+        .unwrap_or_else(|| die(2, "reprioritize: priority is required"));
+    let v: Value = match raw.parse::<i64>() {
+        Ok(n) => json!(n),
+        Err(_) => json!(raw),
+    };
+    let to = match crate::validate::resolve_priority(&v, "priority") {
+        Ok(n) => n,
+        Err(e) => die(2, &e),
+    };
+    // The actor is the authenticated caller identity: the worker id
+    // presented over the broker's X-Agent-Token channel (opt_worker
+    // default), exactly like the other lifecycle verbs. No free-form
+    // actor string is accepted — it would be spoofable.
+    let body = json!({"task_id": id, "priority": to, "worker": opt_worker(&args), "reason": args.get("reason")});
+    let resp = unwrap_ok(call("/reprioritize", &body));
+    print_json(&served_row(
+        require_row(&resp, "reprioritize_task"),
+        "reprioritize",
+    ));
     0
 }
 
@@ -939,7 +1229,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     let resp = unwrap_ok(call("/wake", &body));
-    print_json(&require_row(&resp, "wake_task"));
+    print_json(&served_row(require_row(&resp, "wake_task"), "wake"));
     0
 }
 
@@ -956,7 +1246,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
 pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
     let config = fleet_config::Config::load().unwrap_or_default();
     fleet_secrets::Resolver::default_chain(&config)
-        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
         .map(|v| v.expose().to_string())
         .map_err(|e| e.to_string())
 }
@@ -964,7 +1254,7 @@ pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
 /// #8568: parse cmd_block's --options-json flag: a JSON array of
 /// {"id": ..., "label": ...} objects. Bad shapes are usage errors
 /// at the caller's terminal, like --progress.
-pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_user::NeedsUserOption> {
     let Some(raw) = args.get("options-json") else {
         return Vec::new();
     };
@@ -980,7 +1270,7 @@ pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrew
             let id = o.get("id").and_then(|v| v.as_str());
             let label = o.get("label").and_then(|v| v.as_str());
             match (id, label) {
-                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                (Some(id), Some(label)) => crate::needs_user::NeedsUserOption {
                     id: id.to_string(),
                     label: label.to_string(),
                 },
@@ -1082,7 +1372,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
         match (args.get("ledger-id"), question) {
-            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_user::BlockNeedsUser {
                 ledger_id,
                 question,
                 context: args.get("context"),
@@ -1126,7 +1416,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     if let Some(nd) = &needs_drew {
         // Snake_case keys, matching the /block body's own style;
         // the broker (and, later, the broker-side raise) reads
-        // this shape back via needs_drew::from_block_request.
+        // this shape back via needs_user::from_block_request.
         let mut nd_json = json!({
             "ledger_id": nd.ledger_id,
             "question": nd.question,
@@ -1153,7 +1443,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         body["dep_max_ttl_seconds"] = json!(s);
     }
     let resp = unwrap_ok(call("/block", &body));
-    print_json(&require_row(&resp, "block_task"));
+    print_json(&served_row(require_row(&resp, "block_task"), "block"));
     // #8568: the live raise path — after the block lands, post
     // the needs-drew alert to the PM throat. Emission failure
     // must NOT fail the block (the block already succeeded and
@@ -1162,7 +1452,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     // above keeps its current JSON shape exactly.
     if let Some(nd) = &needs_drew {
         let raised = resolve_alerts_intake_token()
-            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+            .and_then(|token| crate::needs_user::post_needs_user(&token, nd));
         match raised {
             Ok(_) => eprint(&format!(
                 "repo-queue: needs-drew raised for ledger item {}",
@@ -1289,7 +1579,7 @@ pub(super) fn cmd_unblock(rest: &[String]) -> i32 {
         body["drop_deps"] = json!(drops);
     }
     let resp = unwrap_ok(call("/unblock", &body));
-    print_json(&require_row(&resp, "unblock_task"));
+    print_json(&served_row(require_row(&resp, "unblock_task"), "unblock"));
     0
 }
 
@@ -1308,7 +1598,10 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&require_row(&resp, "dep_recheck"));
+    print_json(&served_row(
+        require_row(&resp, "dep_recheck"),
+        "dep-recheck",
+    ));
     0
 }
 
@@ -1329,7 +1622,33 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/quarantine-recheck", &body));
-    print_json(&require_row(&resp, "quarantine_recheck"));
+    print_json(&served_row(
+        require_row(&resp, "quarantine_recheck"),
+        "quarantine-recheck",
+    ));
+    0
+}
+
+/// time-recheck (#14212): run the broker's time recheck pass
+/// now, or force one blocked task's recheck with --task. The
+/// pass requeues blocked rows whose {"kind": "time"} ready
+/// condition has lapsed. Production cadence is the sweep's;
+/// this is the manual trigger.
+pub(super) fn cmd_time_recheck(rest: &[String]) -> i32 {
+    let args = parse_verb_args("time-recheck", rest, &["task", "limit"], &[]);
+    reject_extra_pos("time-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/time-recheck", &body));
+    print_json(&served_row(
+        require_row(&resp, "time_recheck"),
+        "time-recheck",
+    ));
     0
 }
 /// repair (#13191): repair a quarantined / malformed task
@@ -1354,26 +1673,60 @@ pub(super) fn cmd_repair(rest: &[String]) -> i32 {
 }
 
 pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
-    let args = parse_verb_args("cancel", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args(
+        "cancel",
+        rest,
+        &["worker", "reason", "resolution", "substatus", "ref"],
+        &[],
+    );
     reject_extra_pos("cancel", &args, 1);
     let reason = args
         .get("reason")
         .unwrap_or_else(|| die(2, "cancel: --reason is required"));
+    let resolution = args
+        .get("resolution")
+        .unwrap_or_else(|| die(2, "cancel: --resolution is required"));
+    if let Err(e) = crate::validate::validate_resolution(
+        "cancelled",
+        Some(&resolution),
+        args.get("substatus").as_deref(),
+        Some(&reason),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("cancel: {e}"));
+    }
     let worker = args
         .get("worker")
         .unwrap_or_else(|| "fleet-monitor".to_string());
-    let resp = unwrap_ok(call(
-        "/cancel",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": worker,
-            "reason": reason,
-        }),
-    ));
-    let row = require_row(&resp, "cancel_repo_task");
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": worker,
+        "reason": reason,
+    });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
+    let resp = unwrap_ok(call("/cancel", &body));
+    let row = served_row(require_row(&resp, "cancel_repo_task"), "cancel");
     // #9046: a cancel closes the binding window on the timeline.
     unbound_append(&worker, &row, "cancel");
     print_json(&row);
+    0
+}
+
+/// Run the idempotent, evidence-only terminal-resolution backfill and
+/// print the baseline census for #14170 Q2.
+pub(super) fn cmd_resolution_backfill(rest: &[String]) -> i32 {
+    let args = parse_verb_args("resolution-backfill", rest, &[], &[]);
+    reject_extra_pos("resolution-backfill", &args, 0);
+    let resp = unwrap_ok(call("/resolution-backfill", &json!({})));
+    print_json(&require_row(&resp, "resolution_backfill"));
     0
 }
 
@@ -1397,7 +1750,7 @@ pub(super) fn cmd_revive(rest: &[String]) -> i32 {
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
-    print_json(&require_row(&resp, "revive_task"));
+    print_json(&served_row(require_row(&resp, "revive_task"), "revive"));
     0
 }
 
@@ -1436,7 +1789,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "fail");
     }
-    row_or_ledger(&resp, "fail_repo_task");
+    row_or_ledger(&resp, "fail_repo_task", "fail");
     0
 }
 
@@ -1451,6 +1804,10 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
+            "resolution",
+            "substatus",
+            "reason",
+            "ref",
         ],
         &[],
     );
@@ -1473,6 +1830,15 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
                 die(2, "--result must be a JSON object");
             }
         }
+    }
+    if let Err(e) = crate::validate::validate_resolution(
+        "done",
+        args.get("resolution").as_deref().or(Some("done")),
+        args.get("substatus").as_deref(),
+        args.get("reason").as_deref(),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("complete: {e}"));
     }
     check_telemetry_fields(&result_obj, "--result");
     if let Some(tel_raw) = args.get("telemetry") {
@@ -1562,6 +1928,16 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
         "lane": lane_arg(&args),
         "result": result_obj,
     });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("reason", "resolution_reason"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
     if let Some(ex) = ex {
         body["execution"] = ex;
     }
@@ -1570,7 +1946,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "complete");
     }
-    row_or_ledger(&resp, "complete_task");
+    row_or_ledger(&resp, "complete_task", "complete");
     0
 }
 

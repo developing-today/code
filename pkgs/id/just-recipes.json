@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/root.just",
+      "source": "/home/user/git/fleet/14503-s2/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1035,7 +1035,7 @@
       "attributes": [{ "group": "build" }],
       "body": [["cargo build"]],
       "dependencies": [],
-      "doc": "Run cargo build without web feature (debug)",
+      "doc": "`cargo build`, because the lib set equals the root default set.",
       "name": "build-lib-cargo",
       "parameters": [],
       "priors": 0,
@@ -1136,9 +1136,9 @@
     },
     "build-web-cargo": {
       "attributes": [{ "group": "build" }],
-      "body": [["cargo build --features web"]],
+      "body": [["cargo build --features \"$(./scripts/variant-features.sh web --minus-defaults)\""]],
       "dependencies": [],
-      "doc": "Run cargo build with web feature (debug)",
+      "doc": "defaulted cargo build already enables.",
       "name": "build-web-cargo",
       "parameters": [],
       "priors": 0,
@@ -1465,10 +1465,16 @@
         { "arguments": [], "recipe": "cargo-check", "star": null },
         { "arguments": [], "recipe": "clippy-lint", "star": null },
         { "arguments": [], "recipe": "clippy-native-shell", "star": null },
+        { "arguments": [], "recipe": "clippy-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "clippy-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
+        { "arguments": [], "recipe": "test-android-remote", "star": null },
+        { "arguments": [], "recipe": "test-tui-shell", "star": null },
         { "arguments": [], "recipe": "test-hw-shell", "star": null },
+        { "arguments": [], "recipe": "test-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "test-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
@@ -1480,7 +1486,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 16,
+      "priors": 22,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1497,6 +1503,32 @@
       "private": false,
       "quiet": false,
       "namepath": "clean",
+      "shebang": false
+    },
+    "clippy-bevy-bridge": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-bevy-bridge --all-targets"]],
+      "dependencies": [],
+      "doc": "Clippy for id-bevy-bridge (#13704): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-bevy-bridge",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-bevy-bridge",
+      "shebang": false
+    },
+    "clippy-bevy-presenter": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-bevy-presenter --all-targets"]],
+      "dependencies": [],
+      "doc": "Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-bevy-presenter",
       "shebang": false
     },
     "clippy-lint": {
@@ -2061,7 +2093,7 @@
       "attributes": [{ "group": "build" }],
       "body": [["cargo build --release"]],
       "dependencies": [],
-      "doc": "Run cargo build without web feature (release)",
+      "doc": "Run cargo build with the lib variant's feature set (release)",
       "name": "release-lib-cargo",
       "parameters": [],
       "priors": 0,
@@ -2088,9 +2120,9 @@
     },
     "release-web-cargo": {
       "attributes": [{ "group": "build" }],
-      "body": [["cargo build --release --features web"]],
+      "body": [["cargo build --release --features \"$(./scripts/variant-features.sh web --minus-defaults)\""]],
       "dependencies": [],
-      "doc": "Run cargo build with web feature (release)",
+      "doc": "Run cargo build with the web variant's feature set (release)",
       "name": "release-web-cargo",
       "parameters": [],
       "priors": 0,
@@ -2494,6 +2526,45 @@
       "namepath": "test",
       "shebang": false
     },
+    "test-android-remote": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo test -p id-android-remote"]],
+      "dependencies": [],
+      "doc": "Run the Android remote-drive session bridge's contract and loopback tests (#1831).",
+      "name": "test-android-remote",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-android-remote",
+      "shebang": false
+    },
+    "test-bevy-bridge": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-bevy-bridge"]],
+      "dependencies": [],
+      "doc": "Run the id-bevy-bridge tests, including the replay oracle that gates a bevy_ecs version bump (#13704): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-bevy-bridge",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-bevy-bridge",
+      "shebang": false
+    },
+    "test-bevy-presenter": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-bevy-presenter"]],
+      "dependencies": [],
+      "doc": "Run the id-bevy-presenter tests (#13705): the 2D presenter-client app against a world hosted in a separate process; non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-bevy-presenter",
+      "shebang": false
+    },
     "test-crate-integration": {
       "attributes": [{ "group": "test" }],
       "body": [
@@ -2651,9 +2722,9 @@
     },
     "test-nix": {
       "attributes": [{ "group": "test" }],
-      "body": [["nix flake check"], ["@echo \"✓ nix flake check passed (27 checks — runs everything)\""]],
+      "body": [["nix flake check"], ["@echo \"✓ nix flake check passed (all checks — runs everything)\""]],
       "dependencies": [],
-      "doc": "Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)",
+      "doc": "Run nix flake check (all sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)",
       "name": "test-nix",
       "parameters": [],
       "priors": 0,
@@ -2778,10 +2849,14 @@
       "attributes": [{ "group": "test" }],
       "body": [
         ["cargo test --manifest-path examples/rust-world/Cargo.toml"],
-        ["cargo test --manifest-path examples/rust-counter/Cargo.toml"]
+        ["cargo test --manifest-path examples/rust-counter/Cargo.toml"],
+        ["cargo test --manifest-path examples/rust-cells/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-orbit/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-colony/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-sketch/Cargo.toml"]
       ],
       "dependencies": [],
-      "doc": "Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
+      "doc": "Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells), rust-orbit (examples/rust-orbit; the #13606 Orbit Arcade guest), rust-colony (examples/rust-colony; the #13605 Colony guest) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
       "name": "test-rust-examples",
       "parameters": [],
       "priors": 0,
@@ -2845,6 +2920,32 @@
       "private": false,
       "quiet": false,
       "namepath": "test-shard-sandbox",
+      "shebang": false
+    },
+    "test-sketch": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run --all-features -p id --test sketch_host_play"]],
+      "dependencies": [],
+      "doc": "Run the Sketch host load/play fixture (#13656): the regular ID host loads the checked-in examples/rust-sketch/sketch.wasm, plays the six-step #13608 vector, and asserts snapshot/restore plus next-operation equivalence.",
+      "name": "test-sketch",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-sketch",
+      "shebang": false
+    },
+    "test-tui-shell": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-tui-shell"]],
+      "dependencies": [],
+      "doc": "Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-tui-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-tui-shell",
       "shebang": false
     },
     "test-unit": {
@@ -3389,7 +3490,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/14503-s2/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

@@ -16,9 +16,14 @@ export interface SchedulerAudit {
   job: SchedulerJobName;
   startedAt: string;
   finishedAt: string;
-  status: "ok" | "error";
+  status: "ok" | "error" | "skipped";
   error?: string;
+  reason?: string;
 }
+
+/** A job returns `{ skipped }` when a gate (for example the drill pause file)
+ *  means the tick did no work; anything else is a normal ok. */
+export type JobResult = { skipped: string } | void;
 
 export interface PmCoreScheduler {
   start(): void;
@@ -28,7 +33,7 @@ export interface PmCoreScheduler {
 }
 
 type Timer = ReturnType<typeof setInterval>;
-type Job = () => Promise<void> | void;
+type Job = () => Promise<JobResult> | JobResult;
 
 export function createPmCoreScheduler(options: {
   runQuota: Job;
@@ -71,8 +76,18 @@ export function createPmCoreScheduler(options: {
     active.add(job);
     const startedAt = now().toISOString();
     try {
-      await jobs[job]();
-      await writeAuditSafely({ job, startedAt, finishedAt: now().toISOString(), status: "ok" });
+      const result = await jobs[job]();
+      if (typeof result === "object" && result !== null && "skipped" in result) {
+        await writeAuditSafely({
+          job,
+          startedAt,
+          finishedAt: now().toISOString(),
+          status: "skipped",
+          reason: result.skipped,
+        });
+      } else {
+        await writeAuditSafely({ job, startedAt, finishedAt: now().toISOString(), status: "ok" });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await writeAuditSafely({

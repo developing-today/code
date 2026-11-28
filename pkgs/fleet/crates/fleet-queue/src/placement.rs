@@ -143,6 +143,13 @@ pub struct Job {
     pub actions_cache: Option<String>,
     pub actions_cache_restore_keys: Vec<String>,
     pub allow_paid_blacksmith: f64,
+    /// Workflow job timeout (`--timeout-minutes`, 5–120). None leaves
+    /// the workflow's own default (60) in force (#13178).
+    pub timeout_minutes: Option<u32>,
+    /// The placement session handle this dispatch belongs to. Not part
+    /// of the stored job: it travels as the `dispatch_id` input so the
+    /// run's display title names the session (#13178).
+    pub session_handle: Option<String>,
 }
 
 impl Job {
@@ -162,6 +169,7 @@ impl Job {
             "actions_cache": self.actions_cache,
             "actions_cache_restore_keys": self.actions_cache_restore_keys,
             "allow_paid_blacksmith": self.allow_paid_blacksmith,
+            "timeout_minutes": self.timeout_minutes,
         })
     }
 
@@ -180,7 +188,57 @@ impl Job {
         }
         Value::Object(out)
     }
+
+    /// Rebuild a job from its stored record — the `session status`
+    /// grant path re-dispatches a coordinator-queued session from the
+    /// job its dispatch pass committed. Unknown or missing fields
+    /// fall back to the dispatch defaults, exactly as the flag
+    /// parser would supply them.
+    fn from_json(v: &Value) -> Option<Job> {
+        let repo = v.get("repo")?.as_str()?.to_string();
+        let command = v.get("command")?.as_str()?.to_string();
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Job {
+            repo,
+            command,
+            git_ref: s("ref").unwrap_or_default(),
+            runner: s("runner").unwrap_or_else(|| "auto".to_string()),
+            platform: s("platform").unwrap_or_else(|| "linux".to_string()),
+            container: s("container"),
+            surface_pin: s("surface_pin"),
+            preferred_surface: s("preferred_surface"),
+            previous_run_id: v.get("previous_run_id").and_then(|x| x.as_i64()),
+            previous_run_repo: s("previous_run_repo"),
+            push_nix_cache: v
+                .get("push_nix_cache")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            actions_cache: s("actions_cache"),
+            actions_cache_restore_keys: v
+                .get("actions_cache_restore_keys")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            allow_paid_blacksmith: v
+                .get("allow_paid_blacksmith")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+            timeout_minutes: v
+                .get("timeout_minutes")
+                .and_then(|x| x.as_u64())
+                .and_then(|t| u32::try_from(t).ok())
+                .filter(|t| TIMEOUT_MINUTES_RANGE.contains(t)),
+            session_handle: None,
+        })
+    }
 }
+
+/// The range fleet-command.yml accepts for its `timeout_minutes` input.
+pub const TIMEOUT_MINUTES_RANGE: std::ops::RangeInclusive<u32> = 5..=120;
 
 // ----------------------------------------------------------------- context
 
@@ -306,259 +364,11 @@ pub fn owner_load_coverage_json(ctx: &Ctx) -> Value {
 }
 
 // ------------------------------------------------------- side-effect surface
-
-/// The boundary between the pure placement logic and the world:
-/// the GitHub API (as the App), the fleet-paperwork token flow, and
-/// the `gh codespace` surface. Production uses [`RealGh`]; tests
-/// substitute a fake.
-pub trait Gh {
-    /// An installation token for the repo's owner via the
-    /// fleet-paperwork helper, or None when the app does not cover
-    /// the repo / the helper is unavailable.
-    fn mint_token(&self, repo: &str) -> Option<String>;
-    /// Like the reference's app_token(): minting is mandatory on the
-    /// dispatch path — a surface the app cannot reach is ineligible,
-    /// loudly.
-    fn app_token(&self, repo: &str) -> R<String> {
-        self.mint_token(repo).ok_or_else(|| {
-            Die(format!(
-                "app token mint failed for {repo} (app does not cover it, \
-                 or the fleet-paperwork helper is unavailable) — surface \
-                 is ineligible for app dispatch until covered"
-            ))
-        })
-    }
-    /// The signed-in user's own token, for a surface whose registry
-    /// entry says `"dispatch_as": "user"`. Dispatching a workflow with
-    /// a token the fleet already holds is a routine operation
-    /// (FDR-0013), so a surface the App is not installed on is still
-    /// usable. None where no user token is available.
-    fn user_token(&self) -> Option<String> {
-        None
-    }
-    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
-    /// `gh codespace list --json name,repository,state`, parsed.
-    fn codespace_list(&self) -> R<Vec<Value>>;
-    /// `gh codespace ssh -c NAME -- COMMAND`; returns the exit code.
-    fn codespace_ssh(&self, name: &str, command: &str) -> R<i32>;
-    /// Like codespace_ssh but also returns trimmed stdout (used to
-    /// validate the reused codespace's checked-out revision).
-    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
-        Ok((self.codespace_ssh(name, command)?, String::new()))
-    }
-    fn sleep_secs(&self, secs: u64) {
-        std::thread::sleep(Duration::from_secs(secs));
-    }
-    fn now_epoch(&self) -> i64 {
-        now_epoch()
-    }
-}
-
-struct RealGh {
-    agent: ureq::Agent,
-    tokens: RefCell<HashMap<String, String>>,
-    /// The user's token, looked up at most once per run: a miss is
-    /// remembered too, so a cascade over several `dispatch_as: user`
-    /// surfaces does not repeat a slow lookup.
-    user: RefCell<Option<Option<String>>>,
-}
-
-/// The fleet-secrets name of the `gh` hosts file (the personal leg
-/// `fleet gh` uses).
-const USER_HOSTS_SECRET: &str = "github-cli.hosts-yml";
-
-/// The `oauth_token` value in gh's hosts.yml content. Line-shaped on
-/// purpose, like `fleet gh`'s own reader: the file is a small
-/// fixed-shape config.
-fn hosts_yml_token(hosts_yml: &str) -> Option<String> {
-    hosts_yml.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("oauth_token:")?;
-        let value = rest.trim().trim_matches('"').trim_matches('\'');
-        (!value.is_empty()).then(|| value.to_string())
-    })
-}
-
-/// The first usable token out of an ordered list of lookups; a
-/// lookup that yields only whitespace counts as a miss.
-fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
-    lookups
-        .iter()
-        .filter_map(|lookup| lookup())
-        .map(|t| t.trim().to_string())
-        .find(|t| !t.is_empty())
-}
-
-impl RealGh {
-    fn new() -> Self {
-        // Platform root store, not webpki-roots alone: hosts
-        // behind a TLS-intercepting egress proxy present the
-        // proxy's CA, which only the platform store carries (the
-        // sandbox seat's dispatch died with UnknownIssuer before
-        // this — code#13122; same fix as fleet's gh.rs App leg).
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(60)))
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .into();
-        RealGh {
-            agent,
-            user: RefCell::new(None),
-            tokens: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-fn paperwork_path() -> String {
-    std::env::var("FLEET_PAPERWORK").unwrap_or_else(|_| {
-        format!(
-            "{}/git/code/infra/fleet-paperwork/fleet_paperwork.py",
-            home_dir()
-        )
-    })
-}
-
-fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_default()
-}
-
-impl Gh for RealGh {
-    /// Where the user's token comes from, cheapest first: the
-    /// environment, the seat's own `gh` login, then the fleet secrets
-    /// chain by name (the same hosts file `fleet gh` reads). The
-    /// value goes into Authorization headers only.
-    fn user_token(&self) -> Option<String> {
-        if let Some(known) = self.user.borrow().as_ref() {
-            return known.clone();
-        }
-        let from_env = || {
-            ["GH_TOKEN", "GITHUB_TOKEN"]
-                .iter()
-                .filter_map(|k| std::env::var(k).ok())
-                .find(|v| !v.trim().is_empty())
-        };
-        let from_gh = || {
-            let out = std::process::Command::new("gh")
-                .args(["auth", "token"])
-                .stderr(std::process::Stdio::null())
-                .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).to_string())
-        };
-        let from_secrets = || {
-            let config = fleet_config::Config::load().unwrap_or_default();
-            let hosts = fleet_secrets::Resolver::default_chain(&config)
-                .resolve(USER_HOSTS_SECRET)
-                .ok()?;
-            hosts_yml_token(hosts.expose())
-        };
-        let found = first_token(&[&from_env, &from_gh, &from_secrets]);
-        *self.user.borrow_mut() = Some(found.clone());
-        found
-    }
-
-    fn mint_token(&self, repo: &str) -> Option<String> {
-        if let Some(tok) = self.tokens.borrow().get(repo) {
-            return Some(tok.clone());
-        }
-        let path = paperwork_path();
-        if !std::path::Path::new(&path).exists() {
-            return None;
-        }
-        let out = std::process::Command::new("python3")
-            .args([&path, "token", "--repo", repo])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if tok.is_empty() {
-            return None;
-        }
-        self.tokens
-            .borrow_mut()
-            .insert(repo.to_string(), tok.clone());
-        Some(tok)
-    }
-
-    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)> {
-        let url = if path.starts_with("http") {
-            path.to_string()
-        } else {
-            format!("https://api.github.com{path}")
-        };
-        let auth = format!("Bearer {token}");
-        let mut resp = if method == "POST" {
-            self.agent
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .header("Authorization", &auth)
-                .send_json(body.cloned().unwrap_or_else(|| json!({})))
-                .map_err(|e| Die(format!("github api {method} {path}: {e}")))?
-        } else {
-            self.agent
-                .get(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .header("Authorization", &auth)
-                .call()
-                .map_err(|e| Die(format!("github api {method} {path}: {e}")))?
-        };
-        let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        let payload = if text.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({ "message": text }))
-        };
-        Ok((status, payload))
-    }
-
-    fn codespace_list(&self) -> R<Vec<Value>> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "list", "--json", "name,repository,state"])
-            .output()
-            .map_err(|e| Die(format!("gh codespace list: {e}")))?;
-        if !out.status.success() {
-            return die(format!(
-                "gh codespace list failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if text.is_empty() {
-            return Ok(vec![]);
-        }
-        serde_json::from_str(&text).map_err(|e| Die(format!("gh codespace list json: {e}")))
-    }
-
-    fn codespace_ssh(&self, name: &str, command: &str) -> R<i32> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "ssh", "-c", name, "--", command])
-            .output()
-            .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
-        Ok(out.status.code().unwrap_or(-1))
-    }
-
-    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "ssh", "-c", name, "--", command])
-            .output()
-            .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
-        Ok((
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        ))
-    }
-}
+// Live GitHub surface — see placement/gh.rs (split for #16255);
+// `Gh` is re-exported here so `&dyn Gh` paths are unchanged.
+mod gh;
+pub use gh::Gh;
+pub(crate) use gh::{RealGh, first_token, home_dir, hosts_yml_token};
 
 // ---------------------------------------------------------------- registry
 
@@ -570,6 +380,23 @@ fn surf_str<'a>(surface: &'a Value, key: &str) -> &'a str {
 /// the App's installation token (registry field `dispatch_as`).
 fn dispatches_as_user(surface: &Value) -> bool {
     surf_str(surface, "dispatch_as") == "user"
+}
+
+/// The identity a surface dispatches as, for a session record's
+/// `actor` (#13178): the user's own credentials for a `dispatch_as:
+/// user` surface or a codespace, no remote identity for a laptop
+/// handoff, else the GitHub App installation. `None` (nothing chosen)
+/// records that no dispatch happened.
+pub(crate) fn dispatch_actor(surface: Option<&Value>) -> &'static str {
+    let Some(surface) = surface else {
+        return "none (no surface dispatched)";
+    };
+    match surf_str(surface, "kind") {
+        "laptop" => "laptop handoff (no remote dispatch)",
+        "codespace" => "user gh CLI credentials (codespace)",
+        _ if dispatches_as_user(surface) => "user token (dispatch_as: user)",
+        _ => "developing-today[bot] (GitHub App dispatch)",
+    }
 }
 
 /// The token a surface's API calls use, when one is available: the
@@ -952,6 +779,8 @@ fn submitted_by() -> String {
 // ---------------------------------------------------------------- adapters
 
 mod adapters;
+mod coordinator;
+pub(crate) use coordinator::{coordinator, placement_load_report};
 mod remote;
 use adapters::adapter_for;
 #[cfg(test)]
@@ -1397,6 +1226,151 @@ pub fn decide(
 
 // --------------------------------------------------------------- sessions
 
+/// #13765 queued-session completion: a session the coordinator
+/// queued carries its claim handle and job. Once the coordinator
+/// grants the claim, dispatch the stored job on the granted surface,
+/// confirm the slot, and move the record off `queued`. A failed
+/// dispatch releases the slot and fails the session. Best-effort: an
+/// unreachable coordinator or a claim that is not granted leaves the
+/// record queued for the next status call.
+fn complete_queued_session(
+    store: &mut Value,
+    handle: &str,
+    rec: &mut Value,
+    registry: &Value,
+    gh: &dyn Gh,
+) {
+    if rec.get("state").and_then(Value::as_str) != Some("queued") {
+        return;
+    }
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let coord = coordinator::coordinator();
+    let Ok(status) = coord.claim_status(&claim_handle) else {
+        return;
+    };
+    let claim = status.get("claim").cloned().unwrap_or(Value::Null);
+    if claim.get("state").and_then(Value::as_str) != Some("granted") {
+        return;
+    }
+    let Some(mut job) = rec.get("job").and_then(Job::from_json) else {
+        return;
+    };
+    job.session_handle = Some(handle.to_string());
+    let Some(sid) = claim
+        .get("surface")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(surface) = find_surface(registry, &sid) else {
+        return;
+    };
+    let Some(ad) = adapter_for(surface) else {
+        return;
+    };
+    let kind = surf_str(surface, "kind").to_string();
+    let runner_repo = surf_str(surface, "repo").to_string();
+    match ad.dispatch(&job, gh) {
+        Err(Die(msg)) => {
+            let _ = coord.release(&claim_handle, None);
+            rec["state"] = json!("failed");
+            rec["note"] = json!(format!("coordinator grant dispatch failed: {msg}"));
+        }
+        Ok(result) => {
+            let _ = coord.confirm(&claim_handle, result.run_id);
+            rec["actor"] = json!(dispatch_actor(Some(surface)));
+            rec["surface"] = json!(sid);
+            rec["surface_kind"] = json!(kind);
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo.clone());
+            }
+            if let Some(run_id) = result.run_id {
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
+            rec["run_id"] = result.run_id.map(Value::from).unwrap_or(Value::Null);
+            rec["run_url"] = result
+                .run_url
+                .clone()
+                .map(Value::from)
+                .unwrap_or(Value::Null);
+            rec["state"] = json!(match &result.terminal_state {
+                Some(s) => s.clone(),
+                None if result.run_id.is_some() => "queued".to_string(),
+                None => "dispatched".to_string(),
+            });
+            if let Some(note) = &result.note {
+                rec["note"] = json!(note);
+            }
+            if kind == "blacksmith" {
+                if let Some(arr) = store
+                    .get_mut("blacksmith_dispatches")
+                    .and_then(Value::as_array_mut)
+                {
+                    arr.push(json!({
+                        "handle": handle,
+                        "month": current_month(),
+                        "minutes": 0.0,
+                        "run_id": result.run_id,
+                        "note": "minutes reconciled from the run's duration on later invocations",
+                        "reconciled": false,
+                    }));
+                }
+            }
+        }
+    }
+    rec["updated_at"] = json!(now_iso());
+}
+
+/// Give a terminal session's coordinator slot back. Blacksmith slots
+/// settle with the run's reconciled minutes and wait for them; every
+/// other slot releases as soon as its run is terminal.
+fn settle_coordinator_claim(store: &Value, handle: &str, rec: &mut Value, state: &str, kind: &str) {
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if rec.get("coord_released").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    if !["succeeded", "failed", "cancelled"].contains(&state) {
+        return;
+    }
+    let actual = if kind == "blacksmith" {
+        let reconciled = store
+            .get("blacksmith_dispatches")
+            .and_then(Value::as_array)
+            .and_then(|arr| {
+                arr.iter().find(|d| {
+                    d.get("handle").and_then(Value::as_str) == Some(handle)
+                        && d.get("reconciled").and_then(Value::as_bool) == Some(true)
+                })
+            })
+            .and_then(|d| d.get("minutes").and_then(Value::as_f64));
+        match reconciled {
+            Some(minutes) => Some(minutes),
+            None => return,
+        }
+    } else {
+        None
+    };
+    if coordinator::coordinator()
+        .release(&claim_handle, actual)
+        .is_ok()
+    {
+        rec["coord_released"] = json!(true);
+    }
+}
+
 fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
     let mut rec = store
         .get("sessions")
@@ -1408,6 +1382,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                 state_file()
             ))
         })?;
+    complete_queued_session(store, handle, &mut rec, registry, gh);
     let run_id = rec.get("run_id").and_then(|r| r.as_i64());
     let surface_id = rec
         .get("surface")
@@ -1475,6 +1450,18 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
             }
         }
     }
+    let state = rec
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let kind = rec
+        .get("surface")
+        .and_then(Value::as_str)
+        .and_then(|sid| find_surface(registry, sid))
+        .map(|s| surf_str(s, "kind").to_string())
+        .unwrap_or_default();
+    settle_coordinator_claim(store, handle, &mut rec, &state, &kind);
     if let Some(sessions) = store.get_mut("sessions").and_then(|s| s.as_object_mut()) {
         sessions.insert(handle.to_string(), rec.clone());
     }
@@ -1652,7 +1639,7 @@ const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --c
 [--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
 [--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
 [--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
-[--allow-paid-blacksmith MINUTES] \
+[--allow-paid-blacksmith MINUTES] [--timeout-minutes 5-120] \
 [--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
@@ -1669,6 +1656,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     let mut actions_cache: Option<String> = None;
     let mut actions_cache_restore_keys: Vec<String> = Vec::new();
     let mut allow_paid: f64 = 0.0;
+    let mut timeout_minutes: Option<u32> = None;
     let mut laptop_busy_flag = false;
     let mut assume_owner_load = String::new();
     let mut assume_blacksmith_used: Option<f64> = None;
@@ -1753,6 +1741,16 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     .parse::<f64>()
                     .map_err(|_| Die(format!("--allow-paid-blacksmith: not a number: {v}")))?;
             }
+            "--timeout-minutes" => {
+                i += 1;
+                let v = need(&rest, i, "--timeout-minutes")?;
+                let t = v
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|t| TIMEOUT_MINUTES_RANGE.contains(t))
+                    .ok_or_else(|| Die(format!("--timeout-minutes must be 5..=120, got {v}")))?;
+                timeout_minutes = Some(t);
+            }
             "--laptop-busy" => laptop_busy_flag = true,
             "--assume-owner-load" => {
                 i += 1;
@@ -1799,6 +1797,8 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         actions_cache,
         actions_cache_restore_keys,
         allow_paid_blacksmith: allow_paid,
+        timeout_minutes,
+        session_handle: None,
     };
     let registry = registry_value(&cli)?;
     let gh = RealGh::new();
@@ -1897,7 +1897,48 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         assume_blacksmith_used,
         &gh,
     );
-    let (adapter, reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    let (mut adapter, mut reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    // #13765: decide() found no surface — consult the coordinator's
+    // true view before queuing. A seat with zero coverage (no token
+    // for a host) sees no room where the fleet has some; when the
+    // coordinator's occupancy shows room, re-decide once against
+    // those counts. An unreachable coordinator keeps today's queued
+    // path and names the fallback.
+    let mut coord_path = "coordinator";
+    let mut coord_error: Option<String> = None;
+    if adapter.is_none() && dispatch {
+        // Preserve the existing dry-run decision/output: only a real dispatch
+        // consults the coordinator's true view before it enters claim flow.
+        let coord = coordinator::coordinator();
+        match coord.load() {
+            Ok(load) => {
+                let overrides = coordinator::coord_overrides(&load);
+                if !overrides.is_empty() {
+                    let ctx2 = build_ctx(
+                        &registry,
+                        &store,
+                        laptop_busy_flag,
+                        &overrides,
+                        assume_blacksmith_used,
+                        &gh,
+                    );
+                    if let Ok((adapter2, mut reasoning2)) = decide(&registry, &job, &ctx2, &gh) {
+                        if adapter2.is_some() {
+                            reasoning.push(format!(
+                                "coordinator true view shows room ({overrides}); re-decided"
+                            ));
+                            reasoning.append(&mut reasoning2);
+                            adapter = adapter2;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                coord_path = "singular-fallback";
+                coord_error = Some(e);
+            }
+        }
+    }
     let mut out = Map::new();
     out.insert("job".into(), job.to_json_compact());
     out.insert(
@@ -1934,35 +1975,117 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         return Ok(0);
     }
     let handle = new_handle(&rand_source::URandom);
-    match adapter {
-        None => {
-            let rec = json!({
-                "handle": handle,
-                "job": job.to_json(),
-                "surface": Value::Null,
-                "decision_reasoning": reasoning,
-                "owner_load_coverage": owner_load_coverage_json(&ctx),
-                "run_id": Value::Null,
-                "run_url": Value::Null,
-                "state": "queued",
-                "submitted_by": submitted_by(),
-                "actor": "developing-today[bot] (GitHub App dispatch)",
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            });
-            commit_new_session(&rec, None, &*remote)?;
+    job.session_handle = Some(handle.clone());
+    let coord = coordinator::coordinator();
+    let seat = coordinator::seat_name();
+    let mut chosen = adapter;
+    let mut claim_error = coord_error;
+    let mut claim: Option<(coordinator::ClaimDecision, Option<Value>)> = None;
+    let mut refused_once = false;
+    // #13765 claim-before-dispatch: a chosen surface is claimed from the
+    // coordinator first. A refused claim (budget spent) re-decides once
+    // with Blacksmith removed and claims the replacement.
+    while let Some(ad) = chosen.as_ref() {
+        let sid = surf_str(ad.surface(), "id").to_string();
+        let answer = coord.claim(
+            &handle,
+            &sid,
+            &seat,
+            coordinator::CLAIM_ESTIMATE_MINUTES,
+            job.allow_paid_blacksmith,
+        );
+        let (decision, claim_answer, err) = coordinator::classify_claim(answer);
+        if err.is_some() {
+            claim_error = err;
+        }
+        if decision == coordinator::ClaimDecision::Refused && !refused_once {
+            refused_once = true;
+            reasoning.push(format!(
+                "coordinator refused {sid} (budget spent); re-decided without Blacksmith"
+            ));
+            let reg2 = coordinator::registry_without_blacksmith(&registry);
+            let ctx2 = build_ctx(
+                &reg2,
+                &store,
+                laptop_busy_flag,
+                &assume_owner_load,
+                assume_blacksmith_used,
+                &gh,
+            );
+            let (next, mut reasoning2) = decide(&reg2, &job, &ctx2, &gh)?;
+            reasoning.append(&mut reasoning2);
+            chosen = next;
+            continue;
+        }
+        claim = Some((decision, claim_answer));
+        break;
+    }
+    let placement_path = match &claim {
+        Some((decision, _)) => coordinator::placement_path(decision),
+        None => coord_path,
+    };
+    let mut rec = Map::new();
+    rec.insert("handle".into(), json!(handle));
+    rec.insert("job".into(), job.to_json());
+    rec.insert("placement_path".into(), json!(placement_path));
+    if let Some(err) = &claim_error {
+        rec.insert("coord_error".into(), json!(err));
+    }
+    rec.insert("decision_reasoning".into(), json!(reasoning));
+    rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+    rec.insert("submitted_by".into(), json!(submitted_by()));
+    rec.insert(
+        "actor".into(),
+        json!(dispatch_actor(chosen.as_ref().map(|ad| ad.surface()))),
+    );
+    rec.insert("created_at".into(), json!(now_iso()));
+    rec.insert("updated_at".into(), json!(now_iso()));
+    match (chosen, claim) {
+        (Some(ad), Some((coordinator::ClaimDecision::Queued, claim_answer))) => {
+            let sid = surf_str(ad.surface(), "id").to_string();
+            let position = claim_answer
+                .as_ref()
+                .and_then(|v| v.get("position"))
+                .and_then(|p| p.as_i64());
+            let mut queued = coordinator::queued_session_record(
+                &handle,
+                job.to_json(),
+                &sid,
+                &handle,
+                &reasoning,
+                owner_load_coverage_json(&ctx),
+                &submitted_by(),
+                dispatch_actor(Some(ad.surface())),
+                &now_iso(),
+            );
+            if let Some(obj) = queued.as_object_mut() {
+                if let Some(err) = &claim_error {
+                    obj.insert("coord_error".into(), json!(err));
+                }
+            }
+            commit_new_session(&queued, None, &*remote)?;
             out.insert("handle".into(), json!(handle));
             out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
+            if let Some(pos) = position {
+                out.insert("queue_position".into(), json!(pos));
+            }
         }
-        Some(adapter) => {
-            let result = adapter.dispatch(&job, &gh)?;
-            let surface = adapter.surface().clone();
+        (Some(ad), Some((decision, _))) if coordinator::dispatch_now(&decision) => {
+            let granted = decision == coordinator::ClaimDecision::Granted;
+            let result = match ad.dispatch(&job, &gh) {
+                Ok(r) => r,
+                Err(e) => {
+                    if granted {
+                        let _ = coord.release(&handle, None);
+                    }
+                    return Err(e);
+                }
+            };
+            let surface = ad.surface().clone();
             let sid = surf_str(&surface, "id").to_string();
             let kind = surf_str(&surface, "kind").to_string();
             let runner_repo = surf_str(&surface, "repo").to_string();
-            let mut rec = Map::new();
-            rec.insert("handle".into(), json!(handle));
-            rec.insert("job".into(), job.to_json());
             rec.insert("surface".into(), json!(sid));
             rec.insert("surface_kind".into(), json!(kind));
             if !runner_repo.is_empty() {
@@ -1974,8 +2097,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     json!(format!("{runner_repo}#{run_id}")),
                 );
             }
-            rec.insert("decision_reasoning".into(), json!(reasoning));
-            rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+            if granted {
+                rec.insert("claim_handle".into(), json!(handle));
+            }
             rec.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2001,13 +2125,11 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     }
                 }),
             );
-            rec.insert("submitted_by".into(), json!(submitted_by()));
-            rec.insert(
-                "actor".into(),
-                json!("developing-today[bot] (GitHub App dispatch)"),
-            );
-            rec.insert("created_at".into(), json!(now_iso()));
-            rec.insert("updated_at".into(), json!(now_iso()));
+            if granted {
+                if let Err(e) = coord.confirm(&handle, result.run_id) {
+                    rec.insert("confirm_error".into(), json!(e));
+                }
+            }
             if let Some(note) = &result.note {
                 rec.insert("note".into(), json!(note));
             }
@@ -2028,6 +2150,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             };
             commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref(), &*remote)?;
             out.insert("handle".into(), json!(handle));
+            out.insert("placement_path".into(), json!(placement_path));
             if let Some(run_id) = result.run_id {
                 if !runner_repo.is_empty() {
                     out.insert("runner_repo".into(), json!(runner_repo));
@@ -2045,6 +2168,16 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 "run_url".into(),
                 result.run_url.map(Value::from).unwrap_or(Value::Null),
             );
+        }
+        _ => {
+            rec.insert("surface".into(), Value::Null);
+            rec.insert("run_id".into(), Value::Null);
+            rec.insert("run_url".into(), Value::Null);
+            rec.insert("state".into(), json!("queued"));
+            commit_new_session(&Value::Object(rec), None, &*remote)?;
+            out.insert("handle".into(), json!(handle));
+            out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
         }
     }
     // #13146: opportunistic migration — push any local records the
@@ -2462,6 +2595,8 @@ mod tests {
             actions_cache: None,
             actions_cache_restore_keys: vec![],
             allow_paid_blacksmith: 0.0,
+            timeout_minutes: None,
+            session_handle: None,
         }
     }
 
@@ -3509,6 +3644,87 @@ mod tests {
         assert_eq!(inputs["dispatch_id"], "fp_test");
     }
 
+    /// #13178: fleet-command.yml dispatches send `timeout_minutes`
+    /// only when the job sets one, as the string GitHub expects.
+    #[test]
+    fn fleet_command_sends_timeout_minutes_only_when_set_13178() {
+        let adapter = GithubActionsAdapter {
+            surface: json!({
+                "id": "fleet-org",
+                "kind": "github-actions",
+                "repo": "developing-today/fleet",
+                "workflow": "fleet-command.yml",
+            }),
+            force_runner: "github",
+        };
+        let inputs = adapter.workflow_inputs(&job(), None);
+        assert!(inputs.get("timeout_minutes").is_none());
+        let mut j = job();
+        j.timeout_minutes = Some(90);
+        let inputs = adapter.workflow_inputs(&j, None);
+        assert_eq!(inputs["timeout_minutes"], "90");
+    }
+
+    /// #13178: the stored job keeps `timeout_minutes` so a queued
+    /// session re-dispatches with it; out-of-range values are dropped
+    /// rather than sent to a workflow that would reject them.
+    #[test]
+    fn job_round_trips_timeout_minutes_13178() {
+        let mut j = job();
+        j.timeout_minutes = Some(30);
+        j.session_handle = Some("fp_sess".to_string());
+        let stored = j.to_json();
+        assert_eq!(stored["timeout_minutes"], 30);
+        assert!(stored.get("session_handle").is_none());
+        let back = Job::from_json(&stored).unwrap();
+        assert_eq!(back.timeout_minutes, Some(30));
+        assert_eq!(back.session_handle, None);
+        let mut bad = stored.clone();
+        bad["timeout_minutes"] = json!(500);
+        assert_eq!(Job::from_json(&bad).unwrap().timeout_minutes, None);
+        assert!(job().to_json_compact().get("timeout_minutes").is_none());
+    }
+
+    /// #13178: a surface whose workflow declares `dispatch_id` gets
+    /// the placement session handle, so the run title names the
+    /// session; without one a fresh handle is minted as before.
+    #[test]
+    fn dispatch_id_is_the_session_handle_13178() {
+        let surface = json!({"dispatch_id_input": true});
+        let mut j = job();
+        j.session_handle = Some("fp_session".to_string());
+        assert_eq!(
+            super::adapters::dispatch_id_for(&surface, &j).as_deref(),
+            Some("fp_session")
+        );
+        let fresh = super::adapters::dispatch_id_for(&surface, &job()).unwrap();
+        assert!(fresh.starts_with("fp_") && fresh != "fp_session");
+        assert_eq!(super::adapters::dispatch_id_for(&json!({}), &j), None);
+    }
+
+    /// #13178: the session record names who actually dispatched.
+    #[test]
+    fn dispatch_actor_follows_the_surface_auth_route_13178() {
+        let reg: Value = serde_json::from_str(EMBEDDED_REGISTRY).unwrap();
+        let actor = |id: &str| dispatch_actor(find_surface(&reg, id));
+        assert_eq!(
+            actor("fleet-personal"),
+            "developing-today[bot] (GitHub App dispatch)"
+        );
+        assert_eq!(actor("fleet-org"), "user token (dispatch_as: user)");
+        assert_eq!(actor("fleet-forks"), "user token (dispatch_as: user)");
+        assert_eq!(
+            actor("fleet-org-blacksmith"),
+            "user token (dispatch_as: user)"
+        );
+        assert_eq!(
+            actor("codespace-overflow"),
+            "user gh CLI credentials (codespace)"
+        );
+        assert_eq!(actor("laptop"), "laptop handoff (no remote dispatch)");
+        assert_eq!(dispatch_actor(None), "none (no surface dispatched)");
+    }
+
     /// #13175 oracle: a help flag after a session subcommand is a
     /// help request, never a handle; a real handle is not.
     #[test]
@@ -3757,5 +3973,172 @@ mod tests {
         let cap = ad.capacity(&job(), &c);
         assert_eq!(cap.free_slots, Some(35));
         assert!(cap.summary.contains("simulated"), "{}", cap.summary);
+    }
+
+    // Oracle (developing-today/code#15651): a dispatch-command input
+    // becomes GitHub run metadata the moment it is POSTed, so a
+    // command carrying a locally-resolvable laptop-tier credential
+    // value must die by secret NAME before the POST — never
+    // forwarding the value, and never echoing the command that
+    // carries it.
+    fn stub_resolver<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_command_carrying_secret_value() {
+        use super::adapters::reject_secrets_in_command;
+        let value = "bearer-value-0123456789abcdef";
+        let pairs = [("desktop-commander.machine-bearer", value)];
+        let resolve = stub_resolver(&pairs);
+        let cmd = format!("fleet commander exec -- echo {value}");
+        let err = match reject_secrets_in_command(&cmd, &resolve) {
+            Ok(()) => panic!("a command carrying the T1 bearer value must die"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("desktop-commander.machine-bearer"),
+            "{}",
+            err.0
+        );
+        assert!(!err.0.contains(value), "the error must not echo the value");
+        assert!(!err.0.contains(&cmd), "the error must not echo the command");
+    }
+
+    #[test]
+    fn dispatch_allows_command_without_secret_values() {
+        use super::adapters::reject_secrets_in_command;
+        let pairs = [(
+            "desktop-commander.machine-bearer",
+            "bearer-value-0123456789abcdef",
+        )];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_skips_secrets_it_cannot_resolve() {
+        // Fail-open on resolution failure: when the broker cannot
+        // answer there is nothing to compare against, and the fleet
+        // stays dispatchable during a secrets-infra outage. A
+        // positive match always fails closed (previous test).
+        use super::adapters::reject_secrets_in_command;
+        let resolve = stub_resolver(&[]);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_ignores_short_secret_values() {
+        // Short strings match innocent commands by accident (a
+        // port, a single word); real bearers and tokens are far
+        // longer, so values under the floor never trigger.
+        use super::adapters::{embedded_secret_name, reject_secrets_in_command};
+        assert_eq!(
+            embedded_secret_name("run on port 8080 now", &[("s", "8080")]),
+            None
+        );
+        let pairs = [("fleet.laptop-agent-token", "abc")];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("echo abc", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_refuses_command_carrying_t3_proxy_credential() {
+        // #16368: the T3 credential is the password in the seat's
+        // HTTPS_PROXY userinfo — no broker name covers it, so the
+        // named-secret refusal alone would let it through as
+        // dispatch metadata.
+        use super::adapters::reject_proxy_credential_in_command;
+        let password = "proxy-password-0123456789";
+        let url = format!("http://seat:{password}@proxy.example:3130");
+        for cmd in [
+            format!("HTTPS_PROXY={url} fleet ssh health"),
+            format!("fleet ssh exec -- curl -x http://seat:{password}@proxy.example:3130 ."),
+            format!("echo {password}"),
+        ] {
+            let err = match reject_proxy_credential_in_command(&cmd, Some(&url)) {
+                Ok(()) => panic!("a command carrying the T3 proxy credential must die"),
+                Err(e) => e,
+            };
+            assert!(err.0.contains("HTTPS_PROXY"), "{}", err.0);
+            assert!(
+                !err.0.contains(password),
+                "the error must not echo the credential"
+            );
+            assert!(!err.0.contains(&cmd), "the error must not echo the command");
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_percent_encoded_t3_proxy_credential() {
+        // The tunnel percent-decodes the userinfo before use, so
+        // the decoded form of an encoded password is the same
+        // credential and must match too.
+        use super::adapters::{embedded_proxy_credential, reject_proxy_credential_in_command};
+        let url = "http://seat:p%40ssword-0123456789@proxy.example:3130";
+        assert!(embedded_proxy_credential("echo p@ssword-0123456789", url));
+        assert!(reject_proxy_credential_in_command("echo p@ssword-0123456789", Some(url)).is_err());
+    }
+
+    #[test]
+    fn dispatch_allows_credential_free_proxy_env() {
+        // The in-job T3 provisioning shape (#16368): join the
+        // tailnet inside the job and export tailscaled's local
+        // CONNECT proxy — a credential-free URL leaks nothing and
+        // must stay dispatchable. Unset proxy likewise.
+        use super::adapters::reject_proxy_credential_in_command;
+        let cmd = "export HTTPS_PROXY=http://127.0.0.1:3130; fleet ssh health";
+        assert!(reject_proxy_credential_in_command(cmd, Some("http://127.0.0.1:3130")).is_ok());
+        assert!(reject_proxy_credential_in_command(cmd, None).is_ok());
+        assert!(
+            reject_proxy_credential_in_command(
+                "nix build .#mcpx",
+                Some("http://seat:proxy-password-0123456789@proxy.example:3130")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn proxy_credential_values_extracts_password_only() {
+        use super::adapters::proxy_credential_values;
+        assert_eq!(
+            proxy_credential_values("http://seat:proxy-password-0123456789@proxy.example:3130"),
+            vec!["proxy-password-0123456789".to_string()]
+        );
+        // No userinfo, userinfo without a password, and a short
+        // password under the shared floor all carry no matchable
+        // credential.
+        assert!(proxy_credential_values("http://127.0.0.1:3130").is_empty());
+        assert!(proxy_credential_values("http://seat@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("http://seat:short@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("").is_empty());
+    }
+
+    #[test]
+    fn embedded_secret_reports_the_matching_name() {
+        use super::adapters::{DISPATCH_SECRET_NAMES, embedded_secret_name};
+        assert!(DISPATCH_SECRET_NAMES.contains(&"desktop-commander.machine-bearer"));
+        assert!(DISPATCH_SECRET_NAMES.contains(&"fleet.laptop-agent-token"));
+        let found = embedded_secret_name(
+            "curl -H 'X-Agent-Token: agent-token-0123456789abcdef' https://laptop/",
+            &[
+                (
+                    "desktop-commander.machine-bearer",
+                    "bearer-value-0123456789abcdef",
+                ),
+                ("fleet.laptop-agent-token", "agent-token-0123456789abcdef"),
+            ],
+        );
+        assert_eq!(found, Some("fleet.laptop-agent-token"));
+        assert_eq!(
+            embedded_secret_name("nix build .#mcpx", &[("s", "v")]),
+            None
+        );
     }
 }

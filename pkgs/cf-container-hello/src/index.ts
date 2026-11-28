@@ -36,6 +36,11 @@ interface Env {
   // /probe to the crawler container with no auth at all, and the crawler
   // copy it fronted fetched arbitrary URLs (SSRF / file:// fetch).
   API_TOKEN?: string;
+  // Plain var stamped per deploy (`--var VERSION:<commit>` in
+  // deploy.mjs and the cf-worker-versions-release workflow), read by
+  // the public GET /version route below (#15793). Not a secret: it
+  // names only the commit the Worker was deployed from.
+  VERSION?: string;
 }
 
 // --- API auth (#955) ---------------------------------------------------------
@@ -81,6 +86,19 @@ export default {
 
     if (pathname === "/worker-marker") {
       return new Response("served-by-worker\n");
+    }
+
+    if (pathname === "/version") {
+      // #15793 criterion 1: unauthenticated deployed-commit answer for
+      // the edge worker-checks probe (pm-stack/console/edge/src/
+      // worker-checks.ts; commitOf reads the `version` field). Like
+      // /worker-marker it touches no container, so it sits ahead of
+      // the API_TOKEN gate; only the commit SHA is exposed, and an
+      // unstamped deploy answers "unknown" honestly.
+      if (request.method !== "GET") {
+        return json({ error: "method not allowed" }, 405);
+      }
+      return json({ ok: true, service: "cf-container-hello", version: env.VERSION ?? "unknown" });
     }
 
     // Fail closed: a redeploy that forgets `wrangler secret put API_TOKEN`

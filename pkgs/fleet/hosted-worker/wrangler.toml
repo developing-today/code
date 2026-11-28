@@ -1,11 +1,13 @@
 # fleet-hosted (#12583; design doc/2026-11-22T14-28-45Z_design_fleet-tool-workers-edition §3.1).
-# LOCAL ONLY in this slice: this config is for wrangler dev / tests. No
-# account-level deployment or billable resource is authorized by this
-# package — the acceptance's "Worker deploys" is a local wrangler dev
-# run until a later C issue owns production deployment.
+# Deployed by #14870 (the #14866 queue slice) via Cloudflare versions:
+# the queue door runs on the QUEUE_D1 binding below. The other doors'
+# production wiring (RP issuer, tenancy DB, GitHub App material) is
+# still owned elsewhere — absent that config they fail closed, which
+# is the posture this first deployment ships with.
 name = "fleet-hosted"
 main = "src/worker.ts"
 compatibility_date = "2025-06-01"
+workers_dev = true
 
 # Non-secret configuration. RP_ISSUER is the #9077 devtoday OIDC
 # provider's issuer URL, set per environment once the provider stands
@@ -15,6 +17,29 @@ compatibility_date = "2025-06-01"
 # live in this file.
 [vars]
 RP_AUDIENCE = "fleet-hosted"
+# VERSION is deliberately not set here: cf-worker-versions-release.yml
+# stamps it per deploy with the deployed commit (#15793), and the
+# Worker's /version route reports it (src/health.ts versionAnswer).
+
+# The message bridge, by service binding (#14373): the bridge door
+# calls it presenting the PM stack's bridge credential
+# (BRIDGE_PM_TOKEN — a secret, set by name at deployment, never in
+# this file). Declared here so the deployed shape carries it.
+[[services]]
+binding = "BRIDGE"
+service = "message-bridge"
+
+# The fleet-queue D1 database (#14866): the queue door's
+# Cloudflare-first home — when this binding is present, buildDeps
+# runs the queue verbs against D1QueueStore over the shared
+# fleet-queue schema. database_id assigned by #14870, the
+# deployment slice: the database pre-existed in the account
+# (created 2026-11-25T03:14:57Z, empty); #14870 provisioned the
+# shared schema on it explicitly.
+[[d1_databases]]
+binding = "QUEUE_D1"
+database_name = "fleet-queue"
+database_id = "c17186b0-e27f-4b0b-9429-54c1ecf2f4fb"
 
 # The ingestion sweeper's standing scope (#12590): the in-scope
 # repos the scheduled run re-scans (#9060 §16). Set per environment
@@ -25,7 +50,7 @@ RP_AUDIENCE = "fleet-hosted"
 # The ingestion sweeper (#12590; design §7.3): the scheduled Worker
 # half of dual ingestion, running the webhook route's check over
 # the configured scope to catch listener misses. Declared here so
-# the deployed shape carries it; inert until the deployment issue
-# lands this package (this config authorizes no deployment).
+# the deployed shape carries it; the sweep stays inert while
+# INGESTION_REPOS above is empty.
 [triggers]
 crons = ["*/15 * * * *"]

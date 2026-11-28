@@ -1,0 +1,1325 @@
+//! Server-side contract for collaborative-editing steps (#1618 slice 1).
+//!
+//! The collab server is the authority for a document's step history:
+//! every client replays that history from version 0 on join, and
+//! `ProseMirror`'s `receiveTransaction` cannot skip a step in the middle
+//! of it. A step the server stores but no client can apply therefore
+//! poisons the document for every current and future client.
+//!
+//! This module is the first, fail-closed line of defence. Before a batch
+//! is stored, each step must:
+//!
+//! - be a JSON object with a `stepType` the editor knows (`replace`,
+//!   `replaceAround`, `addMark`, `removeMark`, `addNodeMark`,
+//!   `removeNodeMark`, `attr`, `docAttr`);
+//! - carry the position fields that step type needs, as non-negative
+//!   integers, in the order the step type requires;
+//! - name only node and mark types that exist in the schema of the
+//!   document's content mode (the rich schema, or the raw code-block
+//!   schema), with well-formed slice content;
+//! - stay inside the document as it stands at that point in the batch.
+//!   The server tracks the document's content size from the base
+//!   document and every accepted step, so an out-of-range position is
+//!   refused even when the step is otherwise well formed.
+//!
+//! Slice nodes are also checked against the content expressions of
+//! `editor.ts`: each container node may hold only the child types its
+//! expression admits (a `paragraph` holds inline nodes, a `table` holds
+//! rows, a row holds cells, a cell holds paragraphs, and so on). Only
+//! child types are checked, never minimum counts or ordering, so the
+//! open, partial nodes a slice legitimately carries stay valid.
+//!
+//! A slice's open depths are checked against the slice itself: an
+//! `openStart`/`openEnd` claims that many nodes are cut through on
+//! that side, so the fragment must have that many openable (non-leaf)
+//! nodes down its first/last-child chain — the bound `ProseMirror`'s
+//! own `Slice.maxOpen` computes, and the condition its `Slice`
+//! constructor documents. A depth past that bound (a lone text node
+//! claiming `openStart: 1`, an empty paragraph claiming 2) is a slice
+//! no cut can produce; `replace` throws for it on every client.
+//!
+//! Marks are also checked where they appear, not only that they
+//! exist: `editor.ts` declares `code_block` with `marks: ""` in both
+//! schemas, so no mark may ride on the text inside a code block. The
+//! editor can never produce marked code text, and a stored step
+//! carrying it fails content checking when clients apply it.
+//!
+//! A mark's own required attrs are checked too: the `link` mark of
+//! `prosemirror-schema-basic` declares `attrs: {href: {}, title:
+//! {default: null}}` — `href` has no default, so `prosemirror-model`
+//! refuses a link mark without a string `href` when a client parses
+//! the step (`Mark.fromJSON`). A stored href-less link mark therefore
+//! throws on every receiving client, in a step's `mark` field and in
+//! a slice node's `marks` alike.
+//!
+//! The same mark's optional `title` attr is type-checked the same
+//! way: `prosemirror-schema-basic` declares it `validate:
+//! "string|null"` (and `editor.ts` never updates the link mark, so
+//! the validation is live in the editor schema), so
+//! `prosemirror-model` refuses a link mark whose `title` is present
+//! but neither a string nor null when a client parses the step. An
+//! absent `title` falls back to the declared default and stays
+//! valid — only a present, wrongly-typed one poisons the step.
+//!
+//! A node's own required attrs are checked the same way: the
+//! `image` node of `editor.ts` declares `attrs: {src: {}, alt:
+//! {default: null}, …}` — `src` is the only node attr in either
+//! editor schema with no default, so `prosemirror-model` refuses an
+//! image without a string `src` when a client parses the step
+//! (`Node.fromJSON`). A stored src-less image therefore throws on
+//! every receiving client.
+//!
+//! Node attrs with a declared type are checked the same way:
+//! `prosemirror-schema-basic` gives `heading` a `level` attr with
+//! `validate: "number"` and `prosemirror-schema-list` gives
+//! `ordered_list` an `order` attr the same way (`editor.ts` keeps
+//! both validations), so `prosemirror-model` refuses a heading or
+//! ordered list whose `level`/`order` is present but not a number
+//! when a client parses the step (`Node.fromJSON`). Both attrs
+//! declare defaults, so an absent attr is fine — only a present,
+//! wrongly-typed one poisons the step.
+//!
+//! This does not yet prove that a structurally plausible step applies
+//! against the evolving document. Full server-side application is the
+//! later stage of #1618.
+
+use serde_json::{Map, Value};
+
+use super::content_mode::ContentMode;
+
+/// The deepest node nesting accepted inside a step's slice. Real
+/// documents nest a few levels; this bounds recursion on hostile input.
+const MAX_NODE_DEPTH: usize = 128;
+
+/// Node types of the rich editor schema (`richSchema` in
+/// `web/src/editor.ts`: prosemirror-schema-basic, prosemirror-schema-list
+/// and the GFM extensions).
+const RICH_NODES: &[&str] = &[
+    "doc",
+    "paragraph",
+    "blockquote",
+    "horizontal_rule",
+    "heading",
+    "code_block",
+    "text",
+    "image",
+    "hard_break",
+    "ordered_list",
+    "bullet_list",
+    "list_item",
+    "task_list",
+    "task_list_item",
+    "table",
+    "table_row",
+    "table_cell",
+    "table_header",
+    "html_inline",
+    "front_matter",
+    "footnote_reference",
+    "footnote_definition",
+];
+
+/// Rich-schema node types with no content (`ProseMirror` leaf nodes,
+/// size 1). `text` is sized by its text instead.
+const RICH_LEAVES: &[&str] = &[
+    "horizontal_rule",
+    "image",
+    "hard_break",
+    "html_inline",
+    "front_matter",
+    "footnote_reference",
+];
+
+/// Mark types of the rich editor schema.
+const RICH_MARKS: &[&str] = &["link", "em", "strong", "code", "strikethrough"];
+
+/// Node types of the raw (code-block only) editor schema.
+const RAW_NODES: &[&str] = &["doc", "text", "code_block"];
+
+/// The node and mark types a document's editor schema allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepSchema {
+    nodes: &'static [&'static str],
+    leaves: &'static [&'static str],
+    marks: &'static [&'static str],
+}
+
+impl StepSchema {
+    /// The schema the editor uses for `mode`, or `None` for a mode the
+    /// editor never edits (media and binary files).
+    #[must_use]
+    pub const fn for_mode(mode: ContentMode) -> Option<Self> {
+        match mode {
+            ContentMode::Rich | ContentMode::Markdown | ContentMode::Plain => Some(Self {
+                nodes: RICH_NODES,
+                leaves: RICH_LEAVES,
+                marks: RICH_MARKS,
+            }),
+            ContentMode::Raw => Some(Self {
+                nodes: RAW_NODES,
+                leaves: &[],
+                marks: &[],
+            }),
+            ContentMode::Media(_) | ContentMode::Binary => None,
+        }
+    }
+
+    fn has_node(&self, name: &str) -> bool {
+        self.nodes.contains(&name)
+    }
+
+    fn is_leaf(&self, name: &str) -> bool {
+        self.leaves.contains(&name)
+    }
+
+    fn has_mark(&self, name: &str) -> bool {
+        self.marks.contains(&name)
+    }
+}
+
+/// Why a batch of steps was refused: the index of the first bad step in
+/// the batch and what is wrong with it. Nothing in a refused batch is
+/// stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepRefusal {
+    /// Index of the refused step within its batch.
+    pub index: usize,
+    /// What is wrong with the step.
+    pub reason: String,
+}
+
+impl std::fmt::Display for StepRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid step {}: {}", self.index, self.reason)
+    }
+}
+
+/// The content size of a `ProseMirror` document, as `doc.content.size`.
+///
+/// This sizes the server's base document, which the server produced
+/// itself (or read from a stored `ProseMirror` file), so it is
+/// permissive: unknown node types count as empty non-leaf nodes and
+/// nesting beyond the depth bound counts as nothing.
+#[must_use]
+pub fn document_content_size(doc: &Value, mode: ContentMode) -> u64 {
+    let leaves: &[&str] = match StepSchema::for_mode(mode) {
+        Some(schema) => schema.leaves,
+        None => &[],
+    };
+    doc.get("content")
+        .and_then(Value::as_array)
+        .map_or(0, |content| {
+            content
+                .iter()
+                .map(|node| permissive_node_size(node, leaves, 0))
+                .fold(0, u64::saturating_add)
+        })
+}
+
+fn permissive_node_size(node: &Value, leaves: &[&str], depth: usize) -> u64 {
+    if depth > MAX_NODE_DEPTH {
+        return 0;
+    }
+    let kind = node.get("type").and_then(Value::as_str).unwrap_or("");
+    if kind == "text" {
+        return node
+            .get("text")
+            .and_then(Value::as_str)
+            .map_or(0, utf16_len);
+    }
+    if let Some(content) = node.get("content").and_then(Value::as_array) {
+        return content
+            .iter()
+            .map(|child| permissive_node_size(child, leaves, depth + 1))
+            .fold(2, u64::saturating_add);
+    }
+    if leaves.contains(&kind) { 1 } else { 2 }
+}
+
+/// Check a batch of steps against the document as it stands, with
+/// content size `size`, under `schema`.
+///
+/// Each step is checked against the size left by the steps before it,
+/// so a batch is accepted or refused as a whole. Returns the document's
+/// content size after the whole batch.
+///
+/// # Errors
+///
+/// Returns the first refused step's index and reason.
+pub fn check_steps(schema: StepSchema, size: u64, steps: &[Value]) -> Result<u64, StepRefusal> {
+    steps
+        .iter()
+        .enumerate()
+        .try_fold(size, |size, (index, step)| {
+            check_step(schema, size, step).map_err(|reason| StepRefusal { index, reason })
+        })
+}
+
+/// Check one step against a document of content size `size`; returns
+/// the content size after it.
+fn check_step(schema: StepSchema, size: u64, step: &Value) -> Result<u64, String> {
+    let Some(step) = step.as_object() else {
+        return Err("step is not a JSON object".to_owned());
+    };
+    let Some(step_type) = step.get("stepType").and_then(Value::as_str) else {
+        return Err("step has no string `stepType`".to_owned());
+    };
+    match step_type {
+        "replace" => {
+            let from = position(step, "from")?;
+            let to = position(step, "to")?;
+            ordered(&[("from", from), ("to", to)], size)?;
+            let slice = slice_size(schema, step.get("slice"))?;
+            Ok(size - (to - from) + slice)
+        }
+        "replaceAround" => {
+            let from = position(step, "from")?;
+            let gap_from = position(step, "gapFrom")?;
+            let gap_to = position(step, "gapTo")?;
+            let to = position(step, "to")?;
+            let insert = position(step, "insert")?;
+            ordered(
+                &[
+                    ("from", from),
+                    ("gapFrom", gap_from),
+                    ("gapTo", gap_to),
+                    ("to", to),
+                ],
+                size,
+            )?;
+            let slice = slice_size(schema, step.get("slice"))?;
+            if insert > slice {
+                return Err(format!(
+                    "`insert` {insert} is past the end of the slice (size {slice})"
+                ));
+            }
+            Ok(size - (to - from) + slice + (gap_to - gap_from))
+        }
+        "addMark" | "removeMark" => {
+            let from = position(step, "from")?;
+            let to = position(step, "to")?;
+            ordered(&[("from", from), ("to", to)], size)?;
+            check_mark(schema, step.get("mark"))?;
+            Ok(size)
+        }
+        "addNodeMark" | "removeNodeMark" => {
+            node_position(step, size)?;
+            check_mark(schema, step.get("mark"))?;
+            Ok(size)
+        }
+        "attr" => {
+            node_position(step, size)?;
+            attr_name(step)?;
+            Ok(size)
+        }
+        "docAttr" => {
+            attr_name(step)?;
+            Ok(size)
+        }
+        other => Err(format!("unknown step type `{other}`")),
+    }
+}
+
+fn position(step: &Map<String, Value>, field: &str) -> Result<u64, String> {
+    step.get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("`{field}` must be a non-negative integer"))
+}
+
+/// Positions that must not decrease, all inside a document of content
+/// size `size`.
+fn ordered(fields: &[(&str, u64)], size: u64) -> Result<(), String> {
+    let mut previous: Option<(&str, u64)> = None;
+    for &(name, value) in fields {
+        if let Some((before, before_value)) = previous
+            && value < before_value
+        {
+            return Err(format!(
+                "`{name}` {value} is before `{before}` {before_value}"
+            ));
+        }
+        previous = Some((name, value));
+    }
+    if let Some(&(name, value)) = fields.last()
+        && value > size
+    {
+        return Err(format!(
+            "`{name}` {value} is past the end of the document (size {size})"
+        ));
+    }
+    Ok(())
+}
+
+/// The `pos` of a step that targets the node starting there.
+fn node_position(step: &Map<String, Value>, size: u64) -> Result<u64, String> {
+    let pos = position(step, "pos")?;
+    if pos >= size {
+        return Err(format!(
+            "`pos` {pos} does not point at a node in the document (size {size})"
+        ));
+    }
+    Ok(pos)
+}
+
+fn attr_name(step: &Map<String, Value>) -> Result<(), String> {
+    match step.get("attr").and_then(Value::as_str) {
+        Some(name) if !name.is_empty() => Ok(()),
+        _ => Err("`attr` must be a non-empty string".to_owned()),
+    }
+}
+
+fn check_mark(schema: StepSchema, mark: Option<&Value>) -> Result<(), String> {
+    let Some(mark) = mark.and_then(Value::as_object) else {
+        return Err("`mark` must be a JSON object".to_owned());
+    };
+    let Some(kind) = mark.get("type").and_then(Value::as_str) else {
+        return Err("mark has no string `type`".to_owned());
+    };
+    if !schema.has_mark(kind) {
+        return Err(format!("unknown mark type `{kind}`"));
+    }
+    match mark.get("attrs") {
+        None | Some(Value::Object(_) | Value::Null) => {}
+        Some(_) => return Err(format!("mark `{kind}` has non-object `attrs`")),
+    }
+    // `prosemirror-schema-basic` gives the link mark's `href` attr no
+    // default, so a link mark without a string `href` cannot be
+    // parsed by any client (`Mark.fromJSON` throws). Other marks
+    // declare no required attrs.
+    if kind == "link" {
+        let has_string_href = mark
+            .get("attrs")
+            .and_then(Value::as_object)
+            .and_then(|attrs| attrs.get("href"))
+            .is_some_and(Value::is_string);
+        if !has_string_href {
+            return Err("mark `link` needs a string `href` attr".to_owned());
+        }
+        // The link mark's `title` attr declares `validate:
+        // "string|null"` in `prosemirror-schema-basic` (kept by
+        // `editor.ts`, which never updates the link mark), so a
+        // present title of any other type cannot be parsed by any
+        // client (`Mark.fromJSON` throws). An absent title takes
+        // the declared default (`null`) and stays valid.
+        if let Some(title) = mark
+            .get("attrs")
+            .and_then(Value::as_object)
+            .and_then(|attrs| attrs.get("title"))
+            && !(title.is_string() || title.is_null())
+        {
+            return Err("mark `link` needs a string or null `title` attr".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// The size of a step's slice (`Slice.size`): its content's size less
+/// its open depths. A missing or null slice is the empty slice.
+fn slice_size(schema: StepSchema, slice: Option<&Value>) -> Result<u64, String> {
+    let slice = match slice {
+        None | Some(Value::Null) => return Ok(0),
+        Some(Value::Object(slice)) => slice,
+        Some(_) => return Err("`slice` must be a JSON object".to_owned()),
+    };
+    let nodes: &[Value] = match slice.get("content") {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(nodes)) => nodes,
+        Some(_) => return Err("slice `content` must be an array".to_owned()),
+    };
+    let content = fragment_size(schema, nodes, 0)?;
+    let open_start = optional_depth(slice, "openStart")?;
+    let open_end = optional_depth(slice, "openEnd")?;
+    check_open_depth("openStart", open_start, openable_depth(schema, nodes, true))?;
+    check_open_depth("openEnd", open_end, openable_depth(schema, nodes, false))?;
+    content
+        .checked_sub(open_start)
+        .and_then(|rest| rest.checked_sub(open_end))
+        .ok_or_else(|| {
+            format!(
+                "slice open depths ({open_start} + {open_end}) exceed its content size {content}"
+            )
+        })
+}
+
+fn optional_depth(slice: &Map<String, Value>, field: &str) -> Result<u64, String> {
+    match slice.get(field) {
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| format!("slice `{field}` must be a non-negative integer")),
+    }
+}
+
+/// The depth to which a fragment can be open on one side: the number
+/// of non-leaf nodes down its first-child (start) or last-child (end)
+/// chain. This is `ProseMirror`'s `Slice.maxOpen` bound — text and
+/// leaf nodes cannot be cut through, and an empty container is open
+/// exactly one level. The fragment has already been validated by
+/// [`fragment_size`], so malformed nodes simply end the chain.
+fn openable_depth(schema: StepSchema, nodes: &[Value], start: bool) -> u64 {
+    let mut depth = 0;
+    let mut current = if start { nodes.first() } else { nodes.last() };
+    while let Some(node) = current {
+        let Some(kind) = node.get("type").and_then(Value::as_str) else {
+            break;
+        };
+        if kind == "text" || schema.is_leaf(kind) {
+            break;
+        }
+        depth += 1;
+        let children = node.get("content").and_then(Value::as_array);
+        current = match children {
+            Some(children) if start => children.first(),
+            Some(children) => children.last(),
+            None => None,
+        };
+    }
+    depth
+}
+
+fn check_open_depth(field: &str, open: u64, openable: u64) -> Result<(), String> {
+    if open > openable {
+        return Err(format!(
+            "slice `{field}` {open} exceeds the nodes openable on that side of its content ({openable})"
+        ));
+    }
+    Ok(())
+}
+
+fn fragment_size(schema: StepSchema, nodes: &[Value], depth: usize) -> Result<u64, String> {
+    nodes.iter().try_fold(0u64, |total, node| {
+        node_size(schema, node, depth).map(|size| total.saturating_add(size))
+    })
+}
+
+/// Node types in the rich schema's `block` group (`editor.ts`:
+/// `prosemirror-schema-basic`, the list/task/table extensions and the
+/// GFM blocks).
+const BLOCK_NODES: &[&str] = &[
+    "paragraph",
+    "blockquote",
+    "horizontal_rule",
+    "heading",
+    "code_block",
+    "ordered_list",
+    "bullet_list",
+    "task_list",
+    "table",
+    "front_matter",
+    "footnote_definition",
+];
+
+/// Node types in the rich schema's `inline` group.
+const INLINE_NODES: &[&str] = &[
+    "text",
+    "image",
+    "hard_break",
+    "html_inline",
+    "footnote_reference",
+];
+
+/// Check a slice node's children against its content expression in
+/// `editor.ts`: `paragraph`/`heading` are `inline*`, `code_block` is
+/// `text*`, `blockquote`/`footnote_definition` are `block+`,
+/// `ordered_list`/`bullet_list` are `list_item+`, `task_list` is
+/// `task_list_item+`, `list_item`/`task_list_item` are
+/// `paragraph block*`, `table` is `table_row+`, `table_row` is
+/// `(table_cell | table_header)+` and `table_cell`/`table_header` are
+/// `paragraph+`.
+///
+/// Only child types are checked — never minimum counts (`+` vs `*`) or
+/// ordering — because a slice legitimately carries open, partial nodes
+/// (an empty `blockquote` wrapper, a split `paragraph`). A child of the
+/// wrong type, by contrast, can never be produced by the editor's
+/// schema and makes `Node.fromJSON` throw on every receiving client.
+/// Children that are not objects or carry no string `type` are left to
+/// the recursion in [`node_size`], which refuses them.
+fn check_content_expression(kind: &str, children: &[Value]) -> Result<(), String> {
+    let allowed: &[&str] = match kind {
+        "paragraph" | "heading" => INLINE_NODES,
+        "code_block" => &["text"],
+        "blockquote" | "footnote_definition" | "list_item" | "task_list_item" => BLOCK_NODES,
+        "ordered_list" | "bullet_list" => &["list_item"],
+        "task_list" => &["task_list_item"],
+        "table" => &["table_row"],
+        "table_row" => &["table_cell", "table_header"],
+        "table_cell" | "table_header" => &["paragraph"],
+        _ => return Ok(()),
+    };
+    for child in children {
+        let Some(child_kind) = child.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !allowed.contains(&child_kind) {
+            return Err(format!(
+                "`{kind}` content cannot contain a direct `{child_kind}` child"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Check the marks on a slice node's children against the mark set
+/// its parent admits in `editor.ts`. Only `code_block` restricts
+/// marks at all: it declares `marks: ""` in both the rich and the raw
+/// schema, so its `text*` content carries no marks. Every other
+/// container admits the schema's full mark set on its inline content,
+/// which [`check_mark`] has already validated type by type.
+///
+/// Marks that are not an array, and children that are not objects,
+/// are left to the recursion in [`node_size`], which refuses them.
+fn check_content_marks(kind: &str, children: &[Value]) -> Result<(), String> {
+    if kind != "code_block" {
+        return Ok(());
+    }
+    for child in children {
+        let marked = child
+            .get("marks")
+            .and_then(Value::as_array)
+            .is_some_and(|marks| !marks.is_empty());
+        if marked {
+            return Err("`code_block` content cannot carry marks".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Check a slice node's own attrs against the types its schema
+/// declares. `image` is the required case: `editor.ts` declares its
+/// `src` attr with no default (`src: {}`, where every other node
+/// attr in either schema declares one), so `prosemirror-model`
+/// refuses an image whose `src` is missing or not a string when a
+/// client parses the step (`Node.fromJSON` throws, as slice 7
+/// established for the `link` mark's `href`). `heading` (`level`)
+/// and `ordered_list` (`order`) are the typed case: both declare
+/// `validate: "number"` (`prosemirror-schema-basic` /
+/// `prosemirror-schema-list`; `editor.ts` keeps the validation), so
+/// a present-but-non-number value throws the same way, while an
+/// absent attr falls back to the declared default and stays valid.
+fn check_node_attrs(kind: &str, node: &Map<String, Value>) -> Result<(), String> {
+    let attrs = node.get("attrs").and_then(Value::as_object);
+    match kind {
+        "image" => {
+            let has_string_src = attrs
+                .and_then(|attrs| attrs.get("src"))
+                .is_some_and(Value::is_string);
+            if !has_string_src {
+                return Err("node `image` needs a string `src` attr".to_owned());
+            }
+        }
+        "heading" | "ordered_list" => {
+            let field = if kind == "heading" { "level" } else { "order" };
+            if let Some(value) = attrs.and_then(|attrs| attrs.get(field))
+                && !value.is_number()
+            {
+                return Err(format!("node `{kind}` needs a numeric `{field}` attr"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The size of one node inside a slice, checked against the schema.
+fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, String> {
+    if depth >= MAX_NODE_DEPTH {
+        return Err(format!("slice nests deeper than {MAX_NODE_DEPTH} nodes"));
+    }
+    let Some(node) = node.as_object() else {
+        return Err("slice node is not a JSON object".to_owned());
+    };
+    let Some(kind) = node.get("type").and_then(Value::as_str) else {
+        return Err("slice node has no string `type`".to_owned());
+    };
+    if kind == "doc" || !schema.has_node(kind) {
+        return Err(format!("unknown node type `{kind}`"));
+    }
+    match node.get("marks") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(marks)) => {
+            for mark in marks {
+                check_mark(schema, Some(mark))?;
+            }
+        }
+        Some(_) => return Err(format!("node `{kind}` has non-array `marks`")),
+    }
+    match node.get("attrs") {
+        None | Some(Value::Object(_) | Value::Null) => {}
+        Some(_) => return Err(format!("node `{kind}` has non-object `attrs`")),
+    }
+    check_node_attrs(kind, node)?;
+    let content = match node.get("content") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(children)) => Some(children.as_slice()),
+        Some(_) => return Err(format!("node `{kind}` has non-array `content`")),
+    };
+    if let Some(children) = content {
+        check_content_expression(kind, children)?;
+        check_content_marks(kind, children)?;
+    }
+    if kind == "text" {
+        if content.is_some_and(|children| !children.is_empty()) {
+            return Err("text node has content".to_owned());
+        }
+        return match node.get("text").and_then(Value::as_str) {
+            Some(text) if !text.is_empty() => Ok(utf16_len(text)),
+            _ => Err("text node needs a non-empty string `text`".to_owned()),
+        };
+    }
+    if schema.is_leaf(kind) {
+        if content.is_some_and(|children| !children.is_empty()) {
+            return Err(format!("leaf node `{kind}` has content"));
+        }
+        return Ok(1);
+    }
+    let inner = match content {
+        Some(children) => fragment_size(schema, children, depth + 1)?,
+        None => 0,
+    };
+    Ok(inner.saturating_add(2))
+}
+
+/// `ProseMirror` measures text in UTF-16 code units (JavaScript string
+/// length).
+fn utf16_len(text: &str) -> u64 {
+    text.encode_utf16().count() as u64
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn rich() -> StepSchema {
+        StepSchema::for_mode(ContentMode::Markdown).unwrap()
+    }
+
+    fn raw() -> StepSchema {
+        StepSchema::for_mode(ContentMode::Raw).unwrap()
+    }
+
+    /// `<p>hello world</p>`: content size 13.
+    fn hello_doc() -> Value {
+        json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello world"}]}]
+        })
+    }
+
+    #[test]
+    fn document_size_matches_prosemirror_sizes() {
+        assert_eq!(
+            document_content_size(&hello_doc(), ContentMode::Markdown),
+            13
+        );
+        // An empty paragraph is 2; a leaf is 1; text counts UTF-16 units.
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph"},
+            {"type": "horizontal_rule"},
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "é😀"},
+                {"type": "hard_break"},
+                {"type": "image", "attrs": {"src": "x"}}
+            ]}
+        ]});
+        assert_eq!(
+            document_content_size(&doc, ContentMode::Rich),
+            2 + 1 + (2 + 3 + 1 + 1)
+        );
+        assert_eq!(
+            document_content_size(&json!({"type": "doc"}), ContentMode::Raw),
+            0
+        );
+    }
+
+    #[test]
+    fn valid_steps_pass_and_track_size() {
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let steps = vec![
+            // Type "!" at the end of the text.
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!"}]}}),
+            // Bold "hello".
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "strong"}}),
+            // Split the paragraph after "hello": a slice of two open
+            // paragraphs, size 2.
+            json!({"stepType": "replace", "from": 6, "to": 6,
+                   "slice": {"content": [{"type": "paragraph"}, {"type": "paragraph"}],
+                             "openStart": 1, "openEnd": 1}}),
+            // Delete " world!", now in the second paragraph at 8..15.
+            json!({"stepType": "replace", "from": 8, "to": 15}),
+            // Wrap the first paragraph in a blockquote.
+            json!({"stepType": "replaceAround", "from": 0, "to": 7, "gapFrom": 0,
+                   "gapTo": 7, "insert": 1, "structure": true,
+                   "slice": {"content": [{"type": "blockquote"}]}}),
+            json!({"stepType": "attr", "pos": 0, "attr": "x", "value": 1}),
+            json!({"stepType": "docAttr", "attr": "x", "value": 1}),
+        ];
+        // 13 +1 (!) +2 (split) -7 (delete) +2 (blockquote).
+        assert_eq!(check_steps(rich(), size, &steps), Ok(11));
+    }
+
+    #[test]
+    fn issue_1618_probe_steps_are_refused() {
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let refused = |step: Value| check_steps(rich(), size, &[step]).unwrap_err().reason;
+        assert!(
+            refused(json!({"stepType": "bogusType", "from": 1, "to": 2})).contains("bogusType")
+        );
+        assert!(
+            refused(json!({"stepType": "replace", "from": 1, "to": 999_999}))
+                .contains("past the end")
+        );
+        assert!(
+            refused(json!({"stepType": "replace", "from": 1, "to": 1,
+                           "slice": {"content": [{"type": "no_such_node"}]}}))
+            .contains("no_such_node")
+        );
+        for non_object in [json!(42), json!(null), json!("hi")] {
+            assert!(refused(non_object).contains("not a JSON object"));
+        }
+    }
+
+    #[test]
+    fn malformed_fields_are_refused() {
+        let size = 13;
+        let cases = [
+            json!({"from": 1, "to": 2}),
+            json!({"stepType": "replace", "from": -1, "to": 2}),
+            json!({"stepType": "replace", "from": 1.5, "to": 2}),
+            json!({"stepType": "replace", "from": 3, "to": 2}),
+            json!({"stepType": "replace", "from": 1}),
+            json!({"stepType": "replace", "from": 1, "to": 1, "slice": []}),
+            json!({"stepType": "replace", "from": 1, "to": 1, "slice": {"content": {}}}),
+            json!({"stepType": "replace", "from": 1, "to": 1,
+                   "slice": {"content": [{"type": "paragraph"}], "openStart": 2, "openEnd": 1}}),
+            json!({"stepType": "replace", "from": 1, "to": 1,
+                   "slice": {"content": [{"type": "text", "text": ""}]}}),
+            json!({"stepType": "replace", "from": 1, "to": 1,
+                   "slice": {"content": [{"type": "hard_break", "content": [{"type": "text", "text": "x"}]}]}}),
+            json!({"stepType": "replace", "from": 1, "to": 1,
+                   "slice": {"content": [{"type": "doc"}]}}),
+            json!({"stepType": "replace", "from": 1, "to": 1,
+                   "slice": {"content": [{"type": "text", "text": "x", "marks": [{"type": "blink"}]}]}}),
+            json!({"stepType": "replaceAround", "from": 0, "to": 13, "gapFrom": 5,
+                   "gapTo": 4, "insert": 0}),
+            json!({"stepType": "replaceAround", "from": 0, "to": 13, "gapFrom": 0,
+                   "gapTo": 13, "insert": 3, "slice": {"content": [{"type": "blockquote"}]}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "blink"}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6}),
+            json!({"stepType": "addMark", "from": 1, "to": 14, "mark": {"type": "em"}}),
+            json!({"stepType": "addNodeMark", "pos": 13, "mark": {"type": "em"}}),
+            json!({"stepType": "attr", "pos": 0, "value": 1}),
+            json!({"stepType": "docAttr", "attr": "", "value": 1}),
+        ];
+        for step in cases {
+            assert!(
+                check_steps(rich(), size, std::slice::from_ref(&step)).is_err(),
+                "accepted {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_is_checked_against_the_size_its_own_steps_leave() {
+        // Deleting the whole text makes a later step at the old end out
+        // of range, and the refusal names that later step.
+        let steps = vec![
+            json!({"stepType": "replace", "from": 1, "to": 12}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!"}]}}),
+        ];
+        let refusal = check_steps(rich(), 13, &steps).unwrap_err();
+        assert_eq!(refusal.index, 1);
+        assert!(refusal.to_string().starts_with("Invalid step 1:"));
+    }
+
+    #[test]
+    fn raw_mode_refuses_rich_content_and_marks() {
+        let doc = json!({"type": "doc", "content": [{"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}]});
+        let size = document_content_size(&doc, ContentMode::Raw);
+        assert_eq!(size, 7);
+        let typed = json!({"stepType": "replace", "from": 6, "to": 6,
+                           "slice": {"content": [{"type": "text", "text": ";"}]}});
+        assert_eq!(check_steps(raw(), size, &[typed]), Ok(8));
+        let heading = json!({"stepType": "replace", "from": 7, "to": 7,
+                             "slice": {"content": [{"type": "heading"}]}});
+        assert!(check_steps(raw(), size, &[heading]).is_err());
+        let bold = json!({"stepType": "addMark", "from": 1, "to": 2, "mark": {"type": "strong"}});
+        assert!(check_steps(raw(), size, &[bold]).is_err());
+        assert!(StepSchema::for_mode(ContentMode::Binary).is_none());
+    }
+
+    #[test]
+    fn slice_content_expressions_are_enforced() {
+        // Oracle: the content expressions declared in `web/src/editor.ts`.
+        // Each step wraps one violating node in a replace slice.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // paragraph / heading are `inline*`: no block children.
+            (
+                json!({"type": "paragraph", "content": [{"type": "paragraph"}]}),
+                "paragraph",
+            ),
+            (
+                json!({"type": "heading", "content": [{"type": "code_block"}]}),
+                "heading",
+            ),
+            // code_block is `text*`.
+            (
+                json!({"type": "code_block", "content": [{"type": "paragraph"}]}),
+                "code_block",
+            ),
+            // blockquote is `block+`: no direct inline children.
+            (
+                json!({"type": "blockquote", "content": [{"type": "text", "text": "x"}]}),
+                "blockquote",
+            ),
+            (
+                json!({"type": "footnote_definition", "content": [{"type": "text", "text": "x"}]}),
+                "footnote_definition",
+            ),
+            // Lists hold only their item type.
+            (
+                json!({"type": "bullet_list", "content": [{"type": "paragraph"}]}),
+                "bullet_list",
+            ),
+            (
+                json!({"type": "ordered_list", "content": [{"type": "task_list_item"}]}),
+                "ordered_list",
+            ),
+            (
+                json!({"type": "task_list", "content": [{"type": "list_item"}]}),
+                "task_list",
+            ),
+            // Items are `paragraph block*`: no direct inline children
+            // (the slice-3 `list_item` case, now via the general rule).
+            (
+                json!({"type": "list_item", "content": [{"type": "text", "text": "x"}]}),
+                "list_item",
+            ),
+            (
+                json!({"type": "task_list_item", "content": [{"type": "image"}]}),
+                "task_list_item",
+            ),
+            // Table structure: table > row > cell/header > paragraph.
+            (
+                json!({"type": "table", "content": [{"type": "table_cell"}]}),
+                "table",
+            ),
+            (
+                json!({"type": "table_row", "content": [{"type": "paragraph"}]}),
+                "table_row",
+            ),
+            (
+                json!({"type": "table_cell", "content": [{"type": "text", "text": "x"}]}),
+                "table_cell",
+            ),
+            (
+                json!({"type": "table_header", "content": [{"type": "blockquote"}]}),
+                "table_header",
+            ),
+        ];
+        for (node, parent) in cases {
+            let reason = refused(node);
+            assert!(reason.contains(parent), "{reason}");
+            assert!(reason.contains("cannot contain"), "{reason}");
+        }
+        // Valid controls: every expression above satisfied, including a
+        // full table nest and a list item mixing paragraph + block.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"}, {"type": "hard_break"},
+                {"type": "image", "attrs": {"src": "y"}}]}),
+            json!({"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}),
+            json!({"type": "blockquote", "content": [{"type": "paragraph"}]}),
+            json!({"type": "list_item", "content": [
+                {"type": "paragraph"}, {"type": "blockquote"}]}),
+            json!({"type": "task_list", "content": [
+                {"type": "task_list_item", "content": [{"type": "paragraph"}]}]}),
+            json!({"type": "table", "content": [{"type": "table_row", "content": [
+                {"type": "table_header", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "h"}]}]},
+                {"type": "table_cell", "content": [{"type": "paragraph"}]}]}]}),
+            // Empty containers stay valid: counts are not checked, so
+            // open/partial slice nodes are unaffected.
+            json!({"type": "table_cell"}),
+            json!({"type": "bullet_list"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn slice_open_depths_cannot_exceed_its_openable_edges() {
+        // Oracle: prosemirror-model's `Slice` contract — a non-zero
+        // open depth requires nodes of at least that depth on that
+        // side of the fragment (`Slice.maxOpen` walks the non-leaf
+        // first/last-child chain; an empty paragraph opens exactly
+        // one level). Each step below fits the old size check: its
+        // open depths sum to no more than its content size.
+        let refused = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // A text node cannot be cut through.
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openStart": 1}),
+                "openStart",
+            ),
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openEnd": 1}),
+                "openEnd",
+            ),
+            // A leaf node cannot be cut through either.
+            (
+                json!({"content": [{"type": "image", "attrs": {"src": "y"}}], "openStart": 1}),
+                "openStart",
+            ),
+            // An empty paragraph opens exactly one level, not two.
+            (
+                json!({"content": [{"type": "paragraph"}], "openStart": 2}),
+                "openStart",
+            ),
+            // paragraph > text opens one level (the text stops the chain).
+            (
+                json!({"content": [{"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}], "openStart": 2}),
+                "openStart",
+            ),
+            // blockquote > paragraph > text opens two levels, not three.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "x"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+            // The end chain follows last children: blockquote >
+            // paragraph > hard_break (leaf) still opens only two.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "hard_break"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+        ];
+        for (slice, field) in cases {
+            let reason = refused(slice);
+            assert!(reason.contains(field), "{reason}");
+            assert!(reason.contains("openable"), "{reason}");
+        }
+        // Valid controls at exactly the openable bound, including the
+        // split-paragraph shape slice 1 already accepted.
+        let valid = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).is_ok()
+        };
+        for slice in [
+            json!({"content": [{"type": "text", "text": "x"}]}),
+            json!({"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "paragraph"}, {"type": "paragraph"}],
+                   "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "blockquote", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}]}], "openStart": 2, "openEnd": 2}),
+            json!({"content": [{"type": "paragraph", "content": [
+                {"type": "hard_break"}]}], "openStart": 1, "openEnd": 1}),
+        ] {
+            assert!(valid(slice.clone()), "refused valid {slice}");
+        }
+    }
+
+    #[test]
+    fn deep_slices_are_refused_not_recursed() {
+        let mut node = json!({"type": "text", "text": "x"});
+        for _ in 0..=MAX_NODE_DEPTH {
+            node = json!({"type": "blockquote", "content": [node]});
+        }
+        let step = json!({"stepType": "replace", "from": 0, "to": 0, "slice": {"content": [node]}});
+        let refusal = check_steps(rich(), 2, &[step]).unwrap_err();
+        assert!(refusal.reason.contains("deeper"));
+    }
+
+    #[test]
+    fn slice_marks_are_checked_against_their_parent() {
+        // Oracle: `web/src/editor.ts` declares `code_block` with
+        // `marks: ""` in both schemas — no marks inside a code block.
+        // Each step wraps one node in a replace slice.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for mark in ["strong", "em", "code", "link", "strikethrough"] {
+            let reason = refused(json!({"type": "code_block", "content": [
+                {"type": "text", "text": "x = 1", "marks": [{"type": mark}]}]}));
+            assert!(reason.contains("code_block"), "{reason}");
+            assert!(reason.contains("marks"), "{reason}");
+        }
+        // Valid controls: unmarked code text, an empty marks array,
+        // and the same marks on text where the schema admits them.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}),
+            json!({"type": "code_block", "content": [
+                {"type": "text", "text": "x = 1", "marks": []}]}),
+            json!({"type": "code_block"}),
+            json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x", "marks": [{"type": "strong"}]}]}),
+            json!({"type": "heading", "content": [
+                {"type": "text", "text": "x", "marks": [{"type": "link", "attrs": {"href": "y"}}]}]}),
+            json!({"type": "table_cell", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "x", "marks": [{"type": "em"}]}]}]}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn link_marks_need_a_string_href() {
+        // Oracle: prosemirror-schema-basic declares the link mark
+        // `attrs: {href: {}, title: {default: null}}`; with no default
+        // for `href`, prosemirror-model (verified against 1.25.12,
+        // the version in web/package.json) throws in `Mark.fromJSON`
+        // for a link mark whose `href` is missing or not a string —
+        // "No value supplied for attribute href" / "Expected value of
+        // type string for attribute href". Every step shape that
+        // carries a mark is refused the same way.
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let refused = |step: Value| check_steps(rich(), size, &[step]).unwrap_err().reason;
+        for step in [
+            // Step-level marks: no attrs at all, empty attrs, a null
+            // href and a numeric href all fail the client's parse.
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "link"}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": null}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": 42}}}),
+            json!({"stepType": "removeMark", "from": 1, "to": 6, "mark": {"type": "link"}}),
+            json!({"stepType": "addNodeMark", "pos": 0, "mark": {"type": "link"}}),
+            // A slice node's marks go through the same check.
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link"}]}]}}),
+        ] {
+            let reason = refused(step.clone());
+            assert!(reason.contains("link"), "{reason}");
+            assert!(reason.contains("href"), "{reason}");
+        }
+        // Valid controls: a link mark with a string href (with and
+        // without the optional title), and marks with no required
+        // attrs carrying none.
+        for step in [
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "strong"}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]}]}}),
+        ] {
+            assert!(
+                check_steps(rich(), size, &[step.clone()]).is_ok(),
+                "refused valid {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_mark_titles_must_be_strings_or_null() {
+        // Oracle: `prosemirror-schema-basic` declares the link mark
+        // `attrs: {href: {validate: "string"}, title: {default: null,
+        // validate: "string|null"}}`, and `editor.ts` never updates
+        // the link mark (its marks are the basic marks plus
+        // `strikethrough`), so the validation is live in the editor
+        // schema. prosemirror-model (verified against 1.25.12, the
+        // version in web/package.json) throws in `Mark.fromJSON` for
+        // a present title of the wrong type — "Expected value of
+        // type string,null for attribute title on type link, got
+        // number" — while an absent title takes the default. Every
+        // step shape that carries a mark is refused the same way.
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let refused = |step: Value| check_steps(rich(), size, &[step]).unwrap_err().reason;
+        for step in [
+            // A numeric, boolean, object and array title all fail
+            // the client's parse, in step marks and slice marks.
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": true}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": {}}}}),
+            json!({"stepType": "removeMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": []}}}),
+            json!({"stepType": "addNodeMark", "pos": 0,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com", "title": 42}}]}]}}),
+        ] {
+            let reason = refused(step.clone());
+            assert!(reason.contains("link"), "{reason}");
+            assert!(reason.contains("title"), "{reason}");
+        }
+        // Valid controls: a string title, an explicit null title and
+        // no title at all (the declared default applies), plus a
+        // mark with no typed attrs carrying a title-shaped field
+        // nowhere.
+        for step in [
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": null}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "strong"}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}]}]}}),
+        ] {
+            assert!(
+                check_steps(rich(), size, &[step.clone()]).is_ok(),
+                "refused valid {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_nodes_need_a_string_src() {
+        // Oracle: `web/src/editor.ts` declares the image node
+        // `attrs: {src: {}, alt: {default: null}, title: {default:
+        // null}, …}`; with no default for `src`, prosemirror-model
+        // (the attr computation slice 7 verified against 1.25.12 for
+        // the link mark's `href`) throws in `Node.fromJSON` for an
+        // image whose `src` is missing or not a string — "No value
+        // supplied for attribute src". Every slice position that
+        // carries a node is refused the same way.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for node in [
+            // No attrs at all, empty attrs, a null src and a numeric
+            // src all fail the client's parse.
+            json!({"type": "image"}),
+            json!({"type": "image", "attrs": {}}),
+            json!({"type": "image", "attrs": {"src": null}}),
+            json!({"type": "image", "attrs": {"src": 42}}),
+            // Nested inside a paragraph, the natural inline parent.
+            json!({"type": "paragraph", "content": [{"type": "image"}]}),
+        ] {
+            let reason = refused(node.clone());
+            assert!(reason.contains("image"), "{reason}");
+            assert!(reason.contains("src"), "{reason}");
+        }
+        // Valid controls: an image with a string src (bare, and with
+        // the optional defaulted attrs), and leaf nodes with no
+        // required attrs carrying none.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "image", "attrs": {"src": "x.png"}}),
+            json!({"type": "image", "attrs": {"src": "x.png", "alt": "x", "title": null}}),
+            json!({"type": "paragraph", "content": [
+                {"type": "image", "attrs": {"src": "x.png"}}]}),
+            json!({"type": "hard_break"}),
+            json!({"type": "horizontal_rule"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn numeric_node_attrs_must_be_numbers() {
+        // Oracle: `prosemirror-schema-basic` declares the heading
+        // node `attrs: {level: {default: 1, validate: "number"}}`
+        // and `prosemirror-schema-list` declares `ordered_list`
+        // `attrs: {order: {default: 1, validate: "number"}}`;
+        // `editor.ts` keeps both validations. prosemirror-model
+        // (verified against 1.25.12, the version in web/package.json)
+        // throws in `Node.fromJSON` for a present attr of the wrong
+        // type — "Expected value of type number for attribute level
+        // on type heading, got string" — while an absent attr takes
+        // the default and any JSON number parses.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for (node, field) in [
+            // A string, null and boolean level/order all fail the
+            // client's parse.
+            (json!({"type": "heading", "attrs": {"level": "2"}}), "level"),
+            (
+                json!({"type": "heading", "attrs": {"level": null}}),
+                "level",
+            ),
+            (
+                json!({"type": "heading", "attrs": {"level": true}}),
+                "level",
+            ),
+            (
+                json!({"type": "ordered_list", "attrs": {"order": "3"}}),
+                "order",
+            ),
+            (
+                json!({"type": "ordered_list", "attrs": {"order": null}}),
+                "order",
+            ),
+            // Nested inside a blockquote, the natural block parent.
+            (
+                json!({"type": "blockquote", "content": [
+                    {"type": "heading", "attrs": {"level": "2"}}]}),
+                "level",
+            ),
+        ] {
+            let reason = refused(node.clone());
+            assert!(reason.contains(field), "{reason}");
+            assert!(reason.contains("numeric"), "{reason}");
+        }
+        // Valid controls: no attrs (the declared defaults apply), an
+        // empty attrs object, and JSON numbers — including a
+        // fractional one, since `validate: "number"` checks the type
+        // only, never the range or integrality.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "heading"}),
+            json!({"type": "heading", "attrs": {}}),
+            json!({"type": "heading", "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "x"}]}),
+            json!({"type": "heading", "attrs": {"level": 2.5}}),
+            json!({"type": "ordered_list"}),
+            json!({"type": "ordered_list", "attrs": {"order": 3}, "content": [
+                {"type": "list_item", "content": [{"type": "paragraph"}]}]}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+}

@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use rusqlite::Connection;
+
 use super::content::ContentStores;
 use super::{ShardInfo, ShardSet, Tier, TierCeiling};
 use crate::backend::SearchBackend;
@@ -205,6 +207,11 @@ pub struct ShardedBackend<B> {
     fallback_notes: Mutex<Vec<String>>,
     /// Tier content stores for hydration (#6664), when attached.
     content: Option<Arc<ContentStores>>,
+    /// Source registry for occurrence attribution (#3125 slice 6),
+    /// when attached: `lookup_by_hash` resolves each occurrence's
+    /// source locator to its registered root. Absent, occurrence
+    /// rows are unattributed exactly as before.
+    source_registry: Mutex<Option<Connection>>,
     /// The successor switch (#6664): serve hydration from
     /// `content` instead of the wrapped monolith. The service's
     /// successor protocol field (coordination issue #5668) maps
@@ -221,6 +228,7 @@ impl<B: SearchBackend> ShardedBackend<B> {
             topics: None,
             fallback_notes: Mutex::new(Vec::new()),
             content: None,
+            source_registry: Mutex::new(None),
             hydrate_from_content: false,
         }
     }
@@ -251,6 +259,22 @@ impl<B: SearchBackend> ShardedBackend<B> {
     /// Scope vector scans to these manifest topics.
     pub fn with_topics(mut self, topics: Vec<String>) -> ShardedBackend<B> {
         self.topics = Some(topics);
+        self
+    }
+
+    /// Attach a source registry for occurrence attribution (#3125
+    /// slice 6). The connection is the caller's — typically the
+    /// phase-4 catalog database holding `source_registry`'s tables —
+    /// and is used read-only by occurrence lookups (resolution never
+    /// creates or alters rows beyond the registry's own additive
+    /// `ensure`). Without it, `occurrences` serves unattributed rows
+    /// exactly as before; serving-side wiring of the catalog path is
+    /// the named next slice.
+    pub fn with_source_registry(self, conn: Connection) -> ShardedBackend<B> {
+        *self
+            .source_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(conn);
         self
     }
 
@@ -512,6 +536,13 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         self.inner.chunk_details(ids)
     }
 
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.chunk_ids_by_hash(canonical_hash);
+        }
+        self.inner.chunk_ids_by_hash(canonical_hash)
+    }
+
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         if let Some(content) = self.content_if_enabled() {
             return content.neighbors(message_id, chunk_idx, n);
@@ -540,11 +571,16 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         tier_ceiling: TierCeiling,
         caller_ceiling: crate::filters::Sensitivity,
     ) -> Result<Vec<crate::occurrences::ChunkOccurrence>> {
+        let guard = self
+            .source_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::occurrences::lookup_by_hash(
             &self.current_set(),
             tier_ceiling,
             caller_ceiling,
             canonical_hash,
+            guard.as_ref(),
         )
     }
 }

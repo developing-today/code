@@ -102,6 +102,14 @@ in
       default = "100.99.113.103";
       description = "The host's tailnet address; Grist and Pad bind it alongside loopback, as the compose files did, and the ready-for-agent tailnet socket forwards it to the loopback-only app (#1181).";
     };
+
+    readyForAgentBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 16056;
+      description = "Private loopback backend port for ready-for-agent behind its socket proxy.";
+    };
+
+    readyForAgentSocketActivation = lib.mkEnableOption "the ready-for-agent loopback socket-proxy listener";
   };
 
   config = lib.mkIf cfg.enable {
@@ -177,7 +185,8 @@ in
           WorkingDirectory = "${pmDir}/ready-for-agent";
           Environment = [
             "PATH=${home}/.local/bin:/etc/profiles/per-user/${cfg.user}/bin:${home}/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-          ];
+          ]
+          ++ lib.optional cfg.readyForAgentSocketActivation "PORT=${toString cfg.readyForAgentBackendPort}";
           # The binary is installed by pm-stack/ready-for-agent/install.sh;
           # state (SQLite) lives in ~/.local/share/ready-for-agent/ by
           # upstream default. No --host flag: upstream's default bind is
@@ -208,17 +217,24 @@ in
         Install.WantedBy = [ "sockets.target" ];
       };
 
-      # The app's own loopback listener as a socket unit (#1822,
-      # slice 1 of task 15848): DEFINED but not enabled — the app
-      # still binds 127.0.0.1:6056 itself today (the tailnet socket
-      # above forwards into that bind). Slice 2 adds LISTEN_FDS
-      # acceptance to ready-for-agent; slice 3 enables this socket
-      # (Install.WantedBy = [ "sockets.target" ]).
+      # Loopback socket activation (#1822, task 15848): upstream
+      # ready-for-agent supports PORT but not LISTEN_FDS, so keep its
+      # listener private behind socket-proxyd. Disabled by default.
       systemd.user.sockets.ready-for-agent = {
         Socket = {
           ListenStream = "127.0.0.1:6056";
-          Service = "ready-for-agent.service";
+          Service = "ready-for-agent-proxy.service";
         };
+        Install.WantedBy = lib.optionals cfg.readyForAgentSocketActivation [ "sockets.target" ];
+      };
+
+      systemd.user.services.ready-for-agent-proxy = {
+        Unit = {
+          Description = "ready-for-agent loopback socket proxy (#1822)";
+          Requires = [ "ready-for-agent.service" ];
+          After = [ "ready-for-agent.service" ];
+        };
+        Service.ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.readyForAgentBackendPort}";
       };
 
       systemd.user.services.ready-for-agent-tailnet = {

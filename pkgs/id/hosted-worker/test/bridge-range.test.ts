@@ -17,7 +17,7 @@ import {
   type RangeParams,
   type SyncKey,
 } from "../src/range.ts";
-import { blake3 } from "../src/blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex } from "../src/ed25519.ts";
 
 /** Deterministic PRNG (mulberry32) so the sets are reproducible. */
@@ -67,12 +67,7 @@ test("two parties learn exactly the symmetric difference", () => {
     const a = base.filter(() => rand() < 0.8);
     const b = base.filter(() => rand() < 0.8);
     const truth = symdiff(a, b);
-    const sim = simulateExchange(
-      new RangeParty(a),
-      DEFAULT_RANGE_PARAMS,
-      new RangeParty(b),
-      DEFAULT_RANGE_PARAMS,
-    );
+    const sim = simulateExchange(new RangeParty(a), DEFAULT_RANGE_PARAMS, new RangeParty(b), DEFAULT_RANGE_PARAMS);
     assert.deepEqual(sim.learnedA, truth, `trial ${trial}: A's learned set`);
     assert.deepEqual(sim.learnedB, truth, `trial ${trial}: B's learned set`);
   }
@@ -91,12 +86,7 @@ test("different local K and T still converge", () => {
 
 test("identical sets learn nothing and end on skips", () => {
   const set = makeSet("same", 30);
-  const sim = simulateExchange(
-    new RangeParty(set),
-    DEFAULT_RANGE_PARAMS,
-    new RangeParty(set),
-    DEFAULT_RANGE_PARAMS,
-  );
+  const sim = simulateExchange(new RangeParty(set), DEFAULT_RANGE_PARAMS, new RangeParty(set), DEFAULT_RANGE_PARAMS);
   assert.equal(sim.learnedA.size, 0);
   assert.equal(sim.learnedB.size, 0);
   assert.equal(sim.flights, 2);
@@ -106,12 +96,7 @@ test("reconciliation cost is sublinear in the set size", () => {
   // The #2276 bound: 100 events over 4 authors reconcile in under
   // 6,400 frame bytes when the sets are identical.
   const set = makeSet("cost", 100);
-  const sim = simulateExchange(
-    new RangeParty(set),
-    DEFAULT_RANGE_PARAMS,
-    new RangeParty(set),
-    DEFAULT_RANGE_PARAMS,
-  );
+  const sim = simulateExchange(new RangeParty(set), DEFAULT_RANGE_PARAMS, new RangeParty(set), DEFAULT_RANGE_PARAMS);
   assert.ok(sim.bytesA + sim.bytesB < 6400, `cost ${sim.bytesA + sim.bytesB}`);
 });
 
@@ -135,9 +120,7 @@ test("frames round-trip and bounds are checked", () => {
     ]),
   );
   // A bound longer than a key is refused.
-  assert.throws(() =>
-    checkBounds([{ upper: new Uint8Array(73), mode: { t: "skip" } }]),
-  );
+  assert.throws(() => checkBounds([{ upper: new Uint8Array(73), mode: { t: "skip" } }]));
 });
 
 test("malformed frames are refused", () => {

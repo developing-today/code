@@ -32,6 +32,7 @@ mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
 mod mode_report;
+pub(crate) mod placement_emit;
 mod support;
 mod transport;
 mod verify_disposition;
@@ -64,6 +65,9 @@ pub fn run(args: &[String]) -> i32 {
     match sub {
         "validate" => cmd_validate(rest),
         "enqueue" => cmd_enqueue(rest),
+        "meta" => cmd_meta(rest),
+        "staleness" => cmd_staleness(rest),
+        "needs-user" => cmd_needs_user(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
         "release" => cmd_release(rest),
@@ -72,20 +76,25 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "reprioritize" => cmd_reprioritize(rest),
         "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
         "quarantine-recheck" => cmd_quarantine_recheck(rest),
+        "time-recheck" => cmd_time_recheck(rest),
         "repair" => cmd_repair(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "resolution-backfill" => cmd_resolution_backfill(rest),
         "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
         "show" => cmd_show(rest),
+        "note" => cmd_note(rest),
+        "link" => cmd_link(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -93,6 +102,7 @@ pub fn run(args: &[String]) -> i32 {
         "dispatch" => crate::placement::cmd_dispatch(rest),
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
+        "placement-load" => cmd_placement_load(rest),
         "outbox" => cmd_outbox(rest),
         "stack" => cmd_stack(rest),
         _ => {
@@ -153,6 +163,19 @@ pub fn guard_rows(limit: i64) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn list_marks_manual_only_rows_9178() {
+        let cells = list_row_cells(&json!({
+            "id": 7,
+            "priority": 10,
+            "status": "queued",
+            "manual_only": true,
+            "created_at": "2026-11-25T00:00:00Z",
+            "title": "manual item",
+        }));
+        assert_eq!(cells[2], "queued (manual-only)");
+    }
 
     #[test]
     fn execution_lane_split_7598() {
@@ -221,6 +244,72 @@ mod tests {
     }
 
     #[test]
+    fn timeline_surfaces_staleness_autocomplete_14268() {
+        // #14268: a claim-time staleness retirement writes exactly
+        // one event, `staleness_autocomplete`, and no `claimed`
+        // event. While the history kind lists omitted it, four
+        // retired tasks read as "zero history events, no result"
+        // through every client surface and were misdiagnosed as
+        // silent completions. Both surfaces that assemble a task's
+        // history query the kind now.
+        let src = include_str!("client/commands_query.rs");
+        let timeline_seg = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline_seg.contains("\"staleness_autocomplete\""),
+            "cmd_timeline queries staleness_autocomplete so retirements are visible"
+        );
+        let show_seg = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show_seg.contains("\"staleness_autocomplete\""),
+            "cmd_show queries staleness_autocomplete so retirements are visible"
+        );
+    }
+
+    #[test]
+    fn show_and_timeline_surface_suspect_completions_14268() {
+        // #14268 ask 2: the broker stamps a suspect completion and
+        // writes a suspect_completion event, but that only surfaces
+        // if the read paths query the kind — the same blind-spot
+        // shape as #6985 and the staleness_autocomplete half of
+        // #14292. Both per-task surfaces must ask for it.
+        let src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let show = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show.contains("\"suspect_completion\""),
+            "cmd_show queries suspect_completion so a suspect completion is visible in a task's history"
+        );
+        let timeline = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline.contains("\"suspect_completion\""),
+            "cmd_timeline queries suspect_completion so a suspect completion is visible on the timeline"
+        );
+    }
+
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
@@ -244,6 +333,55 @@ mod tests {
         ]);
         let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn fold_task_events_16383_keeps_only_history_kinds_in_id_order() {
+        // #16383 oracle: the batched show/timeline read folds one
+        // unfiltered /events-list page client-side — history kinds
+        // survive (with timeline_event's normalization:
+        // lane_session_bound reads as session_bound), every other
+        // recorded kind stays out, and the result is in event-id
+        // order regardless of page order.
+        let rows = vec![
+            json!({"id": 3, "kind": "heartbeat", "detail": {}, "created_at": "2026-11-28T00:00:03Z"}),
+            json!({"id": 2, "kind": "lane_session_bound", "detail": {"session_id": "ses_a"}, "created_at": "2026-11-28T00:00:02Z"}),
+            json!({"id": 1, "kind": "claimed", "detail": {"session_id": "ses_a"}, "created_at": "2026-11-28T00:00:01Z"}),
+            json!({"id": 4, "kind": "note_added", "detail": {}, "created_at": "2026-11-28T00:00:04Z"}),
+        ];
+        let out = fold_task_events(&rows, &["claimed", "lane_session_bound", "session_bound"]);
+        let kinds: Vec<&str> = out.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["claimed", "session_bound"]);
+        let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn show_and_timeline_batch_events_list_16383() {
+        // #16383: show and timeline assemble a task's history
+        // through the batched fetch_task_events (one unfiltered
+        // /events-list call + the client-side fold) instead of
+        // looping one call per kind; the per-kind loop survives
+        // only inside fetch_task_events as its saturation fallback.
+        let src = include_str!("client/commands_query.rs");
+        let show = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show.contains("fetch_task_events(task_id, &history_kinds)"),
+            "cmd_show reads its history through the batched fetch"
+        );
+        let timeline = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("pub(super) fn rollup_event(").next())
+            .unwrap_or("");
+        assert!(
+            timeline.contains("fetch_task_events(task_id, &timeline_kinds)"),
+            "cmd_timeline reads its history through the batched fetch"
+        );
     }
 
     #[test]
@@ -285,6 +423,7 @@ mod tests {
                     "lease-seconds",
                     "lane",
                     "task",
+                    "tasks",
                     "count",
                     "from-session",
                     "platform",
@@ -296,8 +435,9 @@ mod tests {
                     "pool",
                     "launched-by",
                     "remaining-budget-minutes",
+                    "manual-override",
                 ],
-                &["handoff", "bind"],
+                &["handoff", "bind", "take-over"],
             )
         };
         // Bare: no arguments at all — the probing shape.
@@ -328,6 +468,7 @@ mod tests {
             .is_none()
         );
         assert!(bare_claim_refusal(&mk(&["--task", "123"]), &None).is_none());
+        assert!(bare_claim_refusal(&mk(&["--tasks", "123,124"]), &None).is_none());
         assert!(bare_claim_refusal(&mk(&["--filter", "repo = code"]), &None).is_none());
         assert!(
             bare_claim_refusal(
@@ -415,6 +556,52 @@ mod tests {
     fn iso_utc_formats_the_store_shape() {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_utc(1_794_676_389), "2026-11-14T17:13:09Z");
+    }
+
+    #[test]
+    fn timeline_interleaves_notes_into_one_story_14170_q4() {
+        // #14170 Q4 oracle: notes and events render as one
+        // chronological story; each keeps its own order, and a
+        // same-second tie puts the event first.
+        let ev = |id: i64, us: i64| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            trigger: None,
+            created_at: format!("e{id}"),
+            created_us: us,
+        };
+        let note = |id: i64, us: i64| TimelineNote {
+            id,
+            author: "w".to_string(),
+            author_kind: "agent".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            body: format!("n{id}\nsecond line"),
+            created_at: format!("n{id}"),
+            created_us: us,
+            edited_at: None,
+            deleted_at: None,
+        };
+        let events = [ev(1, 10), ev(2, 20), ev(3, 40)];
+        let notes = [note(7, 5), note(8, 20), note(9, 30), note(10, 50)];
+        let story: Vec<String> = interleave_notes(&events, &notes)
+            .iter()
+            .map(|e| match e {
+                TimelineEntry::Event(ev) => ev.created_at.clone(),
+                TimelineEntry::Note(n) => n.created_at.clone(),
+            })
+            .collect();
+        assert_eq!(story, ["n7", "e1", "e2", "n8", "n9", "e3", "n10"]);
+        let line = format_timeline_note(&note(7, 5));
+        assert!(line.starts_with("n7  note #7  by w"), "{line}");
+        assert!(line.ends_with("\n    n7\n    second line"), "{line}");
+        assert!(interleave_notes(&[], &[]).is_empty());
     }
 
     #[test]
@@ -587,6 +774,77 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn repeated_task_flag_accumulates_for_batch_by_id_9178() {
+        // #9178 §3 (ported from PR #16396): --task repeats to name
+        // a batch. Oracle: every occurrence is kept (repeated and
+        // comma-joined forms read alike), while any other repeated
+        // flag stays a usage error.
+        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11", "--task", "22"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22"]);
+        assert_eq!(args.get("task").as_deref(), Some("11,22"));
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11,22", "--task", "33"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22", "33"]);
+        let single =
+            parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"]).unwrap();
+        assert_eq!(single.get_i64("task"), Some(11));
+        // A repeated non-repeatable flag is still rejected.
+        assert!(
+            parse_args_inner_multi(
+                &argv(&["--worker", "a", "--worker", "b"]),
+                &["worker"],
+                &[],
+                &[]
+            )
+            .is_err()
+        );
+        // A repeatable boolean is still a duplicate-flag error.
+        assert!(
+            parse_args_inner_multi(
+                &argv(&["--bind", "--bind"]),
+                &["task"],
+                &["bind"],
+                &["bind"],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_ids_flag_parses_the_named_batch_9178() {
+        // #9178 §3 oracle: --tasks names the batch explicitly —
+        // a comma-separated list of positive ids, whitespace
+        // tolerated; an absent flag is no batch; anything else
+        // is a usage error, never a silent pick.
+        assert_eq!(parse_task_ids_flag(None), Ok(vec![]));
+        assert_eq!(
+            parse_task_ids_flag(Some("12,34".to_string())),
+            Ok(vec![12, 34])
+        );
+        assert_eq!(
+            parse_task_ids_flag(Some(" 7 , 8 ,9".to_string())),
+            Ok(vec![7, 8, 9])
+        );
+        assert!(parse_task_ids_flag(Some("".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("0".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("-3".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,x".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,".to_string())).is_err());
     }
 
     #[test]
@@ -798,6 +1056,40 @@ mod tests {
         let mut scalar = json!(5);
         attach_mode_line(&mut scalar, "heartbeat", legs_served(true, true));
         assert_eq!(scalar, json!(5));
+    }
+
+    #[test]
+    fn served_lifecycle_verbs_report_normal_cloud() {
+        // #8581 acceptance remainder: every task-row lifecycle
+        // verb whose served path prints the broker's row carries
+        // the contract mode line — a broker-served verb on a
+        // healthy store reports normal/cloud under its own CLI
+        // verb name (claim/heartbeat/checkpoint wire their legs
+        // explicitly and are covered above).
+        for verb in [
+            "release",
+            "lane",
+            "bind",
+            "park",
+            "wake",
+            "block",
+            "unblock",
+            "dep-recheck",
+            "quarantine-recheck",
+            "time-recheck",
+            "cancel",
+            "revive",
+            "fail",
+            "complete",
+        ] {
+            let row = served_row(json!({"id": 7, "status": "claimed"}), verb);
+            assert_eq!(
+                row["mode_line"],
+                json!({"verb": verb, "mode": "normal", "route": "cloud"}),
+                "served_row for {verb}"
+            );
+            assert_eq!(row["id"], json!(7));
+        }
     }
 
     #[test]
@@ -2416,6 +2708,28 @@ esac
         // "default" is the server saying no variant was chosen, so
         // the session's real variant supplies effort.
         assert_eq!(derived["effort"], json!("low"));
+    }
+
+    #[test]
+    fn completion_telemetry_route_claim_model_is_the_pool_not_the_model() {
+        // A transfer-stamped claim through the route provider: its
+        // claim_model holds the route id (the pool), never a serving
+        // leaf, so the session's leaf supplies the model — and with
+        // no session record the model is an honest null rather than
+        // the route alias.
+        let claim = json!({"claim_provider": "opencode-route", "claim_model": "workhorse"});
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], Value::Null);
     }
 
     #[test]

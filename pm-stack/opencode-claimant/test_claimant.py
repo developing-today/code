@@ -59,23 +59,6 @@ claimant = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(claimant)
 
 
-def _fake_git_run(argv, **kwargs):
-    """Fake git at the subprocess boundary for fire-log tests.
-
-    log_fire() records read_code_source()'s provenance read in every
-    entry; that read spawns git, which the hermetic suite forbids.
-    Fire-log tests whose subject is another entry field fake the read
-    here (the TestCodeSourceFireLog shape, #13254) so the entry still
-    carries a real-shaped code_source and no spawn is attempted.
-    """
-    stdout = (
-        "main\n"
-        if "--abbrev-ref" in argv
-        else "0123456789abcdef0123456789abcdef01234567\n"
-    )
-    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
-
-
 class Result:
     """Minimal subprocess.run stand-in."""
 
@@ -251,10 +234,13 @@ class TestLaunchStep(unittest.TestCase):
             argv = [str(part) for part in cmd]
             if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
                 return handback_fake(cmd, **kwargs)
-            if argv and argv[0] == "gh":
+            # The issue reads and notes go through the fleet gh sync
+            # verbs (code#10973): sync-labels is the step-4a2 held-label
+            # read (no labels), sync-comment posts a note.
+            if argv[1:3] == ["gh", "sync-labels"]:
+                return Result(0, "[]")
+            if argv[1:3] == ["gh", "sync-comment"]:
                 calls["gh"].append(argv)
-                if "view" in argv:
-                    return Result(0, "[]")
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
 
@@ -300,6 +286,144 @@ class TestLaunchStep(unittest.TestCase):
                 }
             ],
         )
+
+    def test_resume_hint_uses_matching_idle_session_without_creating_one(self):
+        # Oracle: the launch record and bind command must name the hinted
+        # session, while no POST /api/session creates a replacement.
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+        existing = {
+            "id": "ses_resume",
+            "location": {"directory": str(claimant.PRIMARY_CLONE)},
+        }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+                return Result(0, "{}")
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", existing)),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=True) as send_prompt,
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.args[0], "ses_resume")
+        self.assertEqual(launched[0]["session_id"], "ses_resume")
+        self.assertEqual(launched[0]["requested_session_id"], "ses_resume")
+        self.assertEqual(len(binds), 1)
+        self.assertIn("ses_resume", binds[0])
+
+    def test_missing_resume_session_falls_back_and_records_substitution(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_missing")
+        creates = []
+
+        def server_request(method, path, body=None, timeout=5):
+            creates.append((method, path))
+            return 201, {
+                "id": "ses_new1",
+                "location": {"directory": str(claimant.PRIMARY_CLONE)},
+            }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("gone", None)),
+            patch.object(claimant, "_server_request", side_effect=server_request),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(creates, [("POST", "/api/session")])
+        self.assertEqual(launched[0]["requested_session_id"], "ses_missing")
+        self.assertEqual(launched[0]["session_id"], "ses_new1")
+        self.assertEqual(launched[0]["resume_fallback"], "missing_session")
+        self.assertIn("opencode-claimant", binds[0])
+        self.assertIn("ses_new1", binds[0])
+
+    def test_wrong_worktree_resume_session_falls_back_without_reusing_it(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_other_tree")
+        creates = []
+        other_tree = {
+            "id": "ses_other_tree",
+            "location": {"directory": "/other/worktree"},
+        }
+
+        def server_request(method, path, body=None, timeout=5):
+            creates.append((method, path))
+            return 201, {
+                "id": "ses_new1",
+                "location": {"directory": str(claimant.PRIMARY_CLONE)},
+            }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", other_tree)),
+            patch.object(claimant, "_server_request", side_effect=server_request),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(creates, [("POST", "/api/session")])
+        self.assertEqual(launched[0]["requested_session_id"], "ses_other_tree")
+        self.assertEqual(launched[0]["session_id"], "ses_new1")
+        self.assertEqual(launched[0]["resume_fallback"], "worktree_mismatch")
+        self.assertIn("opencode-claimant", binds[0])
+
+    def test_active_resume_session_is_skipped_without_stealing_it(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_busy")
+        session = {
+            "id": "ses_busy",
+            "location": {"directory": str(claimant.PRIMARY_CLONE)},
+        }
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", session)),
+            patch.object(claimant, "_fetch_active_ids", return_value={"ses_busy"}),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "busy_session"}])
+        self.assertEqual(binds, [])
 
     def test_valid_candidate_launches_and_binds(self):
         binds = []
@@ -624,6 +748,49 @@ class TestProviderWallGate(unittest.TestCase):
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_PROVIDER_WALL, recovery_argv)
         self.assertEqual(claimant._fire_provider_wall["error"], WALL_ERROR)
 
+    def test_prompt_wall_does_not_delete_a_resumed_session(self):
+        binds = []
+        deletes = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(
+                claimant,
+                "_get_session",
+                return_value=(
+                    "ok",
+                    {
+                        "id": "ses_resume",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    },
+                ),
+            ),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=False),
+            patch.object(claimant, "_take_prompt_wall", side_effect=[None, WALL_ERROR]),
+            patch.object(claimant, "_delete_session", side_effect=deletes.append),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(launched[0]["session_id"], "ses_resume")
+        self.assertTrue(launched[0]["prompt_failed"])
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(
+            deletes, [], "a provider wall must not destroy a reused session"
+        )
+
     def test_main_records_provider_wall_in_fires_entry(self):
         # #8166 item 2: a walled fire's log line carries the
         # provider_wall entry - verbatim error, route, serving
@@ -743,6 +910,58 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(recovered[0]["outcome"], "failure")
         self.assertEqual(recovered[0]["binding"]["task_id"], 4242)
         self.assertEqual(recovered[0]["action"], "requeued_retry")
+
+    def test_supervision_preserves_active_error_stopped_session(self):
+        # #16066: a stored error outcome is not proof of terminal -
+        # a resumed session can carry one while active. The
+        # authoritative active set preserves it: no DELETE, no
+        # recovery bind, no candidate.
+        binds = []
+        deletes = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW], sessions=[], active_ids={"ses_gone"}),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+        self.assertEqual(binds, [])
+
+    def test_supervision_error_stopped_fails_closed_when_active_set_unreadable(self):
+        # #16066: an unreadable active set (None) never authorizes
+        # deleting a session over a stored error outcome.
+        binds = []
+        deletes = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW], sessions=[], active_ids=None),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+        self.assertEqual(binds, [])
 
     def test_unreadable_messages_are_unknown_not_zero(self):
         # #3026: the old endpoint 404s with an empty body, and the old
@@ -1009,7 +1228,6 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
-                patch.object(claimant.subprocess, "run", _fake_git_run),
                 patch.object(claimant, "fire_opencode_working_hook") as hook,
             ):
                 self.assertEqual(claimant.main(), 1)
@@ -1070,7 +1288,6 @@ class TestGateExitFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
-                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 self.assertEqual(claimant.main(), 0)
             entries = [
@@ -1193,6 +1410,45 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
+
+    def test_bind_failure_does_not_delete_a_resumed_session(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+        deletes = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+                return Result(1, "", "bind failed: task already claimed")
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(
+                claimant,
+                "_get_session",
+                return_value=(
+                    "ok",
+                    {
+                        "id": "ses_resume",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    },
+                ),
+            ),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_delete_session", side_effect=deletes.append),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+
+        self.assertEqual(launched, [])
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(deletes, [], "a reused session must not be deleted")
 
     def test_bind_failure_deletes_the_created_session(self):
         """A refused bind leaves the new session bound to nothing.
@@ -1431,10 +1687,10 @@ class TestClaimant8038(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             argv = [str(part) for part in cmd]
-            if argv[0] == "gh" and "view" in argv:
+            if argv[1:3] == ["gh", "sync-labels"]:
                 # The step-4a2 held-label read: no labels at all.
                 return Result(0, "[]")
-            if argv[0] == "gh":
+            if argv[1:3] == ["gh", "sync-comment"]:
                 notes.append(cmd)
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
@@ -1504,7 +1760,7 @@ def make_handback_run(calls, *, claim_row="candidate", park_rc=0):
         if "repo-queue" in argv[0] and "park" in argv:
             calls["park"].append(argv)
             return Result(park_rc, "{}")
-        if argv[0] == "gh":
+        if argv[1:3] == ["gh", "sync-comment"]:
             calls["gh"].append(argv)
             return Result(0, "")
         calls["other"].append(argv)
@@ -1589,7 +1845,18 @@ class TestHandBackStep(unittest.TestCase):
         # One hand-back note on the candidate's issue.
         self.assertEqual(len(calls["gh"]), 1)
         gh_argv = calls["gh"][0]
-        self.assertEqual(gh_argv[:4], ["gh", "issue", "comment", "1187"])
+        self.assertEqual(
+            gh_argv[:7],
+            [
+                str(claimant.FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                "developing-today/code",
+                "issue",
+                "1187",
+            ],
+        )
         self.assertEqual(gh_argv[gh_argv.index("--repo") + 1], "developing-today/code")
         body = gh_argv[gh_argv.index("--body") + 1]
         self.assertIn("agent-note:v1", body)
@@ -1783,6 +2050,8 @@ class TestSinkClaimDiagnostics(unittest.TestCase):
             (Result(13, "private"), "cli_nonzero"),
             (Result(0, "private"), "invalid_json"),
             (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"ignored":"private"}'), "cli_nonzero"),
             (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
         )
         for fixture, category in fixtures:
@@ -1816,6 +2085,131 @@ class TestSinkClaimDiagnostics(unittest.TestCase):
         self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
 
 
+class TestSinkByIdFallback(unittest.TestCase):
+    """#6533: a handed-off candidate the broker's handoff pick did not
+    return is revived by one by-id claim (the #8097 Rule 1 exception
+    tool), never under an inherited lane, and every failure names a
+    fixed category plus the action it calls for."""
+
+    PARKED = dict(CANDIDATE, id=888, status="handed_off", queue=claimant.QUEUES[0])
+
+    def run_fire(self, handoff_reply, by_id_reply):
+        binds = []
+        claims = []
+        envs = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "claim" in argv:
+                claims.append(argv)
+                envs.append(kwargs.get("env"))
+                return handoff_reply if "--handoff" in argv else by_id_reply
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.dict(os.environ, {"REPO_QUEUE_LANE": "code-g"}),
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(self.PARKED)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        return launched, skips, claims, envs, binds
+
+    def test_no_match_handoff_pick_falls_back_to_one_by_id_claim(self):
+        launched, skips, claims, envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(0, json.dumps({"id": 888, "status": "claimed"})),
+        )
+        self.assertEqual(skips, [])
+        self.assertEqual([entry["task_id"] for entry in launched], [888])
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(len(claims), 2)
+        by_id = claims[1]
+        self.assertEqual(by_id[by_id.index("--task") + 1], "888")
+        self.assertEqual(by_id[by_id.index("--worker") + 1], claimant.CLAIMANT_WORKER)
+        self.assertEqual(by_id[by_id.index("--platform") + 1], "openchamber")
+        self.assertNotIn("--lane", by_id)
+        self.assertIsNotNone(envs[1])
+        self.assertNotIn("REPO_QUEUE_LANE", envs[1])
+
+    def test_refused_fallback_is_a_distinct_actionable_skip(self):
+        launched, skips, claims, _envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(5, json.dumps({"task": None, "private": "not copied"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(len(claims), 2)
+        self.assertEqual(len(skips), 1)
+        skip = skips[0]
+        self.assertEqual(skip["reason"], "sink_claim_failed")
+        self.assertEqual(skip["sink_claim"]["category"], "no_match")
+        self.assertEqual(skip["by_id_fallback"]["category"], "no_match")
+        self.assertEqual(skip["action"], claimant.SINK_CLAIM_ACTIONS["no_match"])
+        self.assertNotIn("private", json.dumps(skip))
+
+    def test_fallback_that_returns_another_row_is_different_row(self):
+        launched, skips, _claims, _envs, binds = self.run_fire(
+            Result(5, json.dumps({"task": None})),
+            Result(0, json.dumps({"id": 999, "status": "claimed"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(skips[0]["by_id_fallback"]["category"], "different_row")
+        self.assertEqual(
+            skips[0]["action"], claimant.SINK_CLAIM_ACTIONS["different_row"]
+        )
+
+    def test_broker_failure_gets_no_fallback_and_names_the_check(self):
+        launched, skips, claims, _envs, binds = self.run_fire(
+            Result(13, "broker exploded"),
+            Result(0, json.dumps({"id": 888, "status": "claimed"})),
+        )
+        self.assertEqual(launched, [])
+        self.assertEqual(binds, [])
+        # A broken broker is not retried by id: one handoff claim only.
+        self.assertEqual(len(claims), 1)
+        self.assertNotIn("by_id_fallback", skips[0])
+        self.assertEqual(skips[0]["sink_claim"]["category"], "cli_nonzero")
+        self.assertEqual(skips[0]["action"], claimant.SINK_CLAIM_ACTIONS["cli_nonzero"])
+        self.assertNotIn("broker exploded", json.dumps(skips[0]))
+
+    def test_by_id_claim_unwraps_the_task_wrapper(self):
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            return_value=Result(0, json.dumps({"task": {"id": 888}})),
+        ):
+            diagnostic = {}
+            row = claimant._claim_sink_by_id("q1", 888, diagnostic=diagnostic)
+        self.assertEqual(row, {"id": 888})
+        self.assertEqual(diagnostic["category"], "row_returned")
+
+    def test_inherited_lane_is_dropped_from_the_environment(self):
+        environ = {"REPO_QUEUE_LANE": "code-g", "HOME": "/home/x"}
+        self.assertEqual(claimant._drop_inherited_lane(environ), "code-g")
+        self.assertEqual(environ, {"HOME": "/home/x"})
+        self.assertIsNone(claimant._drop_inherited_lane(environ))
+        with patch.dict(os.environ, {"REPO_QUEUE_LANE": "code-g"}):
+            self.assertNotIn("REPO_QUEUE_LANE", claimant._queue_env())
+
+    def test_every_category_has_an_action(self):
+        for category in (
+            "no_match",
+            "different_row",
+            "cli_nonzero",
+            "invalid_json",
+            "missing_claim_row",
+            "timeout",
+            "spawn_error",
+            "unexpected_error",
+            "not_attempted",
+        ):
+            self.assertTrue(claimant.SINK_CLAIM_ACTIONS[category], category)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1832,34 +2226,27 @@ class TestCodeSourceFireLog(unittest.TestCase):
     def tearDown(self):
         claimant._code_source = None
 
-    # These tests fake git at the subprocess boundary instead of
-    # building a real clone: the hermetic suite (run_hermetic_tests.py)
-    # forbids subprocess outright, so a real `git init` errors there.
-    # read_code_source() treats every git failure uniformly, so the
-    # contracts asserted here (ok read, fail-open on error) are the
-    # same ones a real clone would exercise.
-    def _fake_git(
-        self,
-        branch="main",
-        commit="0123456789abcdef0123456789abcdef01234567",
-        returncode=0,
-    ):
-        def run(argv, **kwargs):
-            stdout = ""
-            if returncode == 0:
-                stdout = (branch if "--abbrev-ref" in argv else commit) + "\n"
-            return subprocess.CompletedProcess(argv, returncode, stdout=stdout)
-
-        return run
+    def _make_clone(self, tmp: str) -> Path:
+        # A static .git layout written with plain file writes (#13135):
+        # the hermetic suite's audit guard forbids subprocess spawns,
+        # so the fixture cannot run `git init` — and read_code_source()
+        # reads .git directly, so no git binary is needed for the read
+        # either. The commit sha is a fixed 40-hex placeholder; the
+        # tests assert shape (branch, 40-char commit), not history.
+        clone = Path(tmp) / "clone"
+        git_dir = clone / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(
+            "0123456789abcdef0123456789abcdef01234567\n"
+        )
+        (clone / "f.txt").write_text("x")
+        return clone
 
     def test_reads_branch_and_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clone = Path(tmp) / "clone"
-            clone.mkdir()
-            with (
-                patch.object(claimant, "PRIMARY_CLONE", clone),
-                patch.object(claimant.subprocess, "run", self._fake_git()),
-            ):
+            clone = self._make_clone(tmp)
+            with patch.object(claimant, "PRIMARY_CLONE", clone):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "ok")
         self.assertEqual(source["branch"], "main")
@@ -1869,10 +2256,7 @@ class TestCodeSourceFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             not_a_repo = Path(tmp) / "nope"
             not_a_repo.mkdir()
-            with (
-                patch.object(claimant, "PRIMARY_CLONE", not_a_repo),
-                patch.object(claimant.subprocess, "run", self._fake_git(returncode=1)),
-            ):
+            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "unreadable")
         self.assertIsNone(source["branch"])
@@ -1880,15 +2264,13 @@ class TestCodeSourceFireLog(unittest.TestCase):
 
     def test_fire_entry_carries_code_source(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clone = Path(tmp) / "clone"
-            clone.mkdir()
+            clone = self._make_clone(tmp)
             state_dir = Path(tmp) / "state"
             fires = state_dir / "fires.jsonl"
             with (
                 patch.object(claimant, "PRIMARY_CLONE", clone),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
-                patch.object(claimant.subprocess, "run", self._fake_git()),
             ):
                 claimant.log_fire("live", [], [], 3, [])
             entries = [

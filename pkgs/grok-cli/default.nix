@@ -53,17 +53,21 @@ let
     };
 
     postPatch = ''
+      # Keep the package manifest and lock in sync with Dependabot updates.
+      cp ${./package.json} package.json
       cp ${./package-lock.json} package-lock.json
       chmod +w package.json package-lock.json
       ${lib.getExe nodejs} -e '
         const fs = require("fs");
         const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
         delete p.devDependencies; delete p.scripts; delete p.workspaces;
+        const repo = JSON.parse(fs.readFileSync("${./package.json}", "utf8"));
+        if (repo.overrides) p.overrides = repo.overrides;
         fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
       '
     '';
 
-    npmDepsHash = "sha256-4ok7AsxVZBEh3LauKfhd59mK8Yxkq7sL66WoTmfoGnc=";
+    npmDepsHash = "sha256-xw70iEkBSoBVmKp9uZo4P5Lz+3OQxtkpTDXIf+envQA=";
     npmFlags = [
       "--ignore-scripts"
       "--no-audit"

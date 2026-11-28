@@ -6,28 +6,31 @@ The Worker is the hosted half of Atlas: a Cloudflare Worker named `atlas-search`
 
 ```http
 GET  /health
+GET  /version
 POST /v1/search
 GET  /v1/cache/inspect?query=<query>&k=<k>
 POST /v1/cache/purge
 POST /mcp
+POST /v1/admin/retained/audit
+GET  /v1/admin/retained/compare?object=<id>&from=<version>&to=<version>
+POST /v1/admin/retained/report
+POST /v1/admin/retained/promote
 ```
 
-That is the whole public surface: **5 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below.
+That is the whole public surface: **10 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below. The four retained-object admin routes are gated like the others, answer 503 `retained_off` when no retained-object store is configured, and are covered in [Retained objects and retention classes](retained-objects.md).
 
 ## The shared gate
 
-Every route except `GET /health` sits behind one shared gate:
+Every route except `GET /health` and `GET /version` is gated. REST/admin routes use the shared `GATE_TOKEN`; `/mcp` uses it only when the optional per-agent map is absent:
 
-| Aspect       | Rule                                                                                                                                                                                                                                      |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Secret name  | `GATE_TOKEN` (named only; never valued in this book).                                                                                                                                                                                     |
-| Presentation | Header `Authorization: Bearer &lt;GATE_TOKEN&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails.                                                                       |
-| Comparison   | Both the presented and the configured token are SHA-256 digested, and the 32 digest bytes are XOR-folded; equal if and only if the fold is 0. Digests are fixed-size, so the comparison is length-safe and constant-time by construction. |
-| Failure      | Missing presented token, or `GATE_TOKEN` unset → the gate fails → 401.                                                                                                                                                                    |
+| Aspect       | Rule                                                                                                                                                           |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secret name  | `GATE_TOKEN` for REST/admin and legacy MCP; optional `AGENT_TOKENS` JSON secret for per-agent MCP authentication.                                              |
+| Presentation | Header `Authorization: Bearer &lt;token&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails. |
+| Comparison   | Both presented and configured tokens are SHA-256 digested and the 32 digest bytes XOR-folded; equal iff the fold is 0.                                         |
+| Failure      | Missing/invalid credentials → 401 before route execution.                                                                                                      |
 
-The gate failure shape is the shared error envelope (below) with code `unauthorized` and message `missing or invalid gate token`.
-
-One token serves all gated routes — `/v1/search`, `/v1/cache/inspect`, `/v1/cache/purge` and `/mcp`. There are no per-route, per-caller or per-agent tokens in the Worker, and no caller identity is extracted from the token: a passed gate yields a boolean, nothing else. Every gated caller is therefore the same identity to the Worker. What that identity is — disclosure context `hosted-per-user`, ceiling `personal`, both pinned at compile time — is covered in [The Atlas MCP server](mcp.md) and [Sensitivity tiers and client ceilings](../concepts/sensitivity.md); no env var, request field or header can change either value.
+MCP `AGENT_TOKENS` maps stable agent ids to distinct tokens; if configured, only a mapped credential can access `/mcp`, and the id is used for query audit logs. No request field or header can claim an identity. The REST/admin routes remain shared-gate routes. This audit identity does not change the outbound disclosure context (`hosted-per-user`) or ceiling (`personal`); per-agent backend policy remains open work on #8625.
 
 Where the gate sits in each route's validation order matters and differs by route; each route below states it.
 
@@ -52,6 +55,16 @@ Open — no gate, checked before it. No body, no parameters read. The only respo
 ```
 
 with status 200. It is liveness only; it says nothing about the laptop service behind the Worker.
+
+## `GET /version`
+
+Open — no gate, answered with `/health` ahead of every gated route. No body, no parameters read; it reads no state and no secret. The only response this route produces:
+
+```json
+{ "ok": true, "service": "atlas-search", "version": "<deployed commit>" }
+```
+
+with status 200, where `version` is the deploy-stamped `VERSION` variable, or `"unknown"` when the deploy was unstamped. A non-GET method on this path is refused 405. This is the #15793 criterion-1 route: the edge probe reads its `version` field to name the commit the Worker was deployed from.
 
 ## `POST /v1/search`
 

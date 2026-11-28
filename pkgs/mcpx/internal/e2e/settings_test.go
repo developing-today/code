@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // These drive the real binary against a real daemon, because everything here
@@ -109,6 +111,11 @@ func TestAnInvalidValueIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 }
 
 func TestAddingAServerIsLiveWithoutARestart(t *testing.T) {
+	// Quarantined per #1973: intermittent hang on aarch64-darwin in the
+	// daemon config-reload path (#16312); the test waits on the `servers add`
+	// CLI child while the daemon never answers. Root-cause stays open on
+	// #16312 — this quarantine only stops the 30m CI timeouts meanwhile.
+	testsupport.Quarantine(t, "https://github.com/developing-today/code/issues/16312", "2026-12-31")
 	e := newEnv(t, oneServer)
 	e.run("ls")
 

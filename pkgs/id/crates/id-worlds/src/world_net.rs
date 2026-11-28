@@ -1233,6 +1233,65 @@ impl WorldClient {
         Ok(requested_profile)
     }
 
+    /// Replace the world's presentation policy (design #5970 slice 2b).
+    /// Returns the policy the host now holds.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or the policy is
+    /// refused, or if the reply carries no policy.
+    pub async fn set_presentation_policy(
+        &mut self,
+        admin_token: &str,
+        policy: &id_core::presentation_policy::PresentationPolicy,
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "set_presentation_policy",
+            "admin_token": admin_token,
+            "policy": policy,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        Self::presentation_policy_from_reply(&reply, "host refused the presentation policy change")
+    }
+
+    /// Read the world's presentation policy. It needs no token: the
+    /// policy is public pre-join metadata (#5970 §5).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the query is refused, or if the
+    /// reply carries no policy.
+    pub async fn presentation_policy(&mut self) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({"type": "presentation_policy_info"}))
+            .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        Self::presentation_policy_from_reply(&reply, "host refused the presentation policy query")
+    }
+
+    /// The `policy` object of a `presentation_policy` reply. Any other
+    /// reply is the host's refusal, and a reply without an object
+    /// `policy` is a host that did not confirm one.
+    fn presentation_policy_from_reply(
+        reply: &serde_json::Value,
+        refused: &str,
+    ) -> Result<serde_json::Value> {
+        if reply["type"] != "presentation_policy" {
+            bail!("{}", reply["message"].as_str().unwrap_or(refused));
+        }
+        let policy = reply
+            .get("policy")
+            .filter(|policy| policy.is_object())
+            .context("host returned a malformed presentation policy")?;
+        Ok(policy.clone())
+    }
+
     /// Let other unisolated worlds write into this world, with the admin token.
     /// Returns the world's policy after the change.
     ///
@@ -2294,166 +2353,9 @@ impl WorldClient {
     }
 }
 
-/// Opaque identity for one independently opened [`WorldSessions`] session.
-///
-/// Cloning a handle refers to the same session; opening the same world again
-/// creates a different handle and stream.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct WorldSessionHandle(u64);
-
-static NEXT_WORLD_SESSION_HANDLE: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Debug)]
-struct CoordinatedSession {
-    endpoint_id: String,
-    client: WorldClient,
-}
-
-/// Client-side coordinator for concurrent world sessions (F13.8, #3845).
-///
-/// [`WorldClient`] is the transport primitive for one server endpoint: one
-/// connection, and sessions as streams on it, each bound to one world for
-/// its lifetime. `WorldSessions` is the client-side owner above it: it
-/// keeps one root connection per distinct server endpoint and retains an
-/// independent opaque handle for every opened session, so a single client
-/// can hold multiple sessions to the same world, several worlds on one server,
-/// or sessions across servers at once.
-///
-/// Boundaries (per the F13.8 design record): a connection never spans
-/// distinct servers (one root [`WorldClient`] per endpoint); hosting is
-/// never started implicitly; every session is opened through the existing
-/// capability-bearing `open_session` path, so per-world capability checks
-/// are unchanged; the sequential `WorldClient::open_session` and one-shot CLI
-/// paths are untouched.
-#[derive(Debug)]
-pub struct WorldSessions {
-    endpoint: Endpoint,
-    /// Root connections, keyed by endpoint id.
-    roots: HashMap<String, WorldClient>,
-    /// Live streams, each retained under its own opaque session handle.
-    sessions: HashMap<WorldSessionHandle, CoordinatedSession>,
-}
-
-impl WorldSessions {
-    /// A coordinator dialing from `endpoint`.
-    #[must_use]
-    pub fn new(endpoint: Endpoint) -> Self {
-        Self {
-            endpoint,
-            roots: HashMap::new(),
-            sessions: HashMap::new(),
-        }
-    }
-
-    fn endpoint_id(addr: &EndpointAddr) -> String {
-        addr.id.to_string()
-    }
-
-    fn allocate_session_handle(&self) -> Result<WorldSessionHandle> {
-        let id = NEXT_WORLD_SESSION_HANDLE
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| anyhow::anyhow!("world session handle space exhausted"))?;
-        Ok(WorldSessionHandle(id))
-    }
-
-    /// Open a new session for (`addr`, `world`) and return its independent
-    /// handle. Opening the same endpoint/world pair more than once creates a
-    /// new stream each time; use the returned handle for all later operations.
-    ///
-    /// The first session to an endpoint dials its root connection; later
-    /// sessions to the same endpoint reuse it via
-    /// [`WorldClient::open_session`]. A session to a different endpoint
-    /// always dials a separate connection.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the endpoint is unreachable, the transport cannot allocate a
-    /// stream, or the session-handle space is exhausted. World and hub
-    /// refusals are returned on the opened session stream after its first
-    /// frame is sent.
-    pub async fn open_session(
-        &mut self,
-        addr: EndpointAddr,
-        world: Option<&str>,
-    ) -> Result<WorldSessionHandle> {
-        let endpoint_id = Self::endpoint_id(&addr);
-        // A root whose connection has closed (server disconnect or
-        // restart) can never serve another stream, and every session
-        // keyed to it rides that dead connection: evict both so this
-        // endpoint redials on its own, instead of staying wedged until
-        // `close_all` also drops healthy sessions on other servers.
-        if self
-            .roots
-            .get(&endpoint_id)
-            .is_some_and(WorldClient::is_closed)
-        {
-            self.roots.remove(&endpoint_id);
-            self.sessions
-                .retain(|_, session| session.endpoint_id != endpoint_id);
-        }
-        if !self.roots.contains_key(&endpoint_id) {
-            let root = WorldClient::connect(&self.endpoint, addr).await?;
-            self.roots.insert(endpoint_id.clone(), root);
-        }
-        let session = self
-            .roots
-            .get(&endpoint_id)
-            .context("root inserted above")?
-            .open_session(world)
-            .await?;
-        let handle = self.allocate_session_handle()?;
-        self.sessions.insert(
-            handle,
-            CoordinatedSession {
-                endpoint_id,
-                client: session,
-            },
-        );
-        Ok(handle)
-    }
-
-    /// The live session for `handle`, if it has not been closed or evicted.
-    pub fn session(&mut self, handle: WorldSessionHandle) -> Option<&mut WorldClient> {
-        self.sessions
-            .get_mut(&handle)
-            .map(|session| &mut session.client)
-    }
-
-    /// Whether `handle` currently names a live session.
-    #[must_use]
-    pub fn has_session(&self, handle: WorldSessionHandle) -> bool {
-        self.sessions.contains_key(&handle)
-    }
-
-    /// Number of distinct server endpoints with a root connection.
-    #[must_use]
-    pub fn endpoint_count(&self) -> usize {
-        self.roots.len()
-    }
-
-    /// Number of live sessions across all endpoints.
-    #[must_use]
-    pub fn session_count(&self) -> usize {
-        self.sessions.len()
-    }
-
-    /// Drop one session by handle. Its stream closes; sibling sessions on the
-    /// same connection are unaffected (unlike [`WorldClient::close`], which
-    /// closes the whole connection).
-    pub fn close_session(&mut self, handle: WorldSessionHandle) -> bool {
-        self.sessions.remove(&handle).is_some()
-    }
-
-    /// Drop every session and close every root connection.
-    pub fn close_all(&mut self) {
-        self.sessions.clear();
-        for (_, root) in self.roots.drain() {
-            root.close();
-        }
-    }
-}
+/// Client-side coordinator for concurrent world sessions (split out, #16255).
+mod sessions;
+pub use sessions::{WorldSessionHandle, WorldSessions};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -3707,6 +3609,93 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn presentation_policy_is_public_to_read_and_admin_only_to_set_over_iroh() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::presentation_policy_is_public_to_read_and_admin_only_to_set_over_iroh",
+        ) {
+            return;
+        }
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        // A fresh world holds the default policy, readable with no token:
+        // the policy is pre-join metadata (#5970 §5).
+        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let fresh = outsider.presentation_policy().await.unwrap();
+        assert_eq!(fresh["assets"]["max_rung"], "rich");
+        assert_eq!(fresh["shaders"]["enabled"], false);
+        outsider.close();
+
+        let mut policy = id_core::presentation_policy::PresentationPolicy::default();
+        policy.assets.max_rung = id_core::presentation_policy::Rung::Tileset;
+        policy.assets.user_uploads = id_core::presentation_policy::Permit::Deny;
+
+        // A wrong admin token is refused and changes nothing.
+        let mut intruder = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let refused = intruder.set_presentation_policy("wrong", &policy).await;
+        assert!(refused.is_err());
+        intruder.close();
+        assert_eq!(
+            host.world.presentation_policy().await.unwrap(),
+            Default::default()
+        );
+
+        // The admin sets it; the reply and a later read both carry it.
+        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let saved = admin
+            .set_presentation_policy("admin", &policy)
+            .await
+            .unwrap();
+        assert_eq!(saved["assets"]["max_rung"], "tileset");
+        assert_eq!(saved["assets"]["user_uploads"], "deny");
+        admin.close();
+        assert_eq!(host.world.presentation_policy().await.unwrap(), policy);
+
+        let mut reader = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let read = reader.presentation_policy().await.unwrap();
+        assert_eq!(read, saved);
+        reader.close();
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn a_presentation_policy_reply_must_carry_a_policy_object() {
+        let ok = WorldClient::presentation_policy_from_reply(
+            &serde_json::json!({"type": "presentation_policy", "policy": {"assets": {}}, "message": "ok"}),
+            "refused",
+        )
+        .unwrap();
+        assert_eq!(ok, serde_json::json!({"assets": {}}));
+        for bad in [
+            serde_json::json!({"type": "presentation_policy", "message": "ok"}),
+            serde_json::json!({"type": "presentation_policy", "policy": null, "message": "ok"}),
+            serde_json::json!({"type": "presentation_policy", "policy": 3, "message": "ok"}),
+        ] {
+            let error = WorldClient::presentation_policy_from_reply(&bad, "refused").unwrap_err();
+            assert!(
+                error.to_string().contains("malformed presentation policy"),
+                "{bad}: {error}"
+            );
+        }
+        let error = WorldClient::presentation_policy_from_reply(
+            &serde_json::json!({"type": "error", "message": "admin denied"}),
+            "refused",
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "admin denied");
+    }
+
     #[test]
     fn a_caps_report_from_before_ceilings_still_deserializes() {
         let old = serde_json::json!({
@@ -4139,7 +4128,7 @@ mod tests {
             .await
             .unwrap();
         let capability = ok.invite("admin", "ann", None, None).await.unwrap();
-        assert!(!capability.is_empty());
+        assert_ne!(capability, "");
 
         let mut bad = WorldClient::connect(&client_ep, host.addr.clone())
             .await

@@ -58,6 +58,8 @@ The mapping between the ladders is fixed:
 | `local-only`                   | `private`      | `internal`             |
 | `secret-bearing`               | `sensitive`    | `secret`               |
 
+Every ceiling input (the CLI's `--max-sensitivity`, a service request's `ceiling`, a client's `ceiling_cap`) accepts either the code spelling or the canonical name. Stored labels are still written — and emitted values still read — in the code spelling, but readers of explicitly rung-typed published labels (`chunks.sensitivity`, `session_labels.sensitivity`) accept either spelling since stage 2: the SQL filters bind the legacy and canonical spellings for every admitted rung, while staging-tier fields stay strict, so the unversioned tier word `internal` still means the physical internal tier and never the canonical `internal` ceiling rung; see [Design: renaming the sensitivity ladder in code](../design/sensitivity-ladder-rename.md).
+
 Note the deliberate pinch in the middle: two ceiling levels map to the
 internal tier. The ceiling ladder is finer-grained than physical placement,
 because query-time filtering works per chunk while placement works per

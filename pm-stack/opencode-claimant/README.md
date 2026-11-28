@@ -7,7 +7,7 @@ This directory contains the slice-1 implementation for the OpenCode execution la
 The claimant/executor is responsible for:
 
 1. **Supervision**: Checking bound sessions for recovery candidates (stuck/zero-message sessions)
-2. **Candidate Discovery**: Finding unbound opencode-lane tasks across four queues
+2. **Candidate Discovery**: Finding unbound opencode-lane tasks in the fleet queue
 3. **Session Management**: Creating and binding worker sessions with atomic operations
 4. **Prompt Delivery**: Sending execution prompts to bound sessions
 5. **Logging**: Recording fire execution results
@@ -38,11 +38,13 @@ Main execution script that implements the 6-step process:
      value is unchanged by #5016)
    - Returns cap_room (available slots) or -1 if unknown
 
-4. **Launch** (Step 4): Creates sessions and binds tasks
-   - Creates worker sessions via OpenCode server API
-   - Verifies session location matches requested directory
-   - Atomically binds session to task using `repo-queue bind`
-   - Sends execution prompt to bound session
+4. **Launch** (Step 4): Creates or resumes sessions and binds tasks
+   - For tasks with `resume_session_id`, continues that session only when its location matches the claimant worktree and the server reports it idle
+   - A missing or wrong-worktree hinted session falls back to a fresh session; the launch record includes the requested id, actual id, and fallback reason
+   - Unknown session/activity reads and active hinted sessions are skipped rather than substituted or taken over
+   - Tasks without a resume hint retain the fresh-session path
+   - Atomically binds the actual session to the task using `repo-queue bind`
+   - Sends the execution prompt to the bound session
    - Respects queue priority (order in QUEUES list)
 
 5. **Terminal States** (Step 5): Handled by worker sessions
@@ -53,7 +55,7 @@ Main execution script that implements the 6-step process:
 
 Candidate discovery and system state reporting:
 
-- **get_candidates()**: Discovers unbound opencode-lane tasks from all four queues
+- **get_candidates()**: Discovers unbound opencode-lane tasks from the fleet queue's four streams
 - **get_stuck_bound()**: Identifies bound tasks with stuck sessions (placeholder implementation)
 - **get_active_root_session_count()**: Queries OpenCode server for the
   active claimant root session count (scheduled fleet sessions excluded)
@@ -105,7 +107,8 @@ If the mode file doesn't exist or is unreadable, defaults to `shadow`.
 
 ## Queues
 
-The claimant monitors four queues:
+The claimant monitors the one fleet queue (Drew's one-queue model,
+#8097), reading its four streams in this order:
 
 - `repo-health-code-pilot`
 - `repo-health-opencode-pilot`
@@ -172,7 +175,7 @@ For bound sessions with:
 
 Process:
 
-1. Verify zero messages via (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/messages`
+1. Verify zero messages via (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/message`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire

@@ -12,7 +12,8 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295 and the
+// complimentary-token metering wall #13839), expands provider
 // routes (experimental.provider_routes, #3256) into their member
 // providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
@@ -32,10 +33,17 @@
 // Env:
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
+//   LISTEN_FDS=1 plus LISTEN_PID=<this pid> adopts systemd fd 3;
+//   without those markers the proxy binds OPENCODE_ROUTE_PROXY_PORT itself.
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
 //   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
 //                                         (default 3000 ms; below the client
 //                                         no-output window)
+//   OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES
+//                                         byte cap on non-streaming leaf
+//                                         response bodies (default
+//                                         16777216 = 16 MiB, the streaming
+//                                         hard max) (#16398)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -58,15 +66,34 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { homePath } from "./home-dir.mjs";
-import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
+import { parseProxyBytes, parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
+const systemdListenFd = () => {
+  const listenFds = process.env.LISTEN_FDS;
+  const listenPid = process.env.LISTEN_PID;
+  if (listenFds === undefined && listenPid === undefined) return null;
+  if (listenFds !== "1" || listenPid !== String(process.pid)) {
+    throw new Error(
+      "systemd socket activation requires LISTEN_FDS=1 and matching LISTEN_PID",
+    );
+  }
+  return 3;
+};
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
 const LEAF_TIMEOUT_MS = parseProxyMillis(
   "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
   3_000,
+);
+// Byte cap for non-streaming leaf response bodies (#16398): the
+// streaming relay already hard-caps a single event at
+// STREAM_EVENT_HARD_MAX_BYTES (16 MiB, below); the non-streaming
+// reads reuse that ceiling by default.
+const LEAF_BODY_MAX_BYTES = parseProxyBytes(
+  "OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES",
+  16 * 1024 * 1024,
 );
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
@@ -226,6 +253,7 @@ const loadConfig = () => {
   const windows =
     raw.experimental?.model_route_windows || raw.model_route_windows || {};
   warnInvalidWindows(windows);
+  warnInvalidTokenMetering(raw.provider || {});
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
@@ -673,21 +701,183 @@ const authBenchedPairs = (now) => {
   }
 };
 
-// Exclude known-exhausted, auth-benched and inferred-walled
-// candidates (#5295, #12228, #13693), following the credential-less
-// exclusion pattern (#3228) — but fail-safe: if the gate would
-// empty the candidate list, the demoted order is kept as it was,
-// because a benched leg as last resort beats no route at all (the
-// one exception is the reset-carrying pacing answer, RC-4 below).
-// Gate decisions are recorded on stderr, the proxy's diagnostics
-// stream.
+// ------------------------------------------------------- metering wall
+//
+// The complimentary-token metering wall (#13839): the one wall in
+// this file that is not failure-driven. A provider block may carry
+// a "tokenMetering" declaration (config next to the alias it
+// belongs to): named groups of models, each with the daily token
+// bucket the group draws on and a safety margin. The declaration
+// landed for openai-payg-free (code#13677): OpenAI's data-sharing
+// complimentary buckets — large group 1M tokens/day, small group
+// 10M/day, reset 00:00 UTC — whose exhaustion is SILENT (no error;
+// eligible traffic simply starts billing), so no failure-driven
+// wall can ever fire for the alias.
+//
+// Counting is the route_attempt ledger itself: the day's counted
+// usage for a group is the sum of tokens_input + tokens_output
+// over the provider's attempts started that UTC day. In the
+// OpenAI usage shape those two fields are prompt_tokens and
+// completion_tokens — the response's total, with reasoning tokens
+// (a completion_tokens subset) and cached tokens (a prompt_tokens
+// subset) already inside, counted exactly once; adding the subset
+// columns on top would double-count. Attempts that reported no
+// usage contribute zero: what was not reported cannot be counted.
+// Because the counter is the ledger, it survives a proxy/server
+// restart by construction — the same persistence the other walls
+// derive their state from — and it counts session traffic on the
+// alias too (same provider id, same org bucket), whoever wrote
+// the row.
+//
+// At bucket minus margin the group's pairs wall until the next
+// 00:00 UTC. The margin exists because a request that crosses the
+// bucket bills in full: the wall stops NEW requests once counted
+// usage reaches the cap; it does not try to predict the size of
+// the next request.
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Why a "tokenMetering" declaration cannot be used, or null when
+// it is well formed. Malformed declarations are named at config
+// load (warnInvalidTokenMetering) and never engage the wall; the
+// config checker (bin/check-opencode-route-rules.mjs) is the
+// fail-closed guard that keeps a malformed declaration out of the
+// tracked config in the first place.
+const tokenMeteringProblems = (metering) => {
+  if (!isPlainObj(metering)) return ["the declaration is not an object"];
+  const groups = metering.groups;
+  if (!isPlainObj(groups) || !Object.keys(groups).length)
+    return ['"groups" is missing or empty'];
+  const problems = [];
+  const seenModels = new Map();
+  for (const [name, g] of Object.entries(groups)) {
+    if (!isPlainObj(g)) {
+      problems.push(`group "${name}" is not an object`);
+      continue;
+    }
+    if (!Number.isInteger(g.dailyTokens) || g.dailyTokens <= 0)
+      problems.push(
+        `group "${name}": dailyTokens=${JSON.stringify(g.dailyTokens)} (expected a positive integer)`,
+      );
+    const margin = g.marginTokens ?? 0;
+    if (
+      !Number.isInteger(margin) ||
+      margin < 0 ||
+      (Number.isInteger(g.dailyTokens) && margin >= g.dailyTokens)
+    )
+      problems.push(
+        `group "${name}": marginTokens=${JSON.stringify(g.marginTokens)} (expected an integer >= 0 and < dailyTokens)`,
+      );
+    if (
+      !Array.isArray(g.models) ||
+      !g.models.length ||
+      !g.models.every((m) => typeof m === "string" && m)
+    )
+      problems.push(
+        `group "${name}": models must be a non-empty array of model ids`,
+      );
+    else
+      for (const m of g.models) {
+        if (seenModels.has(m))
+          problems.push(
+            `model "${m}" is mapped to both group "${seenModels.get(m)}" and group "${name}"`,
+          );
+        else seenModels.set(m, name);
+      }
+  }
+  return problems.length ? problems : null;
+};
+
+// At config load, name every malformed tokenMetering declaration,
+// with the offending values, instead of silently never walling.
+const warnInvalidTokenMetering = (providers) => {
+  if (!providers || typeof providers !== "object") return;
+  for (const [id, block] of Object.entries(providers)) {
+    if (!isPlainObj(block) || block.tokenMetering === undefined) continue;
+    const problems = tokenMeteringProblems(block.tokenMetering);
+    if (problems)
+      console.error(
+        `opencode-route-proxy: invalid tokenMetering on provider "${id}": ` +
+          `${problems.join("; ")}; the metering wall will not engage for it`,
+      );
+  }
+};
+
+// The validated metering groups a provider's effective definition
+// declares (instanceOf chains included, so an alias inherits a
+// metered base's declaration), or null when it declares none — or
+// a malformed one, which never engages (see above).
+const validMeteringGroups = (cfg, providerId) => {
+  const metering = providerDef(cfg, providerId)?.tokenMetering;
+  if (metering === undefined) return null;
+  if (tokenMeteringProblems(metering)) return null;
+  return metering.groups;
+};
+
+// (provider,model) pairs whose complimentary group has reached
+// its counted cap for the current UTC day: pair key ->
+// { until, group, used, cap }, where until is the next 00:00 UTC
+// (the bucket's own reset, so the wall lifts with the bucket and
+// the following day's count starts from an empty window).
+const meteringWalledPairs = (cfg, now) => {
+  const out = new Map();
+  const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
+  const until = dayStart + DAY_MS;
+  let db = null;
+  try {
+    for (const providerId of Object.keys(cfg.providers)) {
+      const groups = validMeteringGroups(cfg, providerId);
+      if (!groups) continue;
+      if (!db) db = openDb();
+      const rows = db
+        .prepare(
+          `SELECT model_id,
+                  SUM(COALESCE(tokens_input, 0) + COALESCE(tokens_output, 0)) AS used
+           FROM route_attempt
+           WHERE provider_id = ? AND time_started >= ? AND time_started < ?
+           GROUP BY model_id`,
+        )
+        .all(providerId, dayStart, until);
+      const usedByModel = new Map(rows.map((r) => [r.model_id, r.used]));
+      for (const [groupName, g] of Object.entries(groups)) {
+        const cap = g.dailyTokens - (g.marginTokens ?? 0);
+        let used = 0;
+        for (const m of g.models) used += usedByModel.get(m) || 0;
+        if (used < cap) continue;
+        for (const m of g.models)
+          out.set(`${providerId}/${m}`, { until, group: groupName, used, cap });
+      }
+    }
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+  return out;
+};
+
+// Exclude known-exhausted, auth-benched, inferred-walled and
+// metering-walled candidates (#5295, #12228, #13693, #13839),
+// following the credential-less exclusion pattern (#3228) — but
+// fail-safe: if the gate would empty the candidate list, the
+// demoted order is kept as it was, because a benched leg as last
+// resort beats no route at all (the one exception is the
+// reset-carrying pacing answer, RC-4 below). The metering wall is
+// the deliberate exception to that fail-safe: it exists to keep
+// the free legs from BILLING, so the bypass never resurrects a
+// metered pair — if nothing else survives, the route answers
+// no-available-members rather than spending the paid balance the
+// wall was built to protect. Gate decisions are recorded on
+// stderr, the proxy's diagnostics stream.
 const applyKnownExhaustedGate = (cfg, candidates) => {
   if (!candidates.length) return candidates;
   const now = nowMs();
   const exhausted = knownExhaustedPairs(now);
   const authBenched = authBenchedPairs(now);
   const inferred = inferredWalledPairs(now);
-  if (!exhausted.size && !authBenched.size && !inferred.size)
+  const metered = meteringWalledPairs(cfg, now);
+  if (!exhausted.size && !authBenched.size && !inferred.size && !metered.size)
     return candidates;
   const key = (c) => `${c.providerId}/${c.modelKey}`;
   // The inferred wall never stacks on a reset-carrying gate: a pair
@@ -696,7 +886,10 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
     inferred.has(key(c)) && !exhausted.has(key(c));
   const kept = candidates.filter(
     (c) =>
-      !exhausted.has(key(c)) && !authBenched.has(key(c)) && !inferredFor(c),
+      !exhausted.has(key(c)) &&
+      !authBenched.has(key(c)) &&
+      !inferredFor(c) &&
+      !metered.has(key(c)),
   );
   // The fail-safe is evaluated against CREDENTIALED survivors: the
   // credential-less filter (#3228) runs after this gate, so a kept
@@ -744,7 +937,19 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
       `opencode-route-proxy: ${reasons} gate bypassed — no credentialed ` +
         "candidate survives it; keeping the demoted order (#5295, #12228)",
     );
-    return candidates;
+    // The metering wall is not bypassed (#13839): a metered pair
+    // kept by this fail-safe would bill the balance the wall
+    // exists to protect, so metered pairs stay excluded even here
+    // — possibly emptying the list, which prepareCandidates
+    // answers as no-available-members (fail closed).
+    const survivors = candidates.filter((c) => !metered.has(key(c)));
+    if (survivors.length !== candidates.length)
+      console.error(
+        `opencode-route-proxy: metering wall still applies inside the ` +
+          `gate bypass — ${candidates.length - survivors.length} metered ` +
+          `candidate(s) stay excluded (#13839)`,
+      );
+    return survivors;
   }
   for (const c of candidates) {
     if (exhausted.has(key(c)))
@@ -752,7 +957,15 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
         `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
           `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
       );
-    else if (inferredFor(c))
+    else if (metered.has(key(c))) {
+      const m = metered.get(key(c));
+      console.error(
+        `opencode-route-proxy: metering wall excluded ${key(c)} ` +
+          `until ${new Date(m.until).toISOString()} — complimentary ` +
+          `group "${m.group}" at ${m.used} of ${m.cap} counted tokens ` +
+          `today (#13839)`,
+      );
+    } else if (inferredFor(c))
       console.error(
         `opencode-route-proxy: inferred wall excluded ${key(c)} ` +
           `until ${new Date(inferred.get(key(c))).toISOString()} (#13693)`,
@@ -770,7 +983,118 @@ const recordAttempt = (a) => {
   let db = null;
   try {
     db = openDb();
-    db.prepare(
+    // Window context is read at record time from the live config so
+    // every attempt carries the switch state without touching the
+    // dispatch call sites; the pinned test clock
+    // (OPENCODE_ROUTE_PROXY_NOW_MS) is the simulated attempt time.
+    let ctx = null;
+    try {
+      ctx = routeWindowContext(loadConfig(), a.routeId, nowMs());
+    } catch {
+      ctx = null;
+    }
+    if (ctx && ensureAttemptWindowColumns(db)) {
+      try {
+        insertAttempt(
+          db,
+          `INSERT INTO route_attempt (
+           time_started, time_ended, session_id, assistant_message_id,
+           route_id, provider_id, model_id, variant, outcome,
+           error_tag, error_code, error_status, error_message, retryable,
+           output_started, failed_over_to, first_token_ms, response_ms,
+           tokens_per_second, tokens_input, tokens_output, tokens_reasoning,
+           tokens_cache_read, tokens_cache_write, quota, cost_usd,
+           window_names, window_class, holiday, priority_band
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            a.started,
+            a.ended,
+            null,
+            null,
+            a.routeId,
+            a.providerId,
+            a.modelId,
+            a.variant ?? null,
+            a.outcome,
+            a.errorTag ?? null,
+            a.errorCode ?? null,
+            a.errorStatus ?? null,
+            a.errorMessage ?? null,
+            a.retryable == null ? null : a.retryable ? 1 : 0,
+            a.outputStarted ? 1 : 0,
+            a.failedOverTo ?? null,
+            a.firstTokenMs ?? null,
+            a.responseMs ?? null,
+            a.tokensPerSecond ?? null,
+            a.tokensInput ?? null,
+            a.tokensOutput ?? null,
+            a.tokensReasoning ?? null,
+            a.tokensCacheRead ?? null,
+            a.tokensCacheWrite ?? null,
+            a.quota ?? null,
+            a.costUsd ?? null,
+            ctx.windowNames,
+            ctx.windowClass,
+            ctx.holiday,
+            ctx.priorityBand,
+          ],
+        );
+        return;
+      } catch {
+        // A shared store can change under us; the legacy shape below
+        // only touches columns OpenCode core has always owned.
+      }
+    }
+    insertAttemptLegacy(db, a);
+  } catch {
+    // The ledger must never fail a completion.
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// The route_attempt table belongs to OpenCode core, so the proxy never
+// creates it — it only adds the window-context columns it records
+// (#9378 stage 2), once each, and records without them when the store
+// is read-only or shared.
+const ensureAttemptWindowColumns = (db) => {
+  const columns = [
+    ["window_names", "TEXT"],
+    ["window_class", "TEXT"],
+    ["holiday", "TEXT"],
+    ["priority_band", "TEXT"],
+  ];
+  let names = [];
+  try {
+    names = db
+      .prepare("PRAGMA table_info(route_attempt)")
+      .all()
+      .map((r) => r.name);
+  } catch {
+    return false;
+  }
+  for (const [name, type] of columns) {
+    if (names.includes(name)) continue;
+    try {
+      db.exec(`ALTER TABLE route_attempt ADD COLUMN ${name} ${type}`);
+      names.push(name);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+};
+
+const insertAttempt = (db, sql, params) => {
+  db.prepare(sql).run(...params);
+};
+
+const insertAttemptLegacy = (db, a) => {
+  try {
+    insertAttempt(
+      db,
       `INSERT INTO route_attempt (
          time_started, time_ended, session_id, assistant_message_id,
          route_id, provider_id, model_id, variant, outcome,
@@ -779,40 +1103,37 @@ const recordAttempt = (a) => {
          tokens_per_second, tokens_input, tokens_output, tokens_reasoning,
          tokens_cache_read, tokens_cache_write, quota, cost_usd
        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      a.started,
-      a.ended,
-      null,
-      null,
-      a.routeId,
-      a.providerId,
-      a.modelId,
-      a.variant ?? null,
-      a.outcome,
-      a.errorTag ?? null,
-      a.errorCode ?? null,
-      a.errorStatus ?? null,
-      a.errorMessage ?? null,
-      a.retryable == null ? null : a.retryable ? 1 : 0,
-      a.outputStarted ? 1 : 0,
-      a.failedOverTo ?? null,
-      a.firstTokenMs ?? null,
-      a.responseMs ?? null,
-      a.tokensPerSecond ?? null,
-      a.tokensInput ?? null,
-      a.tokensOutput ?? null,
-      a.tokensReasoning ?? null,
-      a.tokensCacheRead ?? null,
-      a.tokensCacheWrite ?? null,
-      a.quota ?? null,
-      a.costUsd ?? null,
+      [
+        a.started,
+        a.ended,
+        null,
+        null,
+        a.routeId,
+        a.providerId,
+        a.modelId,
+        a.variant ?? null,
+        a.outcome,
+        a.errorTag ?? null,
+        a.errorCode ?? null,
+        a.errorStatus ?? null,
+        a.errorMessage ?? null,
+        a.retryable == null ? null : a.retryable ? 1 : 0,
+        a.outputStarted ? 1 : 0,
+        a.failedOverTo ?? null,
+        a.firstTokenMs ?? null,
+        a.responseMs ?? null,
+        a.tokensPerSecond ?? null,
+        a.tokensInput ?? null,
+        a.tokensOutput ?? null,
+        a.tokensReasoning ?? null,
+        a.tokensCacheRead ?? null,
+        a.tokensCacheWrite ?? null,
+        a.quota ?? null,
+        a.costUsd ?? null,
+      ],
     );
   } catch {
     // The ledger must never fail a completion.
-  } finally {
-    try {
-      db?.close();
-    } catch {}
   }
 };
 
@@ -885,6 +1206,31 @@ const validTimeZone = (tz) => {
   }
 };
 
+// Time-of-day window classes (#9378 stage 2; values from
+// doc/2026-11-18T12-00-00Z_design_time_of_day_routing_policy/spec.md
+// §1.1). A window may carry `class` of peak, off-peak or preburn;
+// absent means peak for compatibility with the shipped DeepSeek
+// windows. The class is recording-only vocabulary: it never changes
+// gate matching, only what route_attempt rows carry.
+const WINDOW_CLASSES = new Set(["peak", "off-peak", "preburn"]);
+const WINDOW_CLASS_PRECEDENCE = ["peak", "preburn", "off-peak"];
+
+const windowClassOf = (win) =>
+  win && typeof win.class === "string" && WINDOW_CLASSES.has(win.class)
+    ? win.class
+    : "peak";
+
+// A present-but-unknown class value: named at load, recorded as the
+// peak default, and never fail-closed — a recording-label typo must
+// not flip the window's gate the way a bad time rule does.
+const windowClassProblems = (win) =>
+  win?.class == null ||
+  (typeof win.class === "string" && WINDOW_CLASSES.has(win.class))
+    ? null
+    : [
+        `class=${JSON.stringify(win?.class)} (expected one of peak, off-peak, preburn; absent means peak)`,
+      ];
+
 // Why a window entry can never match, or null when it is well formed.
 // start/end must be HH:MM in range (#4259); a present `timezone` must
 // be a real Intl time zone and a present `daysOfWeek` an array of
@@ -914,6 +1260,8 @@ const windowProblems = (win) => {
 
 // At config load, name every model_route_windows entry that can never
 // match, with the offending values, instead of silently evaluating it.
+// A bad `class` is named separately: it never matches differently,
+// it only records as the peak default (see windowClassProblems).
 const warnInvalidWindows = (windows) => {
   if (!windows || typeof windows !== "object") return;
   for (const [name, win] of Object.entries(windows)) {
@@ -922,6 +1270,13 @@ const warnInvalidWindows = (windows) => {
       console.error(
         `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
           `${problems.join("; ")}; window will never match`,
+      );
+    }
+    const classProblems = windowClassProblems(win);
+    if (classProblems) {
+      console.error(
+        `opencode-route-proxy: model_route_windows["${name}"] has an unknown class: ` +
+          `${classProblems.join("; ")}; window still gates on its time rule`,
       );
     }
   }
@@ -973,6 +1328,39 @@ const targetEligible = (cfg, t, now) => {
   if (!t.windowGate) return true;
   const active = windowActive(cfg.windows?.[t.windowGate.name], now);
   return t.windowGate.invert ? !active : active;
+};
+
+// Time-of-day window context, recorded on every route_attempt
+// (#9378 stage 2; policy values from the stage-1 spec §1/§4.1). A
+// route may bind the windows whose class drives it (`windows: [...]`
+// on the route); only bound windows count when the route binds any,
+// otherwise every defined window counts. Unknown binding names are
+// ignored here (the route checker flags them). Class precedence when
+// several match: peak > preburn > off-peak; no match records
+// neutral. `holiday` has no calendar source yet
+// (developing-today/opencode#821) and records "unknown". The batch
+// class route (background) serves queue work; every other route
+// serves interactive work first (G1) — that is what priority_band
+// records.
+const routeWindowContext = (cfg, routeId, now) => {
+  const windows =
+    cfg?.windows && typeof cfg.windows === "object" ? cfg.windows : {};
+  const route = cfg?.routes?.[routeId];
+  const bound = Array.isArray(route?.windows)
+    ? [...new Set(route.windows.filter((w) => typeof w === "string" && w))]
+    : null;
+  const names = (bound && bound.length ? bound : Object.keys(windows)).filter(
+    (n) => Object.hasOwn(windows, n),
+  );
+  const matched = names.filter((n) => windowActive(windows[n], now));
+  const classes = new Set(matched.map((n) => windowClassOf(windows[n])));
+  return {
+    windowNames: matched.join(","),
+    windowClass:
+      WINDOW_CLASS_PRECEDENCE.find((c) => classes.has(c)) ?? "neutral",
+    holiday: "unknown",
+    priorityBand: routeId === "background" ? "batch" : "interactive",
+  };
 };
 
 const rotation = new Map(); // routeId -> counter
@@ -1468,6 +1856,54 @@ class LeafError extends Error {
     this.retryable = retryable;
   }
 }
+
+// Bounded leaf-body read (#16398). The non-streaming leaf paths used
+// res.text() / res.arrayBuffer() directly, and the only bounds in
+// force were time-only (LEAF_TIMEOUT_MS / TIMEOUT_MS): once headers
+// arrive, a fast or misbehaving leaf can deliver gigabytes inside
+// the window and every one of those paths buffered it whole, OOMing
+// the proxy. A declared content-length over the cap is refused
+// before a byte is buffered; otherwise the body streams through a
+// reader and the read aborts the moment the running total crosses
+// the cap, so peak memory stays within one chunk of the cap.
+// Over-cap is a retryable LeafError, so the walk fails over like
+// any other leaf failure. Oracle: the #16398 tests in
+// bin/opencode-route-proxy.test.mjs — an over-cap leaf records a
+// failure attempt and the next candidate serves the request.
+const readLeafBody = async (res, maxBytes = LEAF_BODY_MAX_BYTES) => {
+  const tooLarge = (detail) =>
+    new LeafError(
+      `leaf response body exceeds the ${maxBytes}-byte cap (${detail})`,
+      { tag: "ProviderInternal" },
+    );
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try {
+      await res.body?.cancel();
+    } catch {}
+    throw tooLarge(`content-length ${declared}`);
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw tooLarge(`streamed past ${total} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+};
+
+const readLeafBodyText = async (res, maxBytes) =>
+  (await readLeafBody(res, maxBytes)).toString("utf8");
 
 const classifyHttp = (status, headers, bodyText) => {
   let quota = null;
@@ -2050,7 +2486,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       }
       if (!res.ok) {
         const ended = Date.now();
-        const text = await res.text().catch(() => "");
+        const text = await readLeafBodyText(res).catch(() => "");
         const err = classifyHttp(res.status, res.headers, text);
         recordAttempt({
           started,
@@ -2151,7 +2587,35 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         });
         return { streamed: true };
       }
-      const text = await res.text();
+      let text;
+      try {
+        text = await readLeafBodyText(res);
+      } catch (err) {
+        // Over-cap body (#16398): a retryable leaf failure, so the
+        // walk fails over instead of buffering the body whole.
+        const ended = Date.now();
+        recordAttempt({
+          started,
+          ended,
+          routeId,
+          providerId: leaf.providerId,
+          modelId: leaf.modelKey,
+          variant: leaf.variant,
+          outcome: signal.aborted ? "timeout" : "failure",
+          errorTag: err.tag || "ProviderInternal",
+          errorCode: err.code ?? null,
+          errorStatus: err.status ?? null,
+          errorMessage: String(err.message || err).slice(0, 500),
+          retryable: err.retryable ?? 1,
+          outputStarted: false,
+          failedOverTo,
+          responseMs: ended - started,
+          quota: err.quota ?? null,
+        });
+        lastErr = err;
+        if (signal.aborted) throw err;
+        continue;
+      }
       const ended = Date.now();
       let json = null;
       try {
@@ -2244,7 +2708,7 @@ const runSingleShotJson = async (
       const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
         const res = await postLeaf(built, leafSignal);
-        const text = await res.text();
+        const text = await readLeafBodyText(res);
         const ended = Date.now();
         if (!res.ok) {
           const err = classifyHttp(res.status, res.headers, text);
@@ -2407,7 +2871,35 @@ const runAudioPassthrough = async (
         if (signal.aborted) throw err;
         continue;
       }
-      const buf = Buffer.from(await res.arrayBuffer());
+      let buf;
+      try {
+        buf = await readLeafBody(res);
+      } catch (err) {
+        // Over-cap body (#16398): a retryable leaf failure, so the
+        // walk fails over instead of buffering the body whole.
+        const ended = Date.now();
+        recordAttempt({
+          started,
+          ended,
+          routeId,
+          providerId: leaf.providerId,
+          modelId: leaf.modelKey,
+          variant: leaf.variant,
+          outcome: signal.aborted ? "timeout" : "failure",
+          errorTag: err.tag || "ProviderInternal",
+          errorCode: err.code ?? null,
+          errorStatus: err.status ?? null,
+          errorMessage: String(err.message || err).slice(0, 500),
+          retryable: err.retryable ?? 1,
+          outputStarted: false,
+          failedOverTo,
+          responseMs: ended - started,
+          quota: err.quota ?? null,
+        });
+        lastErr = err;
+        if (signal.aborted) throw err;
+        continue;
+      }
       const ended = Date.now();
       if (!res.ok) {
         const text = buf.toString("utf8");
@@ -2594,7 +3086,7 @@ const runEmbeddingsA2Direct = async (
         const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
         try {
           const res = await postLeaf(built, leafSignal);
-          const text = await res.text();
+          const text = await readLeafBodyText(res);
           const ended = Date.now();
           if (!res.ok) {
             const err = classifyHttp(res.status, res.headers, text);
@@ -3277,6 +3769,12 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
+const onListening = () => {
   console.log(`opencode-route-proxy listening on http://${HOST}:${PORT}`);
-});
+};
+const listenFd = systemdListenFd();
+if (listenFd === null) {
+  server.listen(PORT, HOST, onListening);
+} else {
+  server.listen({ fd: listenFd }, onListening);
+}

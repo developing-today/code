@@ -310,6 +310,22 @@ pub enum JournalEntry {
         /// The new isolation.
         isolation: Isolation,
     },
+    /// The world's presentation policy (#14731 slice 2b, design #5970 §5),
+    /// written whole on every change. Absent means the default policy:
+    /// user shaders and disguise-class filters denied, uploads allowed up
+    /// to the rich rung. Compaction re-emits it when it is not the default.
+    PresentationPolicy {
+        /// The new policy.
+        policy: id_core::presentation_policy::PresentationPolicy,
+    },
+    /// Template role definitions attached to a world created from a template
+    /// (#8282 D5). Definitions are export metadata (name and purpose), not the
+    /// access-control role configuration or membership; both are stored elsewhere.
+    /// Written whole so the latest set can be projected and checkpointed.
+    TemplateRolesSet {
+        /// Role definitions; membership is deliberately not represented.
+        roles: Vec<crate::world_template::RoleDefinition>,
+    },
     /// Whether other unisolated worlds may write here, set by a moderator or
     /// the admin. `enabled: false` also clears a force. Absent means off.
     CrossWorldWrite {
@@ -535,6 +551,12 @@ pub enum JournalEntry {
         /// authority's clock; absent for an untermed holder.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at_ms: Option<u64>,
+        /// The entry's durable per-world journal position (#13711):
+        /// strictly increasing across lease entries in journal order,
+        /// assigned by the append authority. `0` means unstamped: a
+        /// lease entry written before positions existed.
+        #[serde(default)]
+        position: u64,
     },
     /// The current holder's lease term was renewed by the authority
     /// (design #2819). The epoch is unchanged.
@@ -545,6 +567,10 @@ pub enum JournalEntry {
         epoch: u64,
         /// The new term expiry, in unix milliseconds.
         expires_at_ms: u64,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// The write lease was handed from one holder to another
     /// (design #2819). This entry's journal position is the ownership
@@ -561,6 +587,10 @@ pub enum JournalEntry {
         /// absent for an untermed holder.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at_ms: Option<u64>,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// The write lease was revoked by the authority (design #2819):
     /// the former holder is fenced at the resulting epoch and no
@@ -572,6 +602,10 @@ pub enum JournalEntry {
         epoch: u64,
         /// Why the lease was revoked.
         reason: String,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// An authenticated append attempt was refused by the append gate
     /// and the authority journaled the attempt as an audit record
@@ -591,6 +625,10 @@ pub enum JournalEntry {
         /// When the authority received the attempt, in unix
         /// milliseconds on the authority's clock.
         received_at_ms: u64,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// One UTF-8-safe part of a compacted program snapshot. The complete set
     /// immediately precedes its checkpoint and is keyed by that checkpoint's
@@ -862,17 +900,42 @@ pub const JOURNAL_VERSION_BLOB: u32 = 14;
 /// containing one must be refused at the header check instead.
 pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
 
+/// Journal version 16 (#13711): a lease entry
+/// ([`JournalEntry::LeaseGranted`] and its siblings) carrying a
+/// stamped journal `position`, or a checkpoint carrying a lease
+/// history with stamped positions. The field is optional, so a
+/// version-15 binary would parse such an entry yet drop the
+/// position at its next checkpoint — silently unmooring the
+/// replay barrier the position names — so a journal containing a
+/// stamped position must be refused at the header check instead.
+/// Unstamped (position 0) lease entries keep version 7.
+pub const JOURNAL_VERSION_LEASE_POSITION: u32 = 16;
+
+/// Journal version 17 (#14731 slice 2b): a
+/// [`JournalEntry::PresentationPolicy`] entry. A version-16 binary cannot
+/// parse the entry kind and would fail mid-replay, so a journal containing
+/// one must be refused at the header check instead.
+pub const JOURNAL_VERSION_PRESENTATION_POLICY: u32 = 17;
+
+/// Journal version 18 (#8282 slice 6): template role-definition records.
+/// Older readers cannot parse the entry kind and must refuse such journals.
+pub const JOURNAL_VERSION_TEMPLATE_ROLES: u32 = 18;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_NOTIFY;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_TEMPLATE_ROLES;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
 /// version 4 for entries persisting a per-world total memory budget, version 5
 /// for checkpoints with open-presence metadata, and version 6 for checkpoint
 /// part entries. Checkpoints combine the requirements of their transfers,
-/// retained events, profile and presence field.
+/// retained events, profile and presence field. A lease entry carrying a
+/// stamped journal position requires version 16, as does a checkpoint whose
+/// lease history carries one; unstamped lease entries keep version 7.
+/// A presentation-policy entry requires version 17. A template-roles
+/// entry requires version 18.
 ///
 /// Any entry that records a program-bundle install additionally requires
 /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
@@ -940,11 +1003,17 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
         }
-        JournalEntry::LeaseGranted { .. }
-        | JournalEntry::LeaseRenewed { .. }
-        | JournalEntry::LeaseHandedOff { .. }
-        | JournalEntry::LeaseRevoked { .. }
-        | JournalEntry::LeaseWriteRejected { .. } => JOURNAL_VERSION_WRITE_LEASE,
+        JournalEntry::LeaseGranted { position, .. }
+        | JournalEntry::LeaseRenewed { position, .. }
+        | JournalEntry::LeaseHandedOff { position, .. }
+        | JournalEntry::LeaseRevoked { position, .. }
+        | JournalEntry::LeaseWriteRejected { position, .. } => {
+            if *position == 0 {
+                JOURNAL_VERSION_WRITE_LEASE
+            } else {
+                JOURNAL_VERSION_LEASE_POSITION
+            }
+        }
         JournalEntry::AuthorKeyBound { .. } | JournalEntry::SignedMoveAccepted { .. } => {
             JOURNAL_VERSION_SIGNED_PLAY
         }
@@ -975,6 +1044,8 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
         JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
+        JournalEntry::PresentationPolicy { .. } => JOURNAL_VERSION_PRESENTATION_POLICY,
+        JournalEntry::TemplateRolesSet { .. } => JOURNAL_VERSION_TEMPLATE_ROLES,
         JournalEntry::Checkpoint {
             transfers,
             lease,
@@ -987,11 +1058,20 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             admin_history,
             ..
         } => {
+            // A checkpoint with a stamped lease history requires
+            // version 16, above every other content version: the
+            // check is ordered highest-first, so this arm comes
+            // before the notify/blob/kv arms below.
+            let base = if lease
+                .as_ref()
+                .is_some_and(|lease| lease.last_position() > 0)
+            {
+                JOURNAL_VERSION_LEASE_POSITION
             // A retained `Notification` event is a version-15 kind
             // wherever the checkpoint carries it — the retained
             // events or the admin history (the both-places check
             // the bundle-provenance rule uses).
-            let base = if events
+            } else if events
                 .iter()
                 .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
                 || admin_history.as_ref().is_some_and(|history| {
@@ -999,7 +1079,8 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
                         .events
                         .iter()
                         .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
-                }) {
+                })
+            {
                 JOURNAL_VERSION_NOTIFY
             } else if blobs.is_some() {
                 JOURNAL_VERSION_BLOB

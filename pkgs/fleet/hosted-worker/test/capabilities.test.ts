@@ -4,11 +4,17 @@
 // hosted values. The document must be truthful: a domain reports
 // available only when its filling issue landed — the
 // hosted-transformed `gh` domain via the stamping door (#12585),
-// and the `queue` domain via the queue door (#12589).
+// the `queue` domain via the queue door (#12589), and the `bridge`
+// domain via the bridge door (#14373).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { configFromEnv } from "../src/config.ts";
+import { D1MetadataStore } from "../src/d1-metadata-stores.ts";
 import { dispatch } from "../src/router.ts";
+import { FixtureMetadataStore } from "../src/stamping.ts";
+import { buildDeps } from "../src/worker.ts";
+import { withDb } from "./d1-double.ts";
 import { makeHarness } from "./helpers.ts";
 
 const h = await makeHarness();
@@ -20,12 +26,12 @@ test("health answers publicly with the hosted door's identity", async () => {
     status: string;
     service: string;
     doors: string[];
-    auth: { rp_configured: boolean; tenancy_configured: boolean };
+    auth: { rp_configured: boolean; tenancy_configured: boolean; service_auth_configured: boolean };
   };
   assert.equal(body.status, "ok");
   assert.equal(body.service, "fleet-hosted");
-  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync"]);
-  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true });
+  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge", "kv", "kv-upload"]);
+  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true, service_auth_configured: true });
 });
 
 test("capabilities mirrors the native shape with hosted values", async () => {
@@ -64,6 +70,7 @@ test("capabilities mirrors the native shape with hosted values", async () => {
     assert.ok(Array.isArray(d.capabilities));
     if (d.name === "gh") continue; // asserted below: landed by #12585
     if (d.name === "queue") continue; // asserted below: landed by #12589
+    if (d.name === "bridge") continue; // asserted below: landed by #14373
     // Truth: no other business domain is available at this door yet.
     assert.equal(d.available, false, `${d.name} must not report available yet`);
     assert.equal(d.state, "not-in-build");
@@ -80,14 +87,20 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   // available too, ahead of gh in the registry's domain order.
   assert.equal(byName.get("queue")?.available, true);
   assert.equal(byName.get("queue")?.state, "available");
-  assert.deepEqual(doc.capabilities, ["queue", "gh"]);
-  assert.deepEqual(doc.compiled_capabilities, ["queue", "gh"]);
+  // #14373 wired the bridge domain to the message bridge over its
+  // service binding: available too, after gh in the registry's order.
+  assert.equal(byName.get("bridge")?.available, true);
+  assert.equal(byName.get("bridge")?.state, "available");
+  assert.deepEqual(doc.capabilities, ["queue", "gh", "bridge"]);
+  assert.deepEqual(doc.compiled_capabilities, ["queue", "gh", "bridge"]);
   assert.equal(byName.get("queue")?.hosted, "hosted-front-door");
   assert.equal(byName.get("queue")?.filling_issue, "#12589");
   assert.equal(byName.get("secrets")?.hosted, "native-only");
   assert.equal(byName.get("bridge")?.hosted, "already-hosted");
+  assert.equal(byName.get("bridge")?.filling_issue, "#14373");
 
-  // The component-C doors and the issues that fill them.
+  // The component-C doors and the issues that fill them, and the
+  // bridge and kv doors after them.
   assert.deepEqual(
     doc.doors.map((d) => [d.id, d.filling_issue]),
     [
@@ -96,6 +109,9 @@ test("capabilities mirrors the native shape with hosted values", async () => {
       ["queue", "#12589"],
       ["ingestion", "#12590"],
       ["sync", "#12591"],
+      ["bridge", "#14373"],
+      ["kv", "#13316"],
+      ["kv-upload", "#13318"],
     ],
   );
   const doorById = new Map(doc.doors.map((d) => [d.id, d]));
@@ -105,4 +121,44 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   assert.equal(doorById.get("ingestion")?.state, "live");
   // #12591 landed the sync door: every component-C door is live.
   assert.equal(doorById.get("sync")?.state, "live");
+  assert.equal(doorById.get("bridge")?.state, "live");
+  // #13316 added the fleet-kv door after them.
+  assert.equal(doorById.get("kv")?.state, "live");
+  // #13318 added the kv blob upload door.
+  assert.equal(doorById.get("kv-upload")?.state, "live");
 });
+
+// Health reports metadata durability (#16096). Oracle: buildDeps in
+// src/worker.ts resolves D1MetadataStore iff QUEUE_D1 is bound
+// (#15456); the health signal must agree with that wiring, so the
+// live readback gate can check one public boolean instead of reading
+// code. The default harness has no binding: fixture, not durable.
+test(
+  "health reports whether the metadata store is durable",
+  withDb(async (d1) => {
+    const unset = await dispatch(new Request("https://fleet-hosted.test/health"), h.deps);
+    assert.deepEqual(((await unset.json()) as { storage: unknown }).storage, {
+      d1_bound: false,
+      metadata_durable: false,
+    });
+
+    const boundConfig = configFromEnv({ QUEUE_D1: d1 });
+    assert.equal(boundConfig.d1Bound, true);
+    assert.equal(configFromEnv({}).d1Bound, false);
+    const set = await dispatch(new Request("https://fleet-hosted.test/health"), {
+      ...h.deps,
+      config: boundConfig,
+    });
+    const setText = await set.text();
+    assert.deepEqual((JSON.parse(setText) as { storage: unknown }).storage, {
+      d1_bound: true,
+      metadata_durable: true,
+    });
+    // A boolean, never binding details.
+    assert.doesNotMatch(setText, /fleet-queue|c17186b0/);
+
+    // The signal agrees with the wiring it claims to report.
+    assert.ok(buildDeps({ QUEUE_D1: d1 }).metadataStore instanceof D1MetadataStore);
+    assert.ok(buildDeps({}).metadataStore instanceof FixtureMetadataStore);
+  }),
+);

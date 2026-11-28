@@ -43,9 +43,12 @@ export const DEFAULT_RANGE_PARAMS: RangeParams = {
 
 export function checkParams(params: RangeParams): RangeParams {
   if (params.k < 2) throw new Error(`K must be at least 2, or a split makes no progress (got ${params.k})`);
-  if (params.t < 1) throw new Error(`T must be at least 1, or one mismatched key never ends the sync (got ${params.t})`);
+  if (params.t < 1)
+    throw new Error(`T must be at least 1, or one mismatched key never ends the sync (got ${params.t})`);
   if (params.frameBudget < MIN_FRAME_BUDGET || params.frameBudget > FRAME_CAP) {
-    throw new Error(`the frame budget must be from ${MIN_FRAME_BUDGET} bytes to the ${FRAME_CAP}-byte frame cap (got ${params.frameBudget})`);
+    throw new Error(
+      `the frame budget must be from ${MIN_FRAME_BUDGET} bytes to the ${FRAME_CAP}-byte frame cap (got ${params.frameBudget})`,
+    );
   }
   if (params.sessionBudget < MIN_FRAME_BUDGET) {
     throw new Error(`the session budget must be at least ${MIN_FRAME_BUDGET} bytes (got ${params.sessionBudget})`);
@@ -139,14 +142,18 @@ export class RangeParty {
   private xor: Uint8Array[] = [];
 
   constructor(entries: SyncKey[]) {
-    const sorted = [...entries].sort((a, b) => compareBytes(keyBytes(a), keyBytes(b)));
-    for (let i = 1; i < sorted.length; i++) {
-      if (compareBytes(keyBytes(sorted[i - 1]), keyBytes(sorted[i])) === 0) {
+    // Encode each key once: keyBytes parses hex and walks a BigInt, so
+    // calling it inside the comparator costs O(n log n) encodings.
+    const encoded = entries.map((key) => ({ key, raw: keyBytes(key) }));
+    encoded.sort((a, b) => compareBytes(a.raw, b.raw));
+    for (let i = 1; i < encoded.length; i++) {
+      if (compareBytes(encoded[i - 1].raw, encoded[i].raw) === 0) {
         throw new Error("sync keys are not distinct");
       }
     }
+    const sorted = encoded.map((e) => e.key);
     this.keys = sorted;
-    this.keyRaw = sorted.map(keyBytes);
+    this.keyRaw = encoded.map((e) => e.raw);
     this.ids = sorted.map((k) => k.id);
     const acc = new Uint8Array(16);
     this.xor = [new Uint8Array(acc)];
@@ -224,8 +231,7 @@ export class RangeParty {
         case "fp": {
           const mine = this.fp(lo, hi);
           const equal =
-            mine.count === entry.mode.count &&
-            mine.fp.every((v, i) => v === (entry.mode as { fp: Uint8Array }).fp[i]);
+            mine.count === entry.mode.count && mine.fp.every((v, i) => v === (entry.mode as { fp: Uint8Array }).fp[i]);
           if (equal) {
             pushSkip(entry.upper);
           } else if (mine.count <= params.t) {
@@ -489,9 +495,7 @@ export function simulateExchange(
     else bytesB += bytes;
     const incoming = decodeFlight(wire);
     if (allSkip(incoming)) break;
-    msg = aSends
-      ? b.respond(incoming, receiverParams, learnedB)
-      : a.respond(incoming, receiverParams, learnedA);
+    msg = aSends ? b.respond(incoming, receiverParams, learnedB) : a.respond(incoming, receiverParams, learnedA);
     aSends = !aSends;
   }
   return { flights, bytesA, bytesB, learnedA, learnedB, maxFrame };

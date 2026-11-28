@@ -178,3 +178,32 @@ func TestParseSummaryLevelsAndDrafts(t *testing.T) {
 		t.Errorf("levels wrong: %+v", chapters)
 	}
 }
+
+// Oracle: the operator-script argument contract (#3352) — a value-taking
+// flag in trailing position is a usage error naming the flag, never a
+// panic (#16401, the #3312 class in docs-twins).
+func TestParseFlagsTrailingValueFlagIsUsageError(t *testing.T) {
+	for _, flag := range []string{"--docs", "--agents", "--out", "--history-bin"} {
+		_, err := parseFlags([]string{flag})
+		if err == nil {
+			t.Errorf("parseFlags([%s]): expected an error, got nil", flag)
+			continue
+		}
+		if !strings.Contains(err.Error(), flag) || !strings.Contains(err.Error(), "requires a value") {
+			t.Errorf("parseFlags([%s]): error %q does not name the flag and its missing value", flag, err)
+		}
+		// Also trailing after valid flags.
+		_, err = parseFlags([]string{"--docs", "d", "--out", "o", flag})
+		if err == nil {
+			t.Errorf("parseFlags(trailing %s after valid flags): expected an error, got nil", flag)
+		}
+	}
+	// Valid invocations are unchanged.
+	cfg, err := parseFlags([]string{"--docs", "d", "--agents", "a", "--out", "o", "--history-bin", "h"})
+	if err != nil {
+		t.Fatalf("parseFlags(valid): %v", err)
+	}
+	if cfg.docsDir != "d" || cfg.agentsDir != "a" || cfg.outDir != "o" || cfg.historyBin != "h" {
+		t.Errorf("parseFlags(valid) parsed wrong config: %+v", cfg)
+	}
+}

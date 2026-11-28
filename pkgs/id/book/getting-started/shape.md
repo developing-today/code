@@ -4,14 +4,14 @@ This chapter is the whole system on one page: the crates, the surfaces,
 how a file moves, how a world runs, and where data lives. Every other
 part of this book expands one section of this page.
 
-## The workspace: a facade plus 16 crates
+## The workspace: a facade plus 20 crates
 
-`pkgs/id/` is a Rust workspace of 17 packages: the root package `id`
-version `0.1.0` (the facade) and 16 crates under `pkgs/id/crates/`.
-Default members are 15 packages: the root plus 14 crates. The two shell
-crates, `id-native-shell` and `id-hw-shell`, are workspace members but
-not default members, so a plain `cargo build` in `pkgs/id/` never
-acquires the Bevy desktop or hardware-shell dependencies. Two vendored
+`pkgs/id/` is a Rust workspace of 21 packages: the root package `id`
+version `0.1.0` (the facade) and 20 crates under `pkgs/id/crates/`.
+Default members are 18 packages: the root plus 17 crates. The three
+shell crates, `id-native-shell`, `id-hw-shell`, and `id-tui-shell`, are
+workspace members but not default members, so a plain `cargo build` in
+`pkgs/id/` never acquires the Bevy desktop or shell dependencies. Two vendored
 crates, `vendor/p2panda-sync` and `vendor/p2panda-encryption`, are
 excluded from the workspace.
 
@@ -25,15 +25,15 @@ CLI types and command functions through `id::…`.
 
 Dependency direction runs one way, from leaves to surfaces:
 
-| Layer | Crates | What each owns |
-| --- | --- | --- |
-| Foundation | `id-core` | The leaf modules everything depends on (10 production dependents): content IDs, the graph record model, signed envelopes, discovery, the port contract vocabulary, and the constants `KEY_FILE = ".iroh-key"`, `CLIENT_KEY_FILE = ".iroh-key-client"`, `SERVE_LOCK = ".iroh-serve.lock"` |
-| Data | `id-store`, `id-events` | `id-store`: the blob store, tags, documents, search, and the signed event-header chain. `id-events`: the event store, the group projection, writer sets, and sync gating |
-| Platform services | `id-caps`, `id-groups`, `id-sync`, `id-directory` | `id-caps`: the capability catalog, execution limits, and the world manifest. `id-groups`: group policy and enforcement, the blob gate, group encryption. `id-sync`: log sync, the meta protocol, FileOps, envelopes, and artifacts. `id-directory`: the home-server directory, invites, keysets, recovery, and seitan admission |
-| Worlds and web | `id-worlds`, `id-web` | `id-worlds`: the world runtime, sessions, the wasmtime sandbox, and cross-world authority (75 `.rs` files, the largest crate). `id-web`: the HTTP and WebSocket server, routes, templates, and markdown |
-| Application | `id-cli` | Argument parsing, command implementations, the REPL, and the server-config loader |
-| Standalone | `id-config`, `id-currency-registry`, `id-render`, `id-import-notion` | `id-config`: the versioned configuration contract (no production dependents; the facade names it only in dev-dependencies). `id-currency-registry`: the currency control-plane registry (facade only). `id-render`: the rendering pipeline compiler core (no dependents). `id-import-notion`: the Notion importer inventory primitives (no dependents) |
-| Shells | `id-native-shell`, `id-hw-shell` | The Bevy native reference shell and the ESP32-class hardware shell spike. Both consume the facade with `default-features = false, features = ["world"]` |
+| Layer             | Crates                                                               | What each owns                                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Foundation        | `id-core`                                                            | The leaf modules everything depends on (10 production dependents): content IDs, the graph record model, signed envelopes, discovery, the port contract vocabulary, and the constants `KEY_FILE = ".iroh-key"`, `CLIENT_KEY_FILE = ".iroh-key-client"`, `SERVE_LOCK = ".iroh-serve.lock"`                                                               |
+| Data              | `id-store`, `id-events`                                              | `id-store`: the blob store, tags, documents, search, and the signed event-header chain. `id-events`: the event store, the group projection, writer sets, and sync gating                                                                                                                                                                               |
+| Platform services | `id-caps`, `id-groups`, `id-sync`, `id-directory`                    | `id-caps`: the capability catalog, execution limits, and the world manifest. `id-groups`: group policy and enforcement, the blob gate, group encryption. `id-sync`: log sync, the meta protocol, FileOps, envelopes, and artifacts. `id-directory`: the home-server directory, invites, keysets, recovery, and seitan admission                        |
+| Worlds and web    | `id-worlds`, `id-web`                                                | `id-worlds`: the world runtime, sessions, the wasmtime sandbox, and cross-world authority (107 `.rs` files, the largest crate). `id-web`: the HTTP and WebSocket server, routes, templates, and markdown                                                                                                                                                |
+| Application       | `id-cli`                                                             | Argument parsing, command implementations, the REPL, and the server-config loader                                                                                                                                                                                                                                                                      |
+| Standalone        | `id-config`, `id-currency-registry`, `id-render`, `id-import-notion` | `id-config`: the versioned configuration contract (no production dependents; the facade names it only in dev-dependencies). `id-currency-registry`: the currency control-plane registry (facade only). `id-render`: the rendering pipeline compiler core (no dependents). `id-import-notion`: the Notion importer inventory primitives (no dependents) |
+| Shells            | `id-native-shell`, `id-hw-shell`                                     | The Bevy native reference shell and the ESP32-class hardware shell spike. Both consume the facade with `default-features = false, features = ["world"]`                                                                                                                                                                                                |
 
 The split is recorded history, not a plan: the code was one crate and
 was divided in numbered steps of umbrella issue #3447 — `id-core` in
@@ -159,16 +159,16 @@ There is no MCP server binary; see [The MCP bridge](../reference/mcp.md).
 
 ## Where data lives
 
-| Data | Store | Location |
-| --- | --- | --- |
-| File bytes | Iroh blobs `FsStore` (redb plus data files) | `.iroh-store/` in the data directory; in-memory under `serve --ephemeral` |
-| File names and metadata tags | Tag store over Iroh docs namespace pairs (global, node-private, custom) | Under `.iroh-store/docs/`; namespace registry at `.iroh-meta/registry.json`, registry version 1 |
-| Signed events (documents, claims, groups, writer sets) | Event store, redb file `events.redb`, format marker `id.events.store.v9` | The `events/` directory in the data directory (the `--event-store` default) |
-| Group log | Append-only JSONL | `groups.jsonl` in the data directory (the `--groups-log` default) |
-| Directory accounts, groups, invites | Directory journal, one JSON entry per line, 17 entry kinds | `directory.jsonl` beside the server config that provisions it |
-| World state | Per-world journal plus content-addressed Wasm modules | `.id-worlds/<NAME>/` in the data directory |
-| Node and client keys | Key files | `.iroh-key` and `.iroh-key-client` in the data directory; keysets in `.id-keyset.jsonl` and `.id-keyset-client.jsonl` |
-| Hosted user data | One `UserDO` Durable Object per bound user (SQLite schema version 3) plus an R2 bucket for blob bytes | In the hosted Worker scaffold only; no deployment exists |
+| Data                                                   | Store                                                                                                 | Location                                                                                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| File bytes                                             | Iroh blobs `FsStore` (redb plus data files)                                                           | `.iroh-store/` in the data directory; in-memory under `serve --ephemeral`                                             |
+| File names and metadata tags                           | Tag store over Iroh docs namespace pairs (global, node-private, custom)                               | Under `.iroh-store/docs/`; namespace registry at `.iroh-meta/registry.json`, registry version 1                       |
+| Signed events (documents, claims, groups, writer sets) | Event store, redb file `events.redb`, format marker `id.events.store.v9`                              | The `events/` directory in the data directory (the `--event-store` default)                                           |
+| Group log                                              | Append-only JSONL                                                                                     | `groups.jsonl` in the data directory (the `--groups-log` default)                                                     |
+| Directory accounts, groups, invites                    | Directory journal, one JSON entry per line, 17 entry kinds                                            | `directory.jsonl` beside the server config that provisions it                                                         |
+| World state                                            | Per-world journal plus content-addressed Wasm modules                                                 | `.id-worlds/<NAME>/` in the data directory                                                                            |
+| Node and client keys                                   | Key files                                                                                             | `.iroh-key` and `.iroh-key-client` in the data directory; keysets in `.id-keyset.jsonl` and `.id-keyset-client.jsonl` |
+| Hosted user data                                       | One `UserDO` Durable Object per bound user (SQLite schema version 3) plus an R2 bucket for blob bytes | In the hosted Worker scaffold only; no deployment exists                                                              |
 
 The full inventory is [Data stores and schemas](../reference/data-stores.md).
 
@@ -185,13 +185,13 @@ they name. The design part of this book describes that record as design.
 
 The two records disagree in named places, and the disagreements are data,
 not embarrassments to smooth over. The surveys recorded 56 of them: the
-README gives `list` an `ls` alias the parser does not have (CLI-1); the
-README's Cargo quick start misdescribes `--no-default-features` (CLI-2);
+README gives `list` an `ls` alias the parser does not have (CLI-1);
+the README's Cargo quick start misdescribed `--no-default-features` (CLI-2, fixed with DES-10);
 the hosted Worker README's route list describes a first slice the code
 has passed (WEB-9); the MCP v1 tool list contains `presence.set`, a tool
 the bridge refuses on every call (WEB-13); `README.original.md` is not an
 original README at all but the earliest ID concept sketch, with an access
-model the capability system replaced (DES-8). Where a chapter meets one,
+model the capability system replaced (DES-8; it now carries a status header stating that). Where a chapter meets one,
 it states the source behaviour, names the disagreement by its survey
 number, and moves on. A claim this book could not pin against the source
 is marked unverified in the chapter where it appears; a claim with no

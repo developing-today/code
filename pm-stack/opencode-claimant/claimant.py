@@ -71,6 +71,11 @@ QUEUES = [
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
 REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+# The same packaged fleet binary under its own name: this module's
+# GitHub reads and agent notes run through its `gh` sync verbs
+# (code#10973, step 2.2 of #9016) over the fleet token rotation,
+# instead of composing raw `gh` argument lists at each call site.
+FLEET_CMD = HOME_DIR / ".local" / "bin" / "fleet"
 PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # OpenCode server coordinates: the standing server requires HTTP
@@ -173,9 +178,38 @@ def _get_session(session_id: str):
     return "unknown", None
 
 
+def _resume_session_for_task(task):
+    """Resolve a task's optional resume hint before creating a session.
+
+    A missing or wrong-worktree session follows FDR-0001's recorded
+    fallback rule: create fresh in the task worktree and report why.
+    Unknown reads and active sessions fail closed; neither is proof
+    that it is safe to substitute or reuse the session.
+    """
+    requested = task.get("resume_session_id")
+    if not isinstance(requested, str) or not requested.strip():
+        return None, None, None
+    requested = requested.strip()
+    verdict, session = _get_session(requested)
+    if verdict == "gone":
+        return None, requested, "missing_session"
+    if verdict != "ok" or session.get("id") != requested:
+        return None, requested, "session_state_unknown"
+    location = session.get("location")
+    directory = location.get("directory") if isinstance(location, dict) else None
+    if directory != str(PRIMARY_CLONE):
+        return None, requested, "worktree_mismatch"
+    active_ids = _fetch_active_ids()
+    if active_ids is None:
+        return None, requested, "session_activity_unknown"
+    if requested in active_ids:
+        return None, requested, "busy_session"
+    return requested, requested, None
+
+
 def _delete_session(session_id: str) -> bool:
     """DELETE through the verified transport: True only on a 2xx
-    verdict. A non-2xx delete did not happen, whatever curl said."""
+    verdict. A non-2xx delete did not happen."""
     status, _payload = _server_request(
         "DELETE", f"/api/session/{session_id}", timeout=5
     )
@@ -284,13 +318,43 @@ def read_mode() -> str:
 _code_source: "Dict[str, Any] | None" = None
 
 
+def _read_git_ref(git_dir: "Path", ref: str) -> "str | None":
+    """Resolve a git ref to its commit sha by reading .git directly.
+
+    Loose ref first, then packed-refs. Returns None when the ref is
+    not recorded anywhere. Pure file reads: no git binary is spawned,
+    so this stays usable under the hermetic suite's no-subprocess
+    guard (#13135).
+    """
+    try:
+        sha = (git_dir.joinpath(*ref.split("/"))).read_text().strip()
+    except OSError:
+        sha = ""
+    if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    try:
+        packed = (git_dir / "packed-refs").read_text().splitlines()
+    except OSError:
+        return None
+    for line in packed:
+        if line.startswith("#") or line.startswith("^"):
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip() == ref and len(parts[0]) == 40:
+            return parts[0]
+    return None
+
+
 def read_code_source() -> "Dict[str, Any]":
     """Read the primary clone's checked-out branch and commit.
 
-    Fail-open by design: this is provenance for the fire log, never
-    a gate. Any git failure (no git binary, not a checkout, timeout)
-    yields state "unreadable" with branch/commit None rather than
-    raising - a fire must never abort because its own provenance
+    Reads .git directly (HEAD plus loose/packed refs) instead of
+    spawning `git rev-parse`: the fire path never forks for its own
+    provenance, and the read stays usable under the hermetic suite's
+    no-subprocess guard (#13135). Fail-open by design: this is
+    provenance for the fire log, never a gate. Any unreadable .git
+    layout yields state "unreadable" with branch/commit None rather
+    than raising - a fire must never abort because its own provenance
     read failed. The result is cached per process: one fire is one
     process, and the checkout does not change under a running fire.
     """
@@ -305,25 +369,28 @@ def read_code_source() -> "Dict[str, Any]":
     }
     _code_source = source
     try:
-        branch = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        commit = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if branch.returncode != 0 or commit.returncode != 0:
-            source["state"] = "unreadable"
-            return source
-        source["branch"] = branch.stdout.strip() or None
-        source["commit"] = commit.stdout.strip() or None
-        if source["branch"] is None or source["commit"] is None:
-            source["state"] = "unreadable"
+        git_dir = PRIMARY_CLONE / ".git"
+        if git_dir.is_file():
+            # Worktree / linked checkout: .git holds "gitdir: <path>".
+            target = git_dir.read_text().strip()
+            if not target.startswith("gitdir:"):
+                raise ValueError("unexpected .git file")
+            git_dir = Path(target[len("gitdir:") :].strip())
+            if not git_dir.is_absolute():
+                git_dir = PRIMARY_CLONE / git_dir
+        head = (git_dir / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = head[len("ref:") :].strip()
+            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            commit = _read_git_ref(git_dir, ref)
+        elif len(head) == 40 and all(c in "0123456789abcdef" for c in head):
+            branch, commit = "HEAD", head  # detached HEAD, as rev-parse reports it
+        else:
+            raise ValueError("unparsable HEAD")
+        if not branch or commit is None:
+            raise ValueError("ref unresolvable")
+        source["branch"] = branch
+        source["commit"] = commit
     except Exception:
         source["state"] = "unreadable"
     return source
@@ -771,6 +838,14 @@ def supervision_step(mode: str) -> List[Dict]:
                     lease_ms = poll.parse_lease_ms(task.get("lease_until"))
                     if lease_ms is None or lease_ms > now_ms:
                         continue
+                    # A stored error outcome is not proof the session
+                    # is terminal (#16066): a resumed session can carry
+                    # an error-valued stored outcome while active. The
+                    # authoritative server active set decides - an
+                    # active session is preserved, and an unreadable
+                    # active set fails closed (the task stays bound).
+                    if active_ids is None or session_id in active_ids:
+                        continue
                     if exhausted:
                         if _delete_session(session_id) and _fail_attempts_exhausted(
                             task, session_id
@@ -1183,6 +1258,140 @@ def _take_prompt_wall() -> "str | None":
     return wall
 
 
+# What a coordinator does about each sink-claim failure category
+# (#6533). The categories are fixed strings so a fire log never copies
+# CLI output; the action names the next check instead of a bare
+# sink_claim_failed.
+SINK_CLAIM_ACTIONS = {
+    "no_match": (
+        "the broker had no claimable sink row for the openchamber family: "
+        "check the row is still status handed_off and its selector is not muse"
+    ),
+    "different_row": (
+        "the broker's handoff pick returned other rows: the by-id fallback "
+        "is the next step; if that also fails, read the row's status"
+    ),
+    "cli_nonzero": (
+        "repo-queue claim exited non-zero: rerun the claim by hand as "
+        "opencode-claimant and read its stderr"
+    ),
+    "invalid_json": "repo-queue claim printed non-JSON: check the installed fleet binary",
+    "missing_claim_row": (
+        "repo-queue claim exited 0 without a row or {task: null}: "
+        "check the installed fleet binary"
+    ),
+    "timeout": "repo-queue claim timed out: check broker health",
+    "spawn_error": "repo-queue could not be started: check ~/.local/bin/repo-queue",
+    "unexpected_error": "the claim call raised: read the claimant's stderr",
+    "not_attempted": "no claim was attempted",
+}
+
+
+def _classify_claim_body(data, returncode: int) -> "tuple[Dict | None, str]":
+    """Classify a parsed `repo-queue claim` answer.
+
+    cmd_claim prints the claimed row itself, or {"task": null} when
+    nothing was claimed. Returns (row, "row_returned") for a row with
+    an id, else (None, category) with a fixed category string."""
+    row = data if isinstance(data, dict) else None
+    if isinstance(row, dict) and isinstance(row.get("task"), dict):
+        # A {"task": row} wrapper (the by-id claim's shape on some
+        # client versions) is the row.
+        row = row["task"]
+    claimed_id = row.get("id") if isinstance(row, dict) else None
+    if claimed_id is not None:
+        return row, "row_returned"
+    if (
+        row is not None
+        and "task" in row
+        and row["task"] is None
+        and returncode in (0, 5)
+    ):
+        # cmd_claim's "nothing claimable" answer: a well-formed
+        # {"task": null} body with exit 5 (or 0). That is the
+        # ordinary empty result, not a CLI failure, so classify it
+        # before the non-zero-exit fallback. Any other exit code is
+        # a broker error and stays cli_nonzero.
+        return None, "no_match"
+    if returncode != 0:
+        return None, "cli_nonzero"
+    return None, "missing_claim_row"
+
+
+def _claim_sink_by_id(queue: str, task_id: int, *, diagnostic=None) -> "Dict | None":
+    """The #8097 Rule 1 exception tool, used only as a fallback: claim
+    one specific handed-off sink row by id, as the claimant, after the
+    broker-picked handoff collection did not return it (#6533). The
+    broker still decides: it hands the row over only if it is a sink
+    row the openchamber family may take. No lane is named, so a lane
+    in the caller's environment can never make the claim act as that
+    lane. Returns the claimed row or None; `diagnostic` gets a fixed
+    category and the elapsed time, never CLI output."""
+    started = time.monotonic()
+    row = None
+    outcome = "unexpected_error"
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "claim",
+                "--queue",
+                queue,
+                "--worker",
+                CLAIMANT_WORKER,
+                "--platform",
+                "openchamber",
+                "--task",
+                str(task_id),
+                "--model-provider",
+                LAUNCH_MODEL_PROVIDER,
+                "--model-id",
+                LAUNCH_MODEL_ID,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_queue_env(),
+        )
+        try:
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except ValueError:
+            outcome = "invalid_json" if result.returncode == 0 else "cli_nonzero"
+        else:
+            row, outcome = _classify_claim_body(data, result.returncode)
+            if row is not None and row.get("id") != task_id:
+                row, outcome = None, "different_row"
+    except subprocess.TimeoutExpired:
+        outcome = "timeout"
+    except OSError:
+        outcome = "spawn_error"
+    except Exception:
+        outcome = "unexpected_error"
+    if diagnostic is not None:
+        diagnostic.update(
+            category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
+        )
+    return row
+
+
+def _queue_env() -> Dict[str, str]:
+    """The environment for a repo-queue call made as the claimant: the
+    caller's environment without REPO_QUEUE_LANE. The claimant holds
+    no lane; the client falls back to that variable for holder-checked
+    verbs (fleet-queue client `lane_arg`), so a claimant started from
+    a lane's shell would otherwise act as that lane and be refused
+    (#6533)."""
+    return {k: v for k, v in os.environ.items() if k != "REPO_QUEUE_LANE"}
+
+
+def _drop_inherited_lane(environ=None) -> "str | None":
+    """Remove REPO_QUEUE_LANE from the process environment so every
+    repo-queue child this fire spawns acts as the claimant, not as the
+    lane whose shell started it (#6533). Returns the dropped value."""
+    environ = os.environ if environ is None else environ
+    return environ.pop("REPO_QUEUE_LANE", None)
+
+
 def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int, Dict]:
     """Collect up to `want` recorded handoffs from `queue`'s
     handoff sink WITHOUT naming a task id (#8097 Rule 1): each
@@ -1246,20 +1455,10 @@ def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int,
         except Exception:
             outcome = "unexpected_error"
             break
-        # cmd_claim prints the claimed row itself ({"task": null}
-        # when nothing was claimed).
-        row = data if isinstance(data, dict) else None
-        claimed_id = row.get("id") if isinstance(row, dict) else None
-        if claimed_id is None:
-            if result.returncode != 0:
-                outcome = "cli_nonzero"
-            elif row is not None and "task" in row and row["task"] is None:
-                outcome = "no_match"
-            else:
-                outcome = "missing_claim_row"
+        row, outcome = _classify_claim_body(data, result.returncode)
+        if row is None:
             break
-        collected[claimed_id] = row
-        outcome = "row_returned"
+        collected[row["id"]] = row
     if diagnostic is not None:
         diagnostic.update(
             category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
@@ -1281,31 +1480,59 @@ _CREDENTIAL_KEY_PARTS = (
 
 
 def _github_issue_labels(repo: str, issue_number: int) -> set:
-    """Live label names on an issue, read through the gh CLI.
+    """Live label names on an issue, read through the fleet gh
+    sync-labels verb (code#10973) over the token rotation.
     Raises on any failure so the caller can fail closed (#7670)."""
     result = subprocess.run(
         [
+            str(FLEET_CMD),
             "gh",
-            "issue",
-            "view",
-            str(issue_number),
+            "sync-labels",
             "--repo",
             repo,
-            "--json",
-            "labels",
-            "--jq",
-            "[.labels[].name]",
+            "issue",
+            str(issue_number),
         ],
         capture_output=True,
         text=True,
         timeout=15,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"gh issue view failed: {result.stderr.strip()[:200]}")
+        raise RuntimeError(
+            f"fleet gh sync-labels failed: {result.stderr.strip()[:200]}"
+        )
     names = json.loads(result.stdout)
     if not isinstance(names, list):
-        raise RuntimeError("gh issue view returned a non-list label set")
+        raise RuntimeError("fleet gh sync-labels returned a non-list label set")
     return {str(n) for n in names}
+
+
+def _post_issue_agent_note(repo, issue_number, note) -> bool:
+    """Post one agent note on an issue through the fleet gh
+    sync-comment verb (code#10973). True iff the verb's exit code
+    confirms the post; any failure (including the verb failing to
+    run at all) is False - a failed note never undoes the queue
+    action it records, per the note posters' shared contract."""
+    try:
+        result = subprocess.run(
+            [
+                str(FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                str(repo),
+                "issue",
+                str(int(str(issue_number).lstrip("#"))),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
 
 
 def _prompt_safe_packet(packet):
@@ -1334,7 +1561,7 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
     ids - no packet content enters it. A failed note never unbinds
     or fails the launch (the binding stands; supervision owns the
     session) - the caller flags the launch entry instead. Returns
-    True iff the post is confirmed by the gh CLI's exit code."""
+    True iff the post is confirmed by the sync verb's exit code."""
     _packet = packet if isinstance(packet, dict) else {}
     repo = _packet.get("repo") or ""
     issue_no = candidate.get("issue_number")
@@ -1354,25 +1581,7 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
         f"(step 4e). The session works the task under its bound "
         f"claim; terminal state is recorded by the worker session."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_no).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_no, note)
 
 
 HANDBACK_REASON_CLASS = "executor-saturated"
@@ -1445,7 +1654,7 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
     local fire log). Mirrors _post_launch_agent_note's repo/issue
     resolution and failure contract: a failed note never undoes
     the park - the caller records it in the hand-back record.
-    Returns True iff the post is confirmed by the gh CLI's exit
+    Returns True iff the post is confirmed by the sync verb's exit
     code."""
     packet = (
         candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
@@ -1473,25 +1682,7 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
         "not a failure: a Claude lane can still claim the task if "
         "urgent."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_no).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_no, note)
 
 
 def _post_stuck_holder_agent_note(
@@ -1504,7 +1695,7 @@ def _post_stuck_holder_agent_note(
     _post_handback_agent_note's failure contract: a failed note
     does not mark the episode escalated, so nudges.py retries the
     escalation next round. Returns True iff the post is confirmed
-    by the gh CLI's exit code."""
+    by the sync verb's exit code."""
     if not repo or not issue_number:
         return False
     note = (
@@ -1520,25 +1711,7 @@ def _post_stuck_holder_agent_note(
         "release it. The babysitter sends no further nudges for "
         "this stall episode."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_number).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_number, note)
 
 
 def hand_back_step(
@@ -1610,7 +1783,7 @@ def launch_step(
     hand_back_out=None,
 ) -> List[Dict]:
     """
-    Step 4: Launch - create sessions and bind tasks.
+    Step 4: Launch - create or resume sessions and bind tasks.
 
     Returns (launched, skips): the successfully launched sessions and
     a skip record for every candidate that was not launched, so the
@@ -1755,14 +1928,38 @@ def launch_step(
             # collection did not claim is skipped — the binding
             # is never improvised.
             if candidate.get("status") == "handed_off":
-                if task_id not in collected:
-                    skips.append(
-                        {
-                            "task_id": task_id,
-                            "reason": "sink_claim_failed",
-                            "sink_claim": sink_diagnostics[candidate["queue"]],
-                        }
+                sink_diag = sink_diagnostics[candidate["queue"]]
+                fallback_diag = None
+                if task_id not in collected and sink_diag.get("category") in (
+                    "no_match",
+                    "different_row",
+                ):
+                    # #6533: the broker's own pick did not return this
+                    # row although poll lists it as a sink row. Revive
+                    # this one handoff by id (the Rule 1 exception
+                    # tool); the broker still verifies it is a sink
+                    # row the openchamber family may take.
+                    fallback_diag = {}
+                    row = _claim_sink_by_id(
+                        candidate["queue"], task_id, diagnostic=fallback_diag
                     )
+                    if row is not None:
+                        collected[task_id] = row
+                if task_id not in collected:
+                    final = (fallback_diag or sink_diag).get(
+                        "category", "not_attempted"
+                    )
+                    skip = {
+                        "task_id": task_id,
+                        "reason": "sink_claim_failed",
+                        "sink_claim": sink_diag,
+                        "action": SINK_CLAIM_ACTIONS.get(
+                            final, SINK_CLAIM_ACTIONS["unexpected_error"]
+                        ),
+                    }
+                    if fallback_diag is not None:
+                        skip["by_id_fallback"] = fallback_diag
+                    skips.append(skip)
                     continue
                 candidate["status"] = "claimed"
                 candidate["worker_id"] = CLAIMANT_WORKER
@@ -1825,7 +2022,20 @@ def launch_step(
                     )
                     continue
 
-            # Step 4b: Create worker session
+            # Step 4b: Continue a requested session when it is present,
+            # in this task's worktree, and idle. Missing or mismatched
+            # sessions use the documented fresh-session fallback.
+            resume_session_id, requested_session_id, resume_fallback = (
+                _resume_session_for_task(task)
+            )
+            if resume_fallback in (
+                "session_state_unknown",
+                "session_activity_unknown",
+                "busy_session",
+            ):
+                skips.append({"task_id": task_id, "reason": resume_fallback})
+                continue
+
             session_create_body = {
                 "location": {"directory": str(PRIMARY_CLONE)},
                 "title": f"Queue task {task_id} - {issue}",
@@ -1834,46 +2044,54 @@ def launch_step(
             }
 
             try:
-                # Create session through the verified transport,
-                # with the server's Basic auth - unauthenticated
-                # calls are rejected (#7367).
-                status, create_payload = _server_request(
-                    "POST", "/api/session", body=session_create_body, timeout=10
-                )
-                create_wall = _provider_wall_error(create_payload)
-                if create_wall is not None:
-                    # #8166: the route is walled. This candidate was
-                    # never bound or launched, so no attempt is
-                    # consumed; the gate closes for the rest of the
-                    # fire and the wall is recorded verbatim.
-                    provider_wall = _provider_wall_record(create_wall)
-                    _fire_provider_wall = provider_wall
-                    skips.append({"task_id": task_id, "reason": "provider_wall"})
-                    continue
-                if not _is_2xx(status):
-                    raise RuntimeError(
-                        f"Session creation failed: http status "
-                        f"{status if status is not None else 'unknown'}"
-                        + (" (unauthorized)" if status == 401 else "")
+                session_id = resume_session_id
+                if session_id is None:
+                    # Create session through the verified transport,
+                    # with the server's Basic auth - unauthenticated
+                    # calls are rejected (#7367).
+                    status, create_payload = _server_request(
+                        "POST", "/api/session", body=session_create_body, timeout=10
                     )
+                    create_wall = _provider_wall_error(create_payload)
+                    if create_wall is not None:
+                        # #8166: the route is walled. This candidate was
+                        # never bound or launched, so no attempt is
+                        # consumed; the gate closes for the rest of the
+                        # fire and the wall is recorded verbatim.
+                        provider_wall = _provider_wall_record(create_wall)
+                        _fire_provider_wall = provider_wall
+                        skips.append({"task_id": task_id, "reason": "provider_wall"})
+                        continue
+                    if not _is_2xx(status):
+                        raise RuntimeError(
+                            f"Session creation failed: http status "
+                            f"{status if status is not None else 'unknown'}"
+                            + (" (unauthorized)" if status == 401 else "")
+                        )
 
-                session = _unwrap_envelope(create_payload)
-                session_id = session.get("id") if isinstance(session, dict) else None
-                if not session_id:
-                    raise RuntimeError(
-                        f"Session creation returned no id: {str(create_payload)[:200]}"
+                    session = _unwrap_envelope(create_payload)
+                    session_id = (
+                        session.get("id") if isinstance(session, dict) else None
                     )
+                    if not session_id:
+                        raise RuntimeError(
+                            f"Session creation returned no id: {str(create_payload)[:200]}"
+                        )
 
-                # Verify location before proceeding
-                if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
-                    # Wrong location - delete and skip
-                    _delete_session(session_id)
-                    skips.append(
-                        {"task_id": task_id, "reason": "session_wrong_location"}
-                    )
-                    continue
+                    # Verify location before proceeding
+                    if session.get("location", {}).get("directory") != str(
+                        PRIMARY_CLONE
+                    ):
+                        # Wrong location - delete and skip
+                        _delete_session(session_id)
+                        skips.append(
+                            {"task_id": task_id, "reason": "session_wrong_location"}
+                        )
+                        continue
 
-                # Step 4c: Bind the session (atomic operation)
+                # Step 4c: Bind the session (atomic operation). The
+                # bind records the actual id; the task's stored
+                # resume_session_id remains the original request.
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
@@ -1900,7 +2118,10 @@ def launch_step(
                     # added the error text below; it must not drop
                     # this cleanup (a rewrite of this branch removed
                     # it once already).
-                    _delete_session(session_id)
+                    if resume_session_id is None:
+                        _delete_session(session_id)
+                    # A resumed session predates this bind attempt and
+                    # is user data; never delete it after a bind refusal.
                     # Record WHY (#8042): bind's stderr names the
                     # exact failed precondition (lease lapsed / ledger
                     # row missing / already bound / task gone), and a
@@ -1976,6 +2197,10 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "queue": candidate.get("queue"),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
+                if requested_session_id is not None:
+                    entry["requested_session_id"] = requested_session_id
+                if resume_fallback is not None:
+                    entry["resume_fallback"] = resume_fallback
                 _take_prompt_wall()
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
@@ -1991,7 +2216,7 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     # the binding. The gate closes for the fire.
                     provider_wall = _provider_wall_record(prompt_wall)
                     _fire_provider_wall = provider_wall
-                    if _delete_session(session_id):
+                    if resume_session_id is None and _delete_session(session_id):
                         unbind_result = subprocess.run(
                             [
                                 str(REPO_QUEUE_CMD),
@@ -2056,6 +2281,12 @@ def acquire_fire_lock():
 
 def main():
     """Main entry point for the claimant/executor."""
+    dropped_lane = _drop_inherited_lane()
+    if dropped_lane:
+        print(
+            "REPO_QUEUE_LANE was set in the claimant's environment; "
+            "dropped it so queue calls act as the claimant (#6533)"
+        )
     mode = read_mode()
     lock = acquire_fire_lock()
     if lock is None:
