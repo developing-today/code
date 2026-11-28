@@ -266,7 +266,10 @@ pub(super) enum RecordsCursor {
     Stalled,
 }
 
-pub(super) fn records_cursor(next_after: Option<&serde_json::Value>, produced_by: &str) -> RecordsCursor {
+pub(super) fn records_cursor(
+    next_after: Option<&serde_json::Value>,
+    produced_by: &str,
+) -> RecordsCursor {
     match next_after {
         None | Some(serde_json::Value::Null) => RecordsCursor::End,
         Some(serde_json::Value::String(cursor)) if cursor.as_str() > produced_by => {
