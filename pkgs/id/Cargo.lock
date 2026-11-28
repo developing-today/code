@@ -5215,7 +5215,7 @@ name = "id-events"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cbor-core",
  "clap",
  "ed25519-dalek 3.0.0",
@@ -5327,7 +5327,7 @@ name = "id-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "cbor-core",
  "clap",
