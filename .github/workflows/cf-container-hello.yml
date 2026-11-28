@@ -35,6 +35,12 @@ on:
     # .github/ci-policy.md "Nightly main CI").
     - cron: "17 7 * * *"
   workflow_dispatch:
+    inputs:
+      stage_versions:
+        description: "Build and dry-run an unpromoted Worker Version (no upload)"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,3 +79,41 @@ jobs:
       - name: Run the #955 hardening suite
         working-directory: pkgs/cf-container-hello
         run: npm test
+
+  stage-versions:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage_versions == true && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    name: validate Worker Version staging (dry-run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main source
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+      - name: Install isolated pinned cf toolchain
+        working-directory: pkgs/cf-container-hello/release-tools
+        run: |
+          npm ci --no-audit --no-fund
+          test ! -e ../node_modules
+          ln -s release-tools/node_modules ../node_modules
+          test "$(../node_modules/.bin/cf --version)" = "1.0.0-rc.1"
+      - name: Build and verify exact Worker output, then dry-run Versions upload
+        working-directory: pkgs/cf-container-hello
+        run: |
+          set -euo pipefail
+          node release-tools/verify-config.mjs
+          saved_package="$RUNNER_TEMP/cf-container-hello-package.json"
+          cp package.json "$saved_package"
+          restore_package() { cp "$saved_package" package.json; }
+          trap restore_package EXIT
+          npm pkg set 'devDependencies.wrangler=4.163.0'
+          node_modules/.bin/cf build
+          node release-tools/verify-build.mjs
+          node_modules/.bin/cf workers versions create \
+            --worker cf-container-hello \
+            --prebuilt \
+            --tag "git-${GITHUB_SHA::12}" \
+            --message "git ${GITHUB_SHA}" \
+            --dry-run

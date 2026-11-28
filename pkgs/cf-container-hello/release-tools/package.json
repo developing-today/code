@@ -1,0 +1,10 @@
+{
+  "name": "cf-container-hello-release-tools",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@cloudflare/containers": "0.0.31",
+    "cf": "1.0.0-rc.1",
+    "wrangler": "4.163.0"
+  }
+}

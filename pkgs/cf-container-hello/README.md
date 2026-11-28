@@ -58,6 +58,20 @@ pkgs/lab-ops-hub) crawler image recipe is what the probe runs.
 npm test   # python3 -m unittest discover -s test -p "test_*.py"
 ```
 
+## Versions staging preview
+
+The workflow has an optional manual `stage_versions` input, defaulting to
+false. If enabled on the trusted `main` branch, it installs the isolated,
+lockfile-pinned `cf`/Wrangler toolchain, checks this Worker's image pins and
+SQLite Durable Object exports, then runs `cf workers versions create --dry-run`.
+It does not upload a version or activate one; the normal `npm run deploy`
+operator path remains `wrangler deploy`.
+
+The crawler image pin is the `:v5` tag. Cloudflare's available version and
+container metadata does not establish an immutable image digest, so this
+preview cannot prove a release receipt or promotion candidate. Real staging
+and promotion remain blocked until an immutable image digest can be verified.
+
 `test/test_probe_hardening.py` pins the #955 regression: the production
 validator the probe now runs refuses `file://`, loopback, private-IP
 and redirect-to-private targets; no stale crawler copy exists in this
