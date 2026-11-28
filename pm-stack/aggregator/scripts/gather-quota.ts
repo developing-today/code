@@ -203,6 +203,12 @@ import {
   resetDurationSubjectKey,
   resetObservationsFor,
 } from "../src/quota-reset-duration.ts";
+import {
+  buildPoolExhaustionLedgerRows,
+  derivePoolExhaustionRecords,
+  poolExhaustionSubjectKey,
+  type PoolExhaustionCalibration,
+} from "../src/quota-pool-exhaustion.ts";
 import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
@@ -1519,6 +1525,71 @@ export async function main(): Promise<number> {
     } catch (err) {
       console.error(
         `quota-gatherer: reset-duration failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // C4.5 (#13261, component of #9572; C4 design §1/§2): the
+  // pool_exhaustion prediction records — derived by
+  // src/quota-pool-exhaustion.ts for each walled or near-wall
+  // (projected to wall before its reset) pool window, ranged by
+  // the S2 accuracy calibration in
+  // quota-exhaustion-calibration.json beside the forecast
+  // product (missing/torn file = empty calibration, so every
+  // subject honestly publishes insufficient_history until the S2
+  // live-scoring feed populates it). Appended to the same C4
+  // prediction log and mirrored into the Turso ledger under
+  // source "quota-prediction". Advisory only; fail-soft like the
+  // downtime block. The forecast push alerts below already read
+  // this log, so a predicted workhorse full-wall posts once and
+  // repeat ticks suppress via the alert-state dedupe.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; window?: string };
+          };
+          if (parsed.kind === "pool_exhaustion" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
+            previous.set(poolExhaustionSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const calibrationRaw = await readFile(
+        join(dirname(predictionsPath), "quota-exhaustion-calibration.json"),
+        "utf8",
+      ).catch(() => "{}");
+      let calibration: PoolExhaustionCalibration = new Map();
+      try {
+        const parsed = JSON.parse(calibrationRaw) as Record<
+          string,
+          { window?: { count: number; lowerMin: number; upperMin: number; cell: string } | null; pool?: { count: number; lowerMin: number; upperMin: number; cell: string } | null }
+        >;
+        calibration = new Map(
+          Object.entries(parsed).map(([k, v]) => [k, { window: v.window ?? null, pool: v.pool ?? null }]),
+        );
+      } catch {
+        // A torn calibration file is an empty calibration: honesty states.
+      }
+      const records = derivePoolExhaustionRecords(forecast, calibration, previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildPoolExhaustionLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: pool-exhaustion predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: pool-exhaustion failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
       );
     }
   }
