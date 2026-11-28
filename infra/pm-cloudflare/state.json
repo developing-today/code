@@ -33,6 +33,8 @@
     "direct": "on",
     "github_token_env": "PMCF_GITHUB_TOKEN",
     "queue_token_env": "PMCF_QUEUE_TOKEN",
-    "bridge_token_env": "PMCF_BRIDGE_TOKEN"
+    "bridge_token_env": "PMCF_BRIDGE_TOKEN",
+    "broker_access_id_env": "PMCF_BROKER_ACCESS_ID",
+    "broker_access_secret_env": "PMCF_BROKER_ACCESS_SECRET"
   }
 }

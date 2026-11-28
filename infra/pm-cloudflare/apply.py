@@ -32,6 +32,12 @@ import os
 import pathlib
 import sys
 
+# The workflow runs this file with `python3 -I`, whose isolated mode
+# keeps the script's own directory off sys.path; the sibling module
+# below is this directory's, so name it explicitly (as test_apply.py
+# does). Without this the Actions apply job dies at the import.
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+
 import cloudflare as expose
 
 
@@ -87,6 +93,8 @@ def read_state(path: pathlib.Path) -> dict:
         "github_token_env",
         "queue_token_env",
         "bridge_token_env",
+        "broker_access_id_env",
+        "broker_access_secret_env",
     }
     wunknown = sorted(set(worker) - wknown)
     if wunknown:
@@ -99,6 +107,16 @@ def read_state(path: pathlib.Path) -> dict:
         raise SystemExit(f"{path}: worker.direct is on or off")
     for key in ("github_token_env", "queue_token_env", "bridge_token_env"):
         if not isinstance(worker.get(key), str) or not worker[key]:
+            raise SystemExit(f"{path}: worker.{key} names the environment variable")
+    # The queue transport watch's Access pair (#16242) is optional in
+    # the state, like the Google pair: both names or neither.
+    broker_keys = ("broker_access_id_env", "broker_access_secret_env")
+    if bool(worker.get(broker_keys[0])) != bool(worker.get(broker_keys[1])):
+        raise SystemExit(
+            f"{path}: worker names both of the broker Access pair or neither"
+        )
+    for key in broker_keys:
+        if key in worker and (not isinstance(worker.get(key), str) or not worker[key]):
             raise SystemExit(f"{path}: worker.{key} names the environment variable")
     return state
 
@@ -123,10 +141,32 @@ def ensure_worker_direct(
     path = f"/accounts/{account}/workers/scripts/{name}/secrets"
     held = {s.get("name") for s in cf.get(path)}
     names = ("GITHUB_TOKEN", "QUEUE_TOKEN")
+    # Optional riders: secrets that ride along when the environment
+    # holds them — the bridge token, and the queue transport watch's
+    # Cloudflare Access pair (#16242), with which the Worker probes
+    # the queue broker itself. A rider the environment does not hold
+    # is left alone in silence, as expose.py leaves a vault without
+    # it; none is one of the three the mode stands on.
+    riders: dict[str, str] = {}
+    bridge = env(worker["bridge_token_env"])
+    if bridge:
+        riders["BRIDGE_TOKEN"] = bridge
+    broker_id = env(worker.get("broker_access_id_env") or "")
+    broker_secret = env(worker.get("broker_access_secret_env") or "")
+    if broker_id and broker_secret:
+        riders["QUEUE_BROKER_ACCESS_ID"] = broker_id
+        riders["QUEUE_BROKER_ACCESS_SECRET"] = broker_secret
+    riders_missing = {k: v for k, v in riders.items() if k not in held}
     if worker["direct"] == "off":
         # Removing the opt-in first disables actions before credentials are
         # removed, and presence alone can then reconcile a later re-enable.
-        for secret in ("EDGE_DIRECT", *names, "BRIDGE_TOKEN"):
+        for secret in (
+            "EDGE_DIRECT",
+            *names,
+            "BRIDGE_TOKEN",
+            "QUEUE_BROKER_ACCESS_ID",
+            "QUEUE_BROKER_ACCESS_SECRET",
+        ):
             if secret in held:
                 cf.change(
                     f"edge direct: take {secret} away from the Worker",
@@ -135,12 +175,6 @@ def ensure_worker_direct(
                     None,
                 )
         return
-    # The bridge token rides along when the state holds it and the
-    # Worker does not; a state without it is left alone in silence,
-    # as expose.py leaves a vault without it. It is never one of the
-    # three the mode stands on.
-    bridge = env(worker["bridge_token_env"])
-    bridge_missing = bool(bridge) and "BRIDGE_TOKEN" not in held
     if refresh_tokens:
         cf.changes.append("edge direct: refresh the Worker's repository tokens")
         if check:
@@ -152,11 +186,11 @@ def ensure_worker_direct(
         }
         for secret, value in values.items():
             cf.call("PUT", path, {"name": secret, "text": value, "type": "secret_text"})
-        if bridge:
+        for secret, value in riders.items():
             cf.call(
                 "PUT",
                 path,
-                {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"},
+                {"name": secret, "text": value, "type": "secret_text"},
             )
         return
     lost = sorted(set([*names, "EDGE_DIRECT"]) - held)
@@ -183,21 +217,30 @@ def ensure_worker_direct(
                 path,
                 {"name": secret, "text": values[secret], "type": "secret_text"},
             )
-        if bridge_missing:
-            # Rides along with the upload, said nothing of its own, as in expose.py.
+        # Riders ride along with the upload, saying nothing of their
+        # own, as in expose.py.
+        for secret, value in riders_missing.items():
             cf.call(
                 "PUT",
                 path,
-                {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"},
+                {"name": secret, "text": value, "type": "secret_text"},
             )
         return
-    if bridge_missing:
-        cf.changes.append("edge direct: give the Worker its bridge token")
+    if riders_missing:
+        if set(riders_missing) == {"BRIDGE_TOKEN"}:
+            cf.changes.append("edge direct: give the Worker its bridge token")
+        else:
+            cf.changes.append(
+                f"edge direct: give the Worker what it is missing ({', '.join(sorted(riders_missing))})"
+            )
         if check:
             return
-        cf.call(
-            "PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"}
-        )
+        for secret, value in riders_missing.items():
+            cf.call(
+                "PUT",
+                path,
+                {"name": secret, "text": value, "type": "secret_text"},
+            )
 
 
 def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
@@ -222,6 +265,14 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
     google_secret = env(state["access"]["google_client_secret_env"])
     if bool(google_id) != bool(google_secret):
         raise SystemExit("Google sign-in needs both client credentials or neither")
+    # The queue transport watch's Access pair (#16242), the same
+    # both-or-neither rule, checked before anything is asked.
+    broker_id = env(worker.get("broker_access_id_env") or "")
+    broker_secret = env(worker.get("broker_access_secret_env") or "")
+    if bool(broker_id) != bool(broker_secret):
+        raise SystemExit(
+            "the queue broker Access pair needs both its client id and its client secret or neither"
+        )
     # An empty pair preserves any existing Google provider. Passing a tuple
     # prevents expose.py from trying the laptop's secret store in Actions.
     google = (google_id, google_secret)

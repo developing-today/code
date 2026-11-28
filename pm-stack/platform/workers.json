@@ -82,19 +82,6 @@
       "lastDeployedCommit": null
     },
     {
-      "name": "queue-transport-alert",
-      "title": "Queue transport alert",
-      "group": "fleet",
-      "path": "pkgs/queue-transport-alert/worker",
-      "does": "Probes the queue's broker every ten minutes and alerts when it cannot be reached, so a total queue outage is seen.",
-      "state": "in service",
-      "deploy": "actions",
-      "workflow": "queue-transport-alert-deploy.yml",
-      "address": "https://queue-transport-alert.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its alert becomes one of the PM app's notifications.",
-      "lastDeployedCommit": null
-    },
-    {
       "name": "github-ci",
       "title": "GitHub webhook receiver",
       "group": "fleet",

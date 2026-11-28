@@ -11,7 +11,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
 import { runCheckRound, type WorkerBinding } from "./worker-checks.ts";
-import { fetchQueueTransport } from "./queue-transport.ts";
+import { QUEUE_BROKER_URL } from "./queue-transport.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -49,7 +49,6 @@ interface Env {
    * console tests hold it to workers.json and to wrangler.jsonc. */
   PM_NOTIFY?: WorkerBinding;
   MCPX?: WorkerBinding;
-  QUEUE_TRANSPORT_ALERT?: WorkerBinding;
   GITHUB_CI?: WorkerBinding;
   VOICE_LINE?: WorkerBinding;
   MUSE_AGENT_HANDOFF?: WorkerBinding;
@@ -63,6 +62,18 @@ interface Env {
   PKARR?: WorkerBinding;
   LAB_OPS_HUB?: WorkerBinding;
   CF_CONTAINER_HELLO?: WorkerBinding;
+  /** The queue transport watch (#13503 slice 2, #16242): the broker's
+   * public route (a var; the platform's own address unless a run says
+   * another) and the Cloudflare Access service token that may ask it
+   * (Worker secrets, put there by infra/pm-cloudflare's apply by name
+   * from the vault — the same named Access token the retired
+   * queue-transport-alert Worker's deploy used, provisioned by name,
+   * never copied off it). With the token, the object probes the
+   * broker itself on the scheduled tick; without it, the probe is
+   * skipped, never an alert. */
+  QUEUE_BROKER_URL?: string;
+  QUEUE_BROKER_ACCESS_ID?: string;
+  QUEUE_BROKER_ACCESS_SECRET?: string;
   /** The decision-events Worker (#13491): its address and the shared
    * secret its reads take, the secret a Worker secret like the two
    * tokens. With both, the edge reads the Questions discovery section
@@ -168,6 +179,13 @@ export class PmEdge extends DurableObject<Env> {
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
+      },
+      // The queue transport watch (#13503 slice 2): the object probes
+      // the broker itself with these, on the scheduled tick.
+      transport: {
+        brokerUrl: env.QUEUE_BROKER_URL ?? QUEUE_BROKER_URL,
+        accessId: env.QUEUE_BROKER_ACCESS_ID,
+        accessSecret: env.QUEUE_BROKER_ACCESS_SECRET,
       },
       ledgerPages:
         env.LEDGER_PAGES === "on"
@@ -325,25 +343,16 @@ export default {
         }),
       ),
     );
-    // The queue transport's health (#13503 slice 1): read the alert
-    // Worker's /status over the existing binding and hand the verdict
-    // to the object to keep. The Worker stays the probe; a Worker with
-    // no binding configured leaves the transport out of the round, and
-    // an answer that names no verdict keeps nothing.
-    const transportBinding = env.QUEUE_TRANSPORT_ALERT;
-    if (transportBinding !== undefined) {
-      const verdict = await fetchQueueTransport((request: Request) => transportBinding.fetch(request), askedAt);
-      if (verdict !== null) {
-        ctx.waitUntil(
-          stub.fetch(
-            new Request("https://pm.internal/internal/queue-transport", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(verdict),
-            }),
-          ),
-        );
-      }
-    }
+    // The queue transport's health (#13503 slice 2, #16242): the
+    // object probes the broker itself — the retired
+    // queue-transport-alert Worker's job, taken over. The object
+    // holds the probe state and the Access token, so the tick only
+    // asks it to run one pass; the verdict it leaves is what its
+    // health answer shows and its alarm tells the owner from. A
+    // probe that cannot authenticate itself is skipped inside the
+    // pass and keeps nothing new.
+    ctx.waitUntil(
+      stub.fetch(new Request("https://pm.internal/internal/queue-transport-probe", { method: "POST" })),
+    );
   },
 };

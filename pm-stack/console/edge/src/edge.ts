@@ -96,12 +96,19 @@ import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
 import { parseWorkerCheckSet, WORKER_CHECKS_KEY, type WorkerCheckSet } from "./worker-checks.ts";
 import {
+  makeIncidentGitHub,
+  parseProbeState,
   parseQueueTransport,
+  probeBroker,
   QUEUE_TRANSPORT_KEY,
+  QUEUE_TRANSPORT_PROBE_KEY,
+  QUEUE_TRANSPORT_REPO,
   QUEUE_TRANSPORT_TOLD_KEY,
+  runTransportPass,
   transportMessage,
   transportNotifyDecision,
   transportToldMarker,
+  transportVerdict,
   type QueueTransport,
 } from "./queue-transport.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
@@ -244,6 +251,7 @@ export class Edge {
   private direct?: EdgeOptions["direct"];
   private ledgerPages?: EdgeOptions["ledgerPages"];
   private dnsPages?: EdgeOptions["dnsPages"];
+  private transport?: EdgeOptions["transport"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -409,6 +417,7 @@ export class Edge {
     this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
+    this.transport = options.transport;
     this.ledgerPages = options.ledgerPages;
     this.dnsPages = options.dnsPages;
     if (options.quota?.enabled && options.quota.envelope) {
@@ -1693,16 +1702,14 @@ export class Edge {
     const machines: MachineCandidate[] = [];
     for (const key of await this.machineKeys()) {
       const first = await this.isFirstKey(key.kid);
-      const host = first ? null : ((await this.kv.get(`mhost:${key.kid}`)) as MachineHost | undefined);
+      const host = first ? null : (await this.kv.get(`mhost:${key.kid}`)) as MachineHost | undefined;
       const said = first ? this.machine : machineReport(host?.machine);
       if (!said) continue;
       // Reporting proves presence, not a reachable address. Only the
       // tunnel-learned first key has an authenticated relay path today.
       const seen = first ? this.hostSeen : host?.seen;
       machines.push({
-        kid: key.kid,
-        name: said.name,
-        actions: said.actions,
+        kid: key.kid, name: said.name, actions: said.actions,
         connected: first && seen != null && this.now() - seen < HOST_QUIET_MS,
       });
     }
@@ -2009,22 +2016,50 @@ export class Edge {
     return parseWorkerCheckSet(await this.kv.get(WORKER_CHECKS_KEY));
   }
 
-  /** The stateless part's read of the queue transport's health (#13503
-   * slice 1): what the queue-transport-alert Worker's /status said,
-   * normalized, handed here to keep. Only a verdict in the shape
-   * queue-transport.ts writes is kept; anything else is refused, so
-   * the health answer never shows a shape it cannot vouch for. */
-  private async queueTransportStore(req: Request): Promise<Response> {
-    const verdict = parseQueueTransport(await req.json().catch(() => null));
-    if (!verdict) return json({ error: "not a queue-transport verdict" }, 400);
+  /** One queue-transport probe pass (#13503 slice 2, #16242): the
+   * stateless part's scheduled tick asks this object to probe the
+   * broker itself — the retired queue-transport-alert Worker's job,
+   * taken over. The pass advances the kept probe state, files or
+   * comments the GitHub incident and enqueues the recovery triage
+   * task through this side's own doors (its GitHub token, its queue
+   * door), and leaves the verdict the health answer shows and the
+   * alarm tells the owner from. A probe that cannot authenticate
+   * itself is skipped and keeps nothing new: a watchdog that cannot
+   * ask does not alert. */
+  private async queueTransportProbe(): Promise<Response> {
+    const transport = this.transport;
+    if (!transport) return json({ ok: true, skipped: "queue transport watch not configured" });
+    const probe = await probeBroker(this.fetchImpl, transport);
+    if ("skipped" in probe) return json({ ok: true, skipped: probe.skipped });
+    const now = this.now();
+    const repo = transport.repo ?? QUEUE_TRANSPORT_REPO;
+    const cfg = await this.config();
+    const github =
+      this.direct?.enabled === true && this.direct.githubToken
+        ? makeIncidentGitHub(this.direct.githubToken, repo, this.fetchImpl, this.direct.githubApi)
+        : null;
+    const direct = cfg ? this.mine(cfg) : null;
+    const enqueue = direct
+      ? async (packet: unknown) => {
+          const res = await direct.queueEnqueue(packet);
+          if (res.code !== 0) throw new Error(res.stderr || "the queue store refused the triage task");
+        }
+      : null;
+    const prev = parseProbeState(await this.kv.get(QUEUE_TRANSPORT_PROBE_KEY));
+    const pass = await runTransportPass(prev, probe, { github, enqueue }, now, {
+      repo,
+      probeDesc: `GET ${transport.brokerUrl}/healthz through Cloudflare Access, from the PM console edge`,
+    });
+    await this.kv.put(QUEUE_TRANSPORT_PROBE_KEY, pass.state);
+    const verdict = transportVerdict(pass.state, now, repo);
     await this.kv.put(QUEUE_TRANSPORT_KEY, verdict);
     await this.ready();
-    await this.schedule(await this.config());
-    return json({ ok: true });
+    await this.schedule(cfg);
+    return json({ ok: true, event: pass.event, status: verdict.status, errors: pass.errors });
   }
 
   /** The last queue-transport verdict kept, or null before the first
-   * scheduled read has run (or when what is stored is not one). */
+   * scheduled probe has run (or when what is stored is not one). */
   async lastQueueTransport(): Promise<QueueTransport | null> {
     return parseQueueTransport(await this.kv.get(QUEUE_TRANSPORT_KEY));
   }
@@ -2167,15 +2202,10 @@ export class Edge {
       const [done] = held.splice(at, 1);
       // Keep a terminal answer when the held row leaves: otherwise a
       // phone retry can choose another machine and execute it twice.
-      await this.kv.put(`a:${done.id}`, {
-        at: now,
-        kind: done.kind,
-        state: "done",
+      await this.kv.put(`a:${done.id}`, { at: now, kind: done.kind, state: "done",
         status: ack.ok ? 200 : 503,
         body: ack.ok ? { ok: true, result: null } : { error: String(ack.error ?? "the machine could not do it") },
-        forKid: kid,
-        for: done.for,
-      } satisfies Acted);
+        forKid: kid, for: done.for } satisfies Acted);
       await this.actedIndex(done.id);
       settled = true;
       if (ack.ok) {
@@ -2339,14 +2369,9 @@ export class Edge {
         bound = true;
         continue;
       }
-      await this.kv.put(`a:${command.id}`, {
-        at: this.now(),
-        kind: command.kind,
-        state: "given",
-        relays: Math.max(1, previous?.relays ?? 0),
-        forKid: kid,
-        for: command.for,
-      } satisfies Acted);
+      await this.kv.put(`a:${command.id}`, { at: this.now(), kind: command.kind,
+        state: "given", relays: Math.max(1, previous?.relays ?? 0),
+        forKid: kid, for: command.for } satisfies Acted);
       await this.actedIndex(command.id);
     }
     if (bound) await this.saveHeld();
@@ -2488,9 +2513,9 @@ export class Edge {
         // Leave the transition pending so a later alarm can retry it.
       }
     }
-    // The queue transport's health, as the alert Worker stated it
-    // (#13503 slice 1): told once per outage, and its ending said too.
-    // The Worker stays the probe; this side is what tells the owner.
+    // The queue transport's health, as this side's own probe stated
+    // it (#13503 slice 2): told once per outage, and its ending said
+    // too. This side is both the probe and what tells the owner.
     const transport = await this.lastQueueTransport();
     if (transport && (await this.transportWanted())) {
       const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
@@ -2576,7 +2601,7 @@ export class Edge {
       if (path === "/internal/relayed") return this.relayed(req);
       if (path === "/internal/route") return this.routeFlip(req);
       if (path === "/internal/worker-checks") return this.workerChecksStore(req);
-      if (path === "/internal/queue-transport") return this.queueTransportStore(req);
+      if (path === "/internal/queue-transport-probe") return this.queueTransportProbe();
       return json({ error: "not found" }, 404);
     }
 
@@ -2650,9 +2675,10 @@ export class Edge {
         // checks, answering or not, the commit it named, when it was
         // asked. Null until the first scheduled round has run.
         workerChecks: await this.lastWorkerChecks(),
-        // The queue transport's health as the alert Worker stated it
-        // (#13503 slice 1): the verdict this side tells the owner
-        // about itself. Null until the first scheduled read has run.
+        // The queue transport's health as this side's own probe
+        // stated it (#13503 slice 2): the verdict this side tells
+        // the owner about itself. Null until the first scheduled
+        // probe has run.
         queueTransport: await this.lastQueueTransport(),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
@@ -3106,16 +3132,12 @@ export class Edge {
         const about = subjectOf(kind, args as Record<string, unknown>);
         if (about !== null) await this.outstandingRelays(about);
         const known = await this.knownMachines();
-        const previous = id === null ? undefined : ((await this.kv.get(`a:${id}`)) as Acted | undefined);
+        const previous = id === null ? undefined : (await this.kv.get(`a:${id}`)) as Acted | undefined;
         let target = previous?.forKid ? known.find((m) => m.kid === previous.forKid) : undefined;
-        if (!target && previous?.forKid && (await this.isFirstKey(previous.forKid)) && this.machine === null) {
+        if (!target && previous?.forKid && await this.isFirstKey(previous.forKid) && this.machine === null) {
           // An older report still has the same trusted tunnel identity.
-          target = {
-            kid: previous.forKid,
-            name: previous.for ?? "A machine",
-            actions: [],
-            connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS,
-          };
+          target = { kid: previous.forKid, name: previous.for ?? "A machine", actions: [],
+            connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS };
         }
         // A report older than a minute does not mean the tunnel is
         // down, but only the tunnel can be asked blind: once another
@@ -3125,10 +3147,8 @@ export class Edge {
         const firstKid = ((await this.kv.get("key")) as { kid?: string } | undefined)?.kid;
         const soleTunnel = firstKid !== undefined && known.length > 0 && known.every((m) => m.kid === firstKid);
         if (previous?.forKid && (!target || !target.connected) && !soleTunnel) {
-          return this.keep(
-            { id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
-            (previous.relays ?? 1) > 0 ? "unknown" : "nowhere",
-          );
+          return this.keep({ id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
+            (previous.relays ?? 1) > 0 ? "unknown" : "nowhere");
         }
         if (!given && known.length > 0) {
           const selection = selectMachine(known, kind);
@@ -3160,13 +3180,7 @@ export class Edge {
         const relayFor = { forKid: relayKid, for: target?.name ?? previous?.for };
         // Written down as a machine's before it goes anywhere.
         if (id !== null && !given) {
-          await this.kv.put(`a:${id}`, {
-            at: this.now(),
-            kind,
-            state: "given",
-            relays: 0,
-            ...relayFor,
-          } satisfies Acted);
+          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays: 0, ...relayFor } satisfies Acted);
           await this.actedIndex(id);
         }
         // What may be done late goes behind anything already waiting
@@ -3531,8 +3545,7 @@ export class Edge {
     }
     await this.ready();
     const cfg = await this.config();
-    const previous =
-      typeof body?.id === "string" ? ((await this.kv.get(`a:${body.id}`)) as Acted | undefined) : undefined;
+    const previous = typeof body?.id === "string" ? (await this.kv.get(`a:${body.id}`)) as Acted | undefined : undefined;
     if (previous?.state === "done") return json({ ...previous.body, again: true }, previous.status ?? 200);
     const held = await this.heldList();
     // Offered again under a name that is already waiting (the device
@@ -3554,8 +3567,8 @@ export class Edge {
     const picked = known.length > 0 ? selectMachine(known, kind) : null;
     const target = forMachine ?? (picked !== null && picked.state !== "none" ? picked.machine : undefined);
     // A previous asking's identity takes precedence over today's selection.
-    const forKid = typeof body?.forKid === "string" ? body.forKid : (previous?.forKid ?? target?.kid);
-    const waitsFor = typeof body?.for === "string" ? body.for : (previous?.for ?? target?.name);
+    const forKid = typeof body?.forKid === "string" ? body.forKid : previous?.forKid ?? target?.kid;
+    const waitsFor = typeof body?.for === "string" ? body.for : previous?.for ?? target?.name;
     const item: Held = {
       // The name it was relayed under, so the host can tell it has seen it.
       id: typeof body?.id === "string" && ACT_ID.test(body.id) ? body.id : crypto.randomUUID(),
@@ -3570,14 +3583,9 @@ export class Edge {
     insertHeld(held, item);
     await this.saveHeld();
     if (forKid !== undefined) {
-      await this.kv.put(`a:${item.id}`, {
-        at: this.now(),
-        kind,
-        state: "given",
+      await this.kv.put(`a:${item.id}`, { at: this.now(), kind, state: "given",
         relays: previous?.relays ?? (went === "unknown" ? 1 : 0),
-        forKid,
-        for: waitsFor,
-      } satisfies Acted);
+        forKid, for: waitsFor } satisfies Acted);
       await this.actedIndex(item.id);
     }
     const waits = (await this.heldWaits(cfg)).get(item.id) ?? "machine";

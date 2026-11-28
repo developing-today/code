@@ -17,7 +17,18 @@
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true },
-  "vars": { "PUBLIC_HOST": "pm.security.cab", "LEDGER_PAGES": "on", "LEDGER_STORE": "d1" },
+  "vars": {
+    "PUBLIC_HOST": "pm.security.cab",
+    "LEDGER_PAGES": "on",
+    "LEDGER_STORE": "d1",
+    // The queue transport watch (#13503 slice 2): the broker's public
+    // route, which the object probes itself on the scheduled tick.
+    // The Access service token that may ask it is a pair of Worker
+    // secrets (QUEUE_BROKER_ACCESS_ID / QUEUE_BROKER_ACCESS_SECRET),
+    // put there by infra/pm-cloudflare's apply by name from the
+    // vault; without them the probe is skipped, never an alert.
+    "QUEUE_BROKER_URL": "https://queue-broker.security.cab"
+  },
   // The app's files, put together by build.mjs. Every request reaches
   // the Worker first; it serves a file only after checking who asks.
   "assets": {
@@ -43,7 +54,6 @@
     { "binding": "DECISION_EVENTS", "service": "decision-events" },
     { "binding": "PM_NOTIFY", "service": "pm-notify" },
     { "binding": "MCPX", "service": "mcpx" },
-    { "binding": "QUEUE_TRANSPORT_ALERT", "service": "queue-transport-alert" },
     { "binding": "GITHUB_CI", "service": "github-ci" },
     { "binding": "VOICE_LINE", "service": "voice-line" },
     { "binding": "MUSE_AGENT_HANDOFF", "service": "muse-agent-handoff" },

@@ -512,29 +512,64 @@ git revert <merge>                                       # and the next push dep
 
 ### Queue transport notification rollout (#13503)
 
-This additive slice keeps `queue-transport-alert`, its queue and its incident
-handling in service. The console reads its `/status` on the existing five-minute
-trigger; after deployment, `/console/health` must include `queueTransport` with a
-non-null `checkedAt` from a subsequent tick before the slice is merged.
+Slice 1 (additive) made the console the notifier: it read
+`queue-transport-alert`'s `/status` over a service binding on the
+five-minute trigger and told the owner itself, while the alert Worker
+stayed the probe and kept its GitHub incident, Telegram and enqueue
+handling.
 
-The known-good deployment before this rollout is Actions run
-[45986510807](https://github.com/developing-today/code/actions/runs/45986510807),
-commit `bc173425a00f`, Worker version
-`8746c273-6f08-43c1-bb56-86c74b64c7f6`. To restore it through Actions:
+### Queue transport retirement rollout (#13503 slice 2, #16242)
 
-```bash
-gh workflow run pm-console-edge-deploy.yml --ref bc173425a00f1a4e25b59d153fbe10f042f903b6 -f rollback_version=8746c273-6f08-43c1-bb56-86c74b64c7f6
-```
+This slice retires the alert Worker: the object probes the broker
+itself on the same five-minute trigger (`queue-transport.ts` ports
+the Worker's probe, state machine, incident and recovery-enqueue
+semantics; telling the owner stays the console's own notifications).
+The probe asks the broker's public `/healthz` through Cloudflare
+Access with a service token the console holds as its own Worker
+secrets (`QUEUE_BROKER_ACCESS_ID` / `QUEUE_BROKER_ACCESS_SECRET`),
+provisioned by name from the vault by `infra/pm-cloudflare`'s apply
+(repository secrets `PMCF_BROKER_ACCESS_ID` / `PMCF_BROKER_ACCESS_SECRET`,
+holding the same named Access token the retired Worker's deploy
+used — `cloudflare.access.queue-broker-client-id` /
+`cloudflare.access.queue-broker-client-secret` — provisioned by
+name, never copied off the retiring Worker). Without the pair the
+probe is skipped, never an alert. Incidents are filed and commented
+with the console's own GitHub token, and the recovery triage task is
+enqueued through the console's own queue door with the same
+repo-task/v1 packet and dedupe key the Worker used.
 
-Follow that run to success, then check
-`https://pm-console-edge.developing-today.workers.dev/console/health` answers
-`ok: true`, `edge: true`, `version: "bc173425a00f"`. The rollout adds storage
-keys only, with no Durable Object migration or deletion; the previous version
-ignores those keys. Cron Triggers are applied separately after version deployment;
-rolling back a version leaves the five-minute trigger in place. The older
-version already handles the scheduled Worker checks. The original alert Worker continues GitHub incident,
-Telegram and enqueue handling even after this rollback. Retirement requires a
-later slice preserving those semantics; it is not part of this deploy.
+Deploy-before-merge gate, as slice 1: deploy this change from
+Actions on its branch, then `/console/health` must include
+`queueTransport` with a non-null `checkedAt` from a subsequent tick
+— the console's own probe, not the retired Worker's `/status` —
+before the slice is merged. The retired Worker's Cloudflare script
+is deleted only after the merged deploy on main is seen answering
+with a fresh `queueTransport`: until then it stays in service as
+the rollback's probe (the two implementations dedupe onto one
+incident by title prefix, so an overlap files nothing twice).
+
+Rollback, quickest first:
+
+1. While the alert Worker still exists: put back the console version
+   that was serving before this rollout (the version the health
+   answer named before the branch deploy) with
+   `gh workflow run pm-console-edge-deploy.yml -f rollback_version=<version id>`.
+   That version reads the alert Worker's `/status` over the binding
+   this slice removes from `wrangler.jsonc` — the binding is only
+   gone from the new version's upload, and the alert Worker is
+   untouched, so the slice-1 path resumes whole.
+2. After the alert Worker is deleted: redeploy this slice's version
+   (the probe is self-contained; its state starts afresh in the
+   object and incidents dedupe by title prefix), or `git revert` the
+   merge and let the next push deploy the revert — a revert restores
+   the Worker's source and registry row in the repository, and its
+   deploy workflow stands it back up.
+
+The rollout adds storage keys only (`queue-transport-probe` beside
+the slice-1 keys), with no Durable Object migration or deletion;
+the previous version ignores those keys. Cron Triggers are applied
+separately after version deployment; rolling back a version leaves
+the five-minute trigger in place.
 
 ## Run it here
 

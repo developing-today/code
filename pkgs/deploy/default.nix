@@ -58,12 +58,6 @@ let
     cfContainerHelloDeploy = callPackage ../../pkgs/cf-container-hello/deploy.nix {
       cfContainerHello = callPackage ../../pkgs/cf-container-hello/package.nix { };
     };
-    # code#6369: the broker outage alert Worker.
-    queueTransportAlertDeploy = callPackage ../../pkgs/queue-transport-alert/worker/deploy.nix {
-      queueTransportAlert = callPackage ../../pkgs/queue-transport-alert/worker/package.nix { };
-      cf = callPackage ../cf { };
-      wrangler = callPackage ../wrangler { };
-    };
     # Remote MCP connector that sends and receives messages.
     messageBridgeDeploy = callPackage ../../pkgs/message-bridge/worker/deploy.nix {
       messageBridge = callPackage ../../pkgs/message-bridge/worker/package.nix { };
