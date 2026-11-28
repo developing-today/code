@@ -44,6 +44,14 @@
 //! editor can never produce marked code text, and a stored step
 //! carrying it fails content checking when clients apply it.
 //!
+//! A mark's own required attrs are checked too: the `link` mark of
+//! `prosemirror-schema-basic` declares `attrs: {href: {}, title:
+//! {default: null}}` — `href` has no default, so `prosemirror-model`
+//! refuses a link mark without a string `href` when a client parses
+//! the step (`Mark.fromJSON`). A stored href-less link mark therefore
+//! throws on every receiving client, in a step's `mark` field and in
+//! a slice node's `marks` alike.
+//!
 //! This does not yet prove that a structurally plausible step applies
 //! against the evolving document. Full server-side application is the
 //! later stage of #1618.
@@ -344,9 +352,24 @@ fn check_mark(schema: StepSchema, mark: Option<&Value>) -> Result<(), String> {
         return Err(format!("unknown mark type `{kind}`"));
     }
     match mark.get("attrs") {
-        None | Some(Value::Object(_) | Value::Null) => Ok(()),
-        Some(_) => Err(format!("mark `{kind}` has non-object `attrs`")),
+        None | Some(Value::Object(_) | Value::Null) => {}
+        Some(_) => return Err(format!("mark `{kind}` has non-object `attrs`")),
     }
+    // `prosemirror-schema-basic` gives the link mark's `href` attr no
+    // default, so a link mark without a string `href` cannot be
+    // parsed by any client (`Mark.fromJSON` throws). Other marks
+    // declare no required attrs.
+    if kind == "link" {
+        let has_string_href = mark
+            .get("attrs")
+            .and_then(Value::as_object)
+            .and_then(|attrs| attrs.get("href"))
+            .is_some_and(Value::is_string);
+        if !has_string_href {
+            return Err("mark `link` needs a string `href` attr".to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// The size of a step's slice (`Slice.size`): its content's size less
@@ -987,6 +1010,59 @@ mod tests {
                     {"type": "text", "text": "x", "marks": [{"type": "em"}]}]}]}),
         ] {
             assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn link_marks_need_a_string_href() {
+        // Oracle: prosemirror-schema-basic declares the link mark
+        // `attrs: {href: {}, title: {default: null}}`; with no default
+        // for `href`, prosemirror-model (verified against 1.25.12,
+        // the version in web/package.json) throws in `Mark.fromJSON`
+        // for a link mark whose `href` is missing or not a string —
+        // "No value supplied for attribute href" / "Expected value of
+        // type string for attribute href". Every step shape that
+        // carries a mark is refused the same way.
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let refused = |step: Value| check_steps(rich(), size, &[step]).unwrap_err().reason;
+        for step in [
+            // Step-level marks: no attrs at all, empty attrs, a null
+            // href and a numeric href all fail the client's parse.
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "link"}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": null}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": 42}}}),
+            json!({"stepType": "removeMark", "from": 1, "to": 6, "mark": {"type": "link"}}),
+            json!({"stepType": "addNodeMark", "pos": 0, "mark": {"type": "link"}}),
+            // A slice node's marks go through the same check.
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link"}]}]}}),
+        ] {
+            let reason = refused(step.clone());
+            assert!(reason.contains("link"), "{reason}");
+            assert!(reason.contains("href"), "{reason}");
+        }
+        // Valid controls: a link mark with a string href (with and
+        // without the optional title), and marks with no required
+        // attrs carrying none.
+        for step in [
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "strong"}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]}]}}),
+        ] {
+            assert!(
+                check_steps(rich(), size, &[step.clone()]).is_ok(),
+                "refused valid {step}"
+            );
         }
     }
 }

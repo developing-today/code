@@ -2814,6 +2814,40 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_rejects_link_mark_without_href() {
+        // Oracle: prosemirror-schema-basic gives the link mark's
+        // `href` attr no default, so a link mark without a string
+        // `href` throws in `Mark.fromJSON` on every client. It is
+        // refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "link"}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("href"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string href is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com"}}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
