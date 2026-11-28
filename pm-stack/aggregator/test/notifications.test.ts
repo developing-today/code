@@ -432,6 +432,9 @@ describe("#14419 send ledger sent_at stamping and legacy repair", () => {
       ref: "test",
       async query<T>(sql: string): Promise<T[]> {
         queries.push(sql);
+        // #14084 S2: logSend dual-writes the unified ledger, whose
+        // insert ... returning * yields the inserted row on a real store.
+        if (sql.includes("insert into push_sends")) return [{ id: 1 }] as T[];
         return [] as T[];
       },
     };
@@ -442,9 +445,11 @@ describe("#14419 send ledger sent_at stamping and legacy repair", () => {
       outcome: "sent",
       sentAt: "2026-11-01T08:00:00.000Z",
     });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toContain("sent_at");
-    expect(queries[0]).toContain("'2026-11-01T08:00:00.000Z'");
+    const legacy = queries.filter((q) => q.includes("insert into alerts.notification_sends"));
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toContain("sent_at");
+    expect(legacy[0]).toContain("'2026-11-01T08:00:00.000Z'");
+    expect(queries.some((q) => q.includes("insert into push_sends"))).toBe(true);
     // Read back: a row carrying exactly what the writer stamped.
     const row = send({ sent_at: "2026-11-01T08:00:00.000Z", created_at: null });
     expect(sendTimestamp(row)).toBe("2026-11-01T08:00:00.000Z");
@@ -455,16 +460,18 @@ describe("#14419 send ledger sent_at stamping and legacy repair", () => {
   });
 
   test("logSend's default stamp is ISO-8601 UTC", async () => {
-    let sql = "";
+    const queries: string[] = [];
     const db: SqlClient = {
       ref: "test",
       async query<T>(q: string): Promise<T[]> {
-        sql = q;
+        queries.push(q);
+        // #14084 S2 dual-write: the unified insert ... returning *.
+        if (q.includes("insert into push_sends")) return [{ id: 1 }] as T[];
         return [] as T[];
       },
     };
     await new AlertsStore(db).logSend({ class: "test", objectRef: "test:push", outcome: "sent" });
-    const stamped = /'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'/.exec(sql);
+    const stamped = /'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'/.exec(queries.join("\n"));
     expect(stamped).not.toBeNull();
   });
 
