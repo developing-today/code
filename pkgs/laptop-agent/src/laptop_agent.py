@@ -1677,6 +1677,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("out_off/err_off must be >= 0")
             if wait_s < 0:
                 raise ValueError("wait_s must be >= 0")
+            if job.get("kind") == "exec":
+                # Reading an exec's spool is `fleet http attach`: it
+                # turns the exec into an ordinary job, so its grace
+                # reap and its exec timeout no longer apply (#15420).
+                # The marking must precede the poll loop below: that
+                # loop returns from inside on every path, so attach
+                # marked after it never ran and a dropped exec stayed
+                # in "grace" state forever (#16558).
+                job["attached"] = True
             deadline = time.monotonic() + clamp_poll_wait(wait_s)
             while True:
                 result = job_public(job, out_off, err_off)
@@ -1688,12 +1697,6 @@ class Handler(BaseHTTPRequestHandler):
                 ):
                     return self._send(200, result)
                 time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-            if job.get("kind") == "exec":
-                # Reading an exec's spool is `fleet http attach`: it
-                # turns the exec into an ordinary job, so its grace
-                # reap and its exec timeout no longer apply (#15420).
-                job["attached"] = True
-            return self._send(200, job_public(job, out_off, err_off))
         return self._send(404, {"error": "no such route"})
 
     def _exec_with_grace(self, trip, cmds, timeout, grace, t_received_ms):
