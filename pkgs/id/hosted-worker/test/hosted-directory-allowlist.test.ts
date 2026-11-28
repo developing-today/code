@@ -5,16 +5,15 @@
 // content, journals, blob bytes, or private profile data (see the hosted
 // README's residency-exception disclosure).
 //
-// Oracle: migrations/0001_hosted_accounts.sql applied to an in-memory
-// SQLite database must create exactly one table with exactly the
-// allowlisted columns, and the record constructors must expose exactly
-// the allowlisted fields. The allowlist itself lives in
-// ../src/account-directory.ts (HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS)
-// so the migration, the query code, and this suite pin one list, and
-// schema drift fails loudly instead of silently widening the shared
-// exception.
+// Oracle: every hosted-worker migration applied to an in-memory SQLite
+// database must create exactly the expected tables and columns. The
+// hosted_accounts allowlist itself lives in ../src/account-directory.ts
+// (HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS) and is shared with the query
+// layer; the legacy-inventory and migration-lease tables have separate
+// minimal schemas pinned here. Record constructors expose only their
+// declared fields, so schema drift cannot silently widen shared storage.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -27,9 +26,18 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+const EXPECTED_TABLE_COLUMNS: Record<string, readonly string[]> = {
+  hosted_accounts: HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
+  legacy_hosted_accounts: ["subject_key", "binding_id", "classification"],
+  migration_leases: ["subject_key", "owner", "token", "expires_ms"],
+};
+
 function freshDirectoryDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync(join(here, "..", "migrations", "0001_hosted_accounts.sql"), "utf8"));
+  const migrations = join(here, "..", "migrations");
+  for (const file of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) {
+    db.exec(readFileSync(join(migrations, file), "utf8"));
+  }
   return db;
 }
 
@@ -73,6 +81,7 @@ function neverSharedViolations(columns: [string, string][]): string[] {
   const violations: string[] = [];
   for (const [table, column] of columns) {
     for (const pattern of NEVER_SHARED_PATTERNS) {
+      if (table === "migration_leases" && column === "token") continue;
       if (pattern.test(column)) {
         violations.push(`${table}.${column} matches ${pattern} (#3401: never in the shared directory)`);
         break;
@@ -82,19 +91,19 @@ function neverSharedViolations(columns: [string, string][]): string[] {
   return violations;
 }
 
-test("shared directory migration creates exactly the allowlisted table and columns", () => {
+test("hosted-worker migrations create only the explicitly allowlisted tables and columns", () => {
   const db = freshDirectoryDb();
   try {
-    assert.deepEqual(tableNames(db), ["hosted_accounts"]);
-    assert.deepEqual(columnNames(db, "hosted_accounts"), [
-      ...HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
-    ]);
+    assert.deepEqual(tableNames(db), Object.keys(EXPECTED_TABLE_COLUMNS).sort());
+    for (const [table, expectedColumns] of Object.entries(EXPECTED_TABLE_COLUMNS)) {
+      assert.deepEqual(columnNames(db, table), [...expectedColumns], `${table} schema drifted`);
+    }
   } finally {
     db.close();
   }
 });
 
-test("no graph, journal, blob, or private-profile column in the shared schema", () => {
+test("no graph, journal, blob, or private-profile column in hosted-worker schemas", () => {
   const db = freshDirectoryDb();
   try {
     const columns = tableNames(db).flatMap((t) =>
@@ -106,7 +115,7 @@ test("no graph, journal, blob, or private-profile column in the shared schema", 
   }
 });
 
-test("the never-shared guard actually bites", () => {
+test("the never-shared guard actually bites and permits only the lease fencing token", () => {
   // If the guard could not see a planted violation, the pin above
   // would be vacuous. Each of these is a #3401 breach.
   const planted: [string, string][] = [
@@ -115,6 +124,7 @@ test("the never-shared guard actually bites", () => {
     ["hosted_accounts", "blob_bytes"],
     ["hosted_accounts", "private_profile"],
     ["hosted_accounts", "email_address"],
+    ["hosted_accounts", "api_token"],
   ];
   const violations = neverSharedViolations(planted);
   assert.equal(violations.length, planted.length, violations.join("; "));
@@ -123,6 +133,8 @@ test("the never-shared guard actually bites", () => {
     neverSharedViolations([
       ["hosted_accounts", "subject_key"],
       ["hosted_accounts", "binding_id"],
+      // This is an integer fencing counter, not an authentication token.
+      ["migration_leases", "token"],
     ]),
     [],
   );

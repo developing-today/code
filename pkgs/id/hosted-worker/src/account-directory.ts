@@ -28,10 +28,11 @@ export type HostedMigrationPhase = (typeof HOSTED_MIGRATION_PHASES)[number];
  * #3401 data-minimal allowlist: the only columns the shared directory
  * may hold — pseudonymous subject/binding identifiers plus minimal
  * jurisdiction and migration metadata. No graph content, journals,
- * blob bytes, or private profile data. The D1 migration, the query
- * layer (`COLUMNS` in persistent-account-directory.ts), and the
- * hosted-directory-allowlist suite all pin this one list, so widening
- * the shared residency exception needs its own reviewed slice.
+ * blob bytes, or private profile data. The D1 migration, query layer
+ * (`COLUMNS` in persistent-account-directory.ts), and
+ * hosted-directory-allowlist suite pin this list. Separate legacy
+ * inventory and migration lease tables have their own minimal allowlists
+ * in that suite, so widening shared residency needs a reviewed slice.
  */
 export const HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS = [
   "subject_key",
