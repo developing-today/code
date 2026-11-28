@@ -4,8 +4,10 @@
 //   route match (404) -> authenticate (401/403/503) -> caller-tenancy
 //   assertion (403 cross-tenant) -> route scope for service tokens
 //   (403) -> door handler.
-// Public routes are /health and /capabilities — the hosted door's
-// identity surface, which callers must be able to read before
+// Public routes are /health, /capabilities and /version (#15793:
+// the deployed-commit answer the edge probe reads; it names no
+// config value beyond the commit) — the hosted door's identity
+// surface, which callers must be able to read before
 // they hold a credential — plus the ingestion webhook receiver
 // (#12590): GitHub deliveries hold no fleet credential, so that
 // route is reachable without one and its handler authenticates
@@ -17,7 +19,7 @@
 import { assertCallerTenancy, authenticate, authorizeRoute, type AuthDeps, type CallerContext } from "./auth.ts";
 import { buildCapabilitiesDocument } from "./capabilities.ts";
 import { FailClosed } from "./errors.ts";
-import { buildHealthDocument } from "./health.ts";
+import { buildHealthDocument, versionAnswer } from "./health.ts";
 import { routes as bridgeRoutes } from "./routes/bridge.ts";
 import { routes as ingestionRoutes } from "./routes/ingestion.ts";
 import { routes as kvRoutes } from "./routes/kv.ts";
@@ -50,6 +52,13 @@ const META_ROUTES: RouteDef[] = [
     door: null,
     public: true,
     handler: (_req, _ctx, deps) => json(buildHealthDocument(deps.config)),
+  },
+  {
+    method: "GET",
+    path: "/version",
+    door: null,
+    public: true,
+    handler: (_req, _ctx, deps) => json(versionAnswer(deps.config)),
   },
   {
     method: "GET",
