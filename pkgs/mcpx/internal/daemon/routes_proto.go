@@ -907,7 +907,11 @@ func (s *Server) handleAskAbandon(w http.ResponseWriter, r *http.Request) {
 		TaskCancelled bool `json:"taskCancelled"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// #2082: every body read goes through a ceiling — the control
+		// class limit, as in upgrade.go. The decode stays best-effort:
+		// an absent or over-limit body leaves the flag unset.
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body,
+			s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&body)
 	}
 	if body.TaskCancelled {
 		s.reg.markAskTaskCancelled(id)
