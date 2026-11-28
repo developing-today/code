@@ -12,7 +12,7 @@ Two token families, both resolved **by name** through fleet-secrets; values are 
 
 | Family                      | Secret name                                                               | Opens                                                                                                                  | URL shape                                    |
 | --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `agents`, `log`                                                                                                | `/api/<owner-token>/fleet/…`                 |
+| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `offer`, `offers`, `agents`, `log`                                                                                                | `/api/<owner-token>/fleet/…`                 |
 | Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack`, `work` — agent routes only; it cannot send commands                                   | `/fleet/<fleet-token>/…`                     |
 | Per-agent credential        | `bridge.<agent>-fleet-token` (the name the agent profile records)         | The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token | `/fleet/<credential>/…`                      |
 | Notes token (notes family)  | `bridge.<agent>-token` (renamable via `[bridge] notes_token_name`)        | `notes send`, `notes inbox`, `notes ack`, `notes watch` for the token's class/name identity                            | `Authorization: Bearer` header on `/notes/…` |
@@ -28,19 +28,26 @@ Exit codes for every verb unless noted: `0` ok · `2` usage · `3` transport or 
 ## fleet bridge send
 
 ```
-fleet bridge send --to <targets> [--command] [--sender NAME] <text | ->
+fleet bridge send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
+fleet bridge send --broaden <batch> [--limit N]
 ```
 
 | Flag                       | Argument    | Default             | Meaning                                                                                           |
 | -------------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------- |
-| `--to`                     | `<targets>` | required            | Targets: `agent:<name>` (or a bare name), `group:<name>`, `all`. Repeat `--to` or comma-separate. |
+| `--to`                     | `<targets>` | required            | Targets: `agent:<name>` (or a bare name; the name may be a glob, `agent:f*`), `group:<name>`, `all`. Repeat `--to` or comma-separate. |
 | `--command`                | —           | off (plain message) | Mark the send as a command.                                                                       |
 | `--sender`                 | `NAME`      | —                   | Sender name recorded on the message.                                                              |
+| `--limit`                  | `N`         | —                   | Deliver to only the first N matches, in name order.                                               |
+| `--broaden`                | `<batch>`   | —                   | Broaden form (no `--to`, no text): re-deliver that batch's original text to the matches its limit left over. |
 | `<text \| ->` (positional) | text        | required            | Message text; `-` reads it from stdin.                                                            |
 
 ### Behaviour
 
 Central verb (owner token). Sends a message — or, with `--command`, a command — to one agent, a group, or all agents. Route: `POST /api/<owner-token>/fleet/send`. A command sits in the target mailboxes until an agent takes it (see `inbox --take`) and posts an answer back, which marks it handled.
+
+Targets resolve against the registry at send time. One glob rule covers every bridge surface: in a name, `*` matches any run of name characters (including none), matching is case-insensitive, and matches enumerate in deterministic name order, so `--limit` always picks the same first N. Exact names resolve to themselves, registered or not; a glob, a group, or `all` matching nobody is an error, and without `--limit` a send reaching more than 200 agents is refused. The answer is the **match report** — `{matched, delivered, recipients, remaining}` — and every send records a distribution (batch, sender, pattern, limit, matched and delivered sets) for later broadening.
+
+The `--broaden` form names a pattern send's batch and carries no text or targets of its own: the bridge re-delivers the original body, on the same batch, to exactly the matched-but-undelivered remainder, optionally under a new `--limit`. The delivered set is the record, so a second identical broaden delivers nothing. Only the original sender may broaden its distribution; central may broaden any.
 
 ### Exit codes
 
@@ -53,6 +60,69 @@ $ fleet bridge send --to group:muse --command "run the nightly triage"
 ```
 
 Sends a command to every agent in the `muse` group.
+
+```console
+$ fleet bridge send --to 'agent:code-*' --limit 2 --command "take the next queue item"
+```
+
+Resolves the glob in name order, delivers to the first two matches, and answers with the match report; `fleet bridge send --broaden <batch>` later delivers the same text to the rest.
+
+## fleet bridge offer
+
+```
+fleet bridge offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text | ->
+```
+
+| Flag                       | Argument    | Default             | Meaning                                                                                           |
+| -------------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------- |
+| `--to`                     | `<targets>` | required            | Eligibility address: the send grammar — `agent:<name>` (or a bare name; globs allowed), `group:<name>`, `all`. Repeat `--to` or comma-separate. |
+| `--slots`                  | `N`         | required            | How many claims land.                                                                             |
+| `--command`                | —           | off (plain message) | Mark the offer as a command; a command offer is projected sender-free to eligible agents and claimants. |
+| `--sender`                 | `NAME`      | —                   | Sender name recorded on the offer.                                                                |
+| `--ttl`                    | `SECS`      | —                   | How long the offer stands open, in seconds.                                                       |
+| `<text \| ->` (positional) | text        | required            | Offer text; `-` reads it from stdin.                                                              |
+
+### Behaviour
+
+Central verb (owner token). Posts the text as a claim offer (Bridge S5, #14371) instead of delivering it: the offer is stored once, on its own batch, and never fanned out. Route: `POST /api/<owner-token>/fleet/offer`. Eligibility is the `--to` address matched against the registry **at claim time**; eligible agents see open offers in the `offers` section of their inbox answer. A claim is one atomic operation that lands only while a slot remains and the agent has not already claimed, so racing claims cannot oversubscribe: a winning claim delivers a normal mailbox row on the offer's batch (replies thread onto the batch) and records the claim. Past the last slot the answer is `filled`; an expired offer answers `expired`, a repeat claim `already claimed`, an ineligible agent `not eligible`, and the poster can never claim its own offer.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge offer --to group:code-lanes --slots 3 --command "take the next queue item"
+```
+
+Posts a command offer that the first three eligible agents to claim it are delivered, one row each.
+
+## fleet bridge offers
+
+```
+fleet bridge offers
+```
+
+| Flag | Argument | Default | Meaning                          |
+| ---- | -------- | ------- | -------------------------------- |
+| —    | —        | —       | Takes no arguments and no flags. |
+
+### Behaviour
+
+Central verb (owner token). Lists every offer with its claims: who claimed, when, and the row each claim delivered, plus each offer's state (`open`, `filled`, or `expired`) and remaining slots. Route: `GET /api/<owner-token>/fleet/offers`. The owner sees the real sender of every offer, including command offers their claimants saw sender-free.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge offers
+```
+
+Prints every offer and its claims as the bridge's JSON.
 
 ## fleet bridge agents
 
