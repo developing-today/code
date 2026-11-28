@@ -360,6 +360,65 @@ codes: 0 landed or idle, **4** a conflict was recorded `conflicted` and
 routed to its authoring lane, **3** any other step failure (the intent is
 left `replaying` and a later `replay` resumes it).
 
+## Journal checkpoints and handoffs
+
+Alongside the task-row model above, the queue crate carries a pure
+reference model for session resumption: the journal checkpoint and the
+handoff snapshot, in `crates/fleet-queue/src/work/journal.rs` (JRN-03
+of #9465, PR #14346; design §3.4 of the #9208
+typed-dependencies / notes / journal field-authority component). The
+module is a pure model — no I/O, no storage, no queue — and it is
+not the `checkpoint` verb: the verb records progress and a stage on a
+task row, while a journal checkpoint is the durable snapshot a later
+session resumes a work item from. It is not a transcript and not a
+completion claim.
+
+A checkpoint (wire schema `fleet.journal-checkpoint/v1`) carries the
+work reference and the per-work journal stream sequence it was taken
+at, the objective, the steps done and still outstanding, the important
+paths, the branch and head commit it was taken at, the test state at
+that moment, the hard blocker edges in force, the per-source activity
+cursor refs and the hydration ref it was hydrated from, and one
+suggested next action. Both halves of the commit identity are
+required — a snapshot that cannot name its commit cannot be resumed
+or audited. The test state's passed / pending / failed buckets are
+disjoint by validation: a test recorded in two buckets is a typed
+rejection, so a pending test is never shown passed. Cursor refs
+(#9207), hydration generations (#9207) and blocker-edge targets are
+carried as opaque typed references; their formats stay with their
+owners, and the lifecycle command that writes checkpoints is #9206's,
+not this module's.
+
+Checkpoints are private by construction: visibility is always
+`private`, validated rather than assumed, and a payload presenting any
+other visibility is rejected, never silently projected. Important
+paths are screened the same way — a path naming a secret-bearing
+location is a typed rejection. Every rejection is a typed
+`CheckpointError` (`invalid_schema`, `unsupported_version`,
+`non_private_visibility`, `secret_path`, `missing_commit_identity`,
+`conflicting_test_state`) that mutates nothing. Checkpoints are
+append-only: editing one produces a new checkpoint whose `supersedes`
+names the original, which stays addressable and unchanged.
+
+Freshness is explicit. A checkpoint is current only when nothing has
+superseded it and the journal stream has not moved past the sequence
+it was taken at; every other case projects as stale, carrying the
+checkpoint sequence, the current sequence and the superseding
+checkpoint, when one exists. The resume projection a new session
+starts from carries that freshness on its face, so a stale checkpoint
+never projects as current.
+
+A handoff (wire schema `fleet.journal-handoff/v1`) records an
+ownership transfer only: the work reference, the checkpoint the new
+owner resumes from, the previous and new owners, and the lease
+transfer result — released, takeover confirmed, or pending (neither
+release nor takeover confirmed). It deliberately has no completion
+field, and projecting it over a workflow state returns that state
+unchanged: a handoff never implies completion. This is a different
+record from the broker's handoff sink that `claim --handoff` picks
+from: the sink routes a task, the handoff reference attests a
+transfer.
+
 ## The Turso store
 
 The broker creates its schema at backend start. The `tasks` table carries:
