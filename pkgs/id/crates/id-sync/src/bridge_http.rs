@@ -1466,9 +1466,7 @@ mod tests {
     /// Serves one canned raw HTTP response on a loopback socket
     /// and returns the address to dial.
     async fn serve_once(response: Vec<u8>) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -1494,16 +1492,16 @@ mod tests {
     async fn reqwest_http_refuses_an_oversized_body_without_buffering_it() {
         // The declared length alone is over the cap: refused
         // before any body byte is read.
-        let address = serve_once(
-            b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n".to_vec(),
-        )
-        .await;
+        let address = serve_once(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n".to_vec()).await;
         let mut http = ReqwestHttp::with_bounds(Duration::from_secs(5), 1024).unwrap();
         let err = http
             .request(get(format!("http://{address}/v1/bridge/heads")))
             .await
             .unwrap_err();
-        assert!(format!("{err:#}").contains("over the 1024-byte cap"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("over the 1024-byte cap"),
+            "{err:#}"
+        );
 
         // No declared length: the streamed read bails as soon as
         // the accumulated body passes the cap.
@@ -1517,14 +1515,15 @@ mod tests {
             .request(get(format!("http://{address}/v1/bridge/heads")))
             .await
             .unwrap_err();
-        assert!(format!("{err:#}").contains("over the 1024-byte cap"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("over the 1024-byte cap"),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]
     async fn reqwest_http_fails_a_stalled_endpoint_at_its_deadline() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             // Accept and never answer; the client's deadline is
@@ -1537,7 +1536,9 @@ mod tests {
             .request(get(format!("http://{address}/v1/bridge/challenge")))
             .await
             .unwrap_err();
-        assert!(format!("{err:#}").contains("bridge http request"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("bridge http request"),
+            "{err:#}"
+        );
     }
 }
-
