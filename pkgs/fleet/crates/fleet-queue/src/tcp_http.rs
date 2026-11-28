@@ -29,7 +29,7 @@ impl RequestTransportStream for TcpStream {
     }
 }
 
-#[cfg(feature = "queue-broker")]
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 impl RequestTransportStream for crate::broker_tls::BrokerStream {
     fn request_transport(&self) -> RequestTransport {
         crate::broker_tls::BrokerStream::request_transport(self)
@@ -53,7 +53,7 @@ where
 /// broker's TLS server wrapped around each accepted connection
 /// (dual-accept: TLS handshakes are terminated, plaintext
 /// Phase 0 connections are served as before — design rule M2).
-#[cfg(feature = "queue-broker")]
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub(crate) fn serve_tls<F, G>(
     listener: TcpListener,
     tls: Arc<crate::broker_tls::BrokerTlsServer>,

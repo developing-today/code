@@ -35,6 +35,8 @@ secrets-broker = [
   "dep:fleet-config",
   "dep:libc",
   "dep:ureq",
+  "dep:rustls",
+  "dep:rustls-pki-types",
 ]
 
 [dependencies]

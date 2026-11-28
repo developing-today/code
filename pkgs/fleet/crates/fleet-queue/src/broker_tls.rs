@@ -40,10 +40,10 @@ pub type BoxedStream = Box<dyn IoStream>;
 
 #[cfg(feature = "client")]
 pub use client::BrokerTlsClient;
-#[cfg(feature = "queue-broker")]
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub use server::{BrokerStream, BrokerTlsServer};
 
-#[cfg(feature = "queue-broker")]
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 mod server {
     use rustls::ServerConfig;
     use rustls::StreamOwned;
@@ -142,38 +142,39 @@ mod server {
         /// named, so the broker refuses to start half-configured
         /// rather than silently serving plaintext.
         pub fn from_env() -> Result<Option<Arc<Self>>, String> {
-            let cert = std::env::var("QUEUE_BROKER_TLS_CERT_FILE")
+            Self::from_env_prefix("QUEUE_BROKER")
+        }
+
+        /// Broker-specific additive configuration; no process environment mutation.
+        pub fn from_env_prefix(prefix: &str) -> Result<Option<Arc<Self>>, String> {
+            let cert_name = format!("{prefix}_TLS_CERT_FILE");
+            let key_name = format!("{prefix}_TLS_KEY_FILE");
+            let cert = std::env::var(&cert_name)
                 .ok()
                 .filter(|v| !v.trim().is_empty());
-            let key = std::env::var("QUEUE_BROKER_TLS_KEY_FILE")
+            let key = std::env::var(&key_name)
                 .ok()
                 .filter(|v| !v.trim().is_empty());
             match (cert, key) {
                 (None, None) => Ok(None),
                 (Some(cert_file), Some(key_file)) => {
-                    let cert_pem = std::fs::read(&cert_file).map_err(|e| {
-                        format!("QUEUE_BROKER_TLS_CERT_FILE {cert_file}: cannot read: {e}")
-                    })?;
-                    let key_pem = std::fs::read(&key_file).map_err(|e| {
-                        format!("QUEUE_BROKER_TLS_KEY_FILE {key_file}: cannot read: {e}")
-                    })?;
+                    let cert_pem = std::fs::read(&cert_file)
+                        .map_err(|e| format!("{cert_name} {cert_file}: cannot read: {e}"))?;
+                    let key_pem = std::fs::read(&key_file)
+                        .map_err(|e| format!("{key_name} {key_file}: cannot read: {e}"))?;
                     let server = Self::from_pem(&cert_pem, &key_pem).map_err(|e| {
                         format!(
-                            "queue-broker TLS config (QUEUE_BROKER_TLS_CERT_FILE {cert_file}, QUEUE_BROKER_TLS_KEY_FILE {key_file}): {e}"
+                            "queue-broker TLS config ({cert_name} {cert_file}, {key_name} {key_file}): {e}"
                         )
                     })?;
                     Ok(Some(Arc::new(server)))
                 }
-                (Some(_), None) => Err(
-                    "QUEUE_BROKER_TLS_CERT_FILE is set but QUEUE_BROKER_TLS_KEY_FILE is not; \
-                     broker TLS needs the leaf chain and its on-host key together"
-                        .to_string(),
-                ),
-                (None, Some(_)) => Err(
-                    "QUEUE_BROKER_TLS_KEY_FILE is set but QUEUE_BROKER_TLS_CERT_FILE is not; \
-                     broker TLS needs the leaf chain and its on-host key together"
-                        .to_string(),
-                ),
+                (Some(_), None) => Err(format!(
+                    "{cert_name} is set but {key_name} is not; broker TLS needs the leaf chain and its on-host key together"
+                )),
+                (None, Some(_)) => Err(format!(
+                    "{key_name} is set but {cert_name} is not; broker TLS needs the leaf chain and its on-host key together"
+                )),
             }
         }
 
