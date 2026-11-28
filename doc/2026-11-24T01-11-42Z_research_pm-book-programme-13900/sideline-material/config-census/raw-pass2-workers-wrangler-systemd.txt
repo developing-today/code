@@ -1,0 +1,663 @@
+===WORKER_DIRS===
+pm-stack/decision-events-worker exists True
+  pm-stack/decision-events-worker/README.md 4516
+  pm-stack/decision-events-worker/bun.lock 30990
+  pm-stack/decision-events-worker/package.json 496
+  pm-stack/decision-events-worker/schema.sql 609
+  pm-stack/decision-events-worker/src/events.ts 7247
+  pm-stack/decision-events-worker/src/index.ts 12038
+  pm-stack/decision-events-worker/test/events.test.ts 7742
+  pm-stack/decision-events-worker/test/pagination.test.ts 4312
+  pm-stack/decision-events-worker/tsconfig.json 308
+  pm-stack/decision-events-worker/wrangler.toml 832
+pm-stack/voice-line-worker exists True
+  pm-stack/voice-line-worker/.gitignore 13
+  pm-stack/voice-line-worker/README.md 6868
+  pm-stack/voice-line-worker/bun.lock 45562
+  pm-stack/voice-line-worker/ci/bun.lock 50858
+  pm-stack/voice-line-worker/ci/deployment-config.check.mjs 937
+  pm-stack/voice-line-worker/ci/package.json 742
+  pm-stack/voice-line-worker/cloudflare.config.ts 676
+  pm-stack/voice-line-worker/package.json 623
+  pm-stack/voice-line-worker/scripts/check-environment.mjs 1345
+  pm-stack/voice-line-worker/scripts/promote-version.mjs 5965
+  pm-stack/voice-line-worker/scripts/upload-version.mjs 3413
+  pm-stack/voice-line-worker/src/control.ts 865
+  pm-stack/voice-line-worker/src/deploy-contract.mjs 8381
+  pm-stack/voice-line-worker/src/index.ts 5679
+  pm-stack/voice-line-worker/src/ingest.ts 1412
+  pm-stack/voice-line-worker/src/intent.ts 1733
+  pm-stack/voice-line-worker/src/ledger.ts 4935
+  pm-stack/voice-line-worker/src/session.ts 7090
+  pm-stack/voice-line-worker/src/vad.ts 4730
+  pm-stack/voice-line-worker/test/control.test.ts 1003
+  pm-stack/voice-line-worker/test/deploy-contract.test.mjs 5046
+  pm-stack/voice-line-worker/test/ingest.test.ts 2011
+  pm-stack/voice-line-worker/test/intent.test.ts 1433
+  pm-stack/voice-line-worker/test/ledger.test.ts 1715
+  pm-stack/voice-line-worker/test/release-safety.test.mjs 5132
+  pm-stack/voice-line-worker/test/vad.test.ts 1917
+  pm-stack/voice-line-worker/test/wav.test.ts 1808
+  pm-stack/voice-line-worker/tsconfig.json 268
+  pm-stack/voice-line-worker/wrangler.toml 618
+pm-stack/notify-relay exists True
+  pm-stack/notify-relay/README.md 5400
+  pm-stack/notify-relay/package.json 592
+  pm-stack/notify-relay/src/index.ts 7746
+  pm-stack/notify-relay/src/push.ts 8864
+  pm-stack/notify-relay/src/relay.ts 13734
+  pm-stack/notify-relay/test/push.test.ts 7585
+  pm-stack/notify-relay/test/relay.test.ts 9217
+  pm-stack/notify-relay/tsconfig.json 308
+  pm-stack/notify-relay/wrangler.toml 1251
+pm-stack/console exists True
+  pm-stack/console/README.md 27363
+  pm-stack/console/android/.gitignore 42
+  pm-stack/console/android/README.md 7832
+  pm-stack/console/android/app/build.gradle 3329
+  pm-stack/console/android/app/src/twa/AndroidManifest.xml 7605
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/AskTileService.java 1715
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/DictateActivity.java 1906
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/Fleet.java 8313
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/LinkActivity.java 3497
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/Links.java 1328
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/OpenActivity.java 1171
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/PmApp.java 1300
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/ShareActivity.java 1344
+  pm-stack/console/android/app/src/twa/java/today/developing/pmconsole/StatusWidget.java 9461
+  pm-stack/console/android/app/src/twa/res/drawable/ic_ask.xml 522
+  pm-stack/console/android/app/src/twa/res/drawable/ic_mic.xml 542
+  pm-stack/console/android/app/src/twa/res/drawable/ic_needs.xml 516
+  pm-stack/console/android/app/src/twa/res/drawable/ic_notification.xml 566
+  pm-stack/console/android/app/src/twa/res/drawable/ic_now.xml 483
+  pm-stack/console/android/app/src/twa/res/drawable/ic_refresh.xml 494
+  pm-stack/console/android/app/src/twa/res/drawable/widget_bg.xml 224
+  pm-stack/console/android/app/src/twa/res/layout/widget_status.xml 5259
+  pm-stack/console/android/app/src/twa/res/mipmap-xxxhdpi/ic_launcher.png 1490
+  pm-stack/console/android/app/src/twa/res/values/colors.xml 241
+  pm-stack/console/android/app/src/twa/res/values/strings.xml 2112
+  pm-stack/console/android/app/src/twa/res/xml/shortcuts.xml 2075
+  pm-stack/console/android/app/src/twa/res/xml/widget_status_info.xml 595
+  pm-stack/console/android/build.gradle 73
+  pm-stack/console/android/build.sh 3919
+  pm-stack/console/android/gradle.properties 51
+  pm-stack/console/android/offline-check.sh 9218
+  pm-stack/console/android/release-built.sh 5941
+  pm-stack/console/android/release-built.test.sh 17279
+  pm-stack/console/android/release.sh 7537
+  pm-stack/console/android/release.test.sh 11099
+  pm-stack/console/android/settings.gradle 327
+  pm-stack/console/android/sign.sh 2299
+  pm-stack/console/android/signing-fingerprint.txt 96
+  pm-stack/console/edge/.gitignore 31
+  pm-stack/console/edge/README.md 29175
+  pm-stack/console/edge/build.mjs 1112
+  pm-stack/console/edge/init/worker.ts 992
+  pm-stack/console/edge/init/wrangler.jsonc 764
+  pm-stack/console/edge/package-lock.json 82631
+  pm-stack/console/edge/package.json 530
+  pm-stack/console/edge/release-plan.mjs 5578
+  pm-stack/console/edge/release.mjs 11001
+  pm-stack/console/edge/src/direct.ts 19031
+  pm-stack/console/edge/src/edge.ts 94547
+  pm-stack/console/edge/src/entry.ts 8514
+  pm-stack/console/edge/src/worker.ts 5596
+  pm-stack/console/edge/wrangler.jsonc 1877
+  pm-stack/console/install.sh 2523
+  pm-stack/console/package.json 312
+  pm-stack/console/public/app.css 13882
+  pm-stack/console/public/app.js 136038
+  pm-stack/console/public/icon.svg 321
+  pm-stack/console/public/index.html 1604
+  pm-stack/console/public/outbox.js 19758
+  pm-stack/console/public/sw.js 12925
+  pm-stack/console/redeploy.sh 3103
+  pm-stack/console/scripts/demo-state.ts 24169
+  pm-stack/console/scripts/demo.ts 696
+  pm-stack/console/scripts/edge-demo.ts 5891
+  pm-stack/console/scripts/edge-smoke.ts 27454
+  pm-stack/console/scripts/expose.py 38136
+  pm-stack/console/scripts/test_expose.py 51625
+  pm-stack/console/src/actions.ts 9459
+  pm-stack/console/src/auth.ts 9757
+  pm-stack/console/src/config.ts 10651
+  pm-stack/console/src/devices.ts 12695
+  pm-stack/console/src/docs.ts 12132
+  pm-stack/console/src/edge-proto.ts 17418
+  pm-stack/console/src/errors.ts 343
+  pm-stack/console/src/file-store.ts 981
+  pm-stack/console/src/http.ts 8036
+  pm-stack/console/src/named.ts 4827
+  pm-stack/console/src/notify.ts 9716
+  pm-stack/console/src/ops.ts 34263
+  pm-stack/console/src/plain.ts 788
+  pm-stack/console/src/plan.ts 28968
+  pm-stack/console/src/platform.ts 4802
+  pm-stack/console/src/push.ts 12021
+  pm-stack/console/src/reads.ts 1674
+  pm-stack/console/src/server.ts 33381
+  pm-stack/console/src/store.ts 817
+  pm-stack/console/src/sync.ts 14711
+  pm-stack/console/src/work.ts 27642
+  pm-stack/console/test/app.test.ts 48229
+  pm-stack/console/test/console.test.ts 64750
+  pm-stack/console/test/demo-act-log.test.ts 1860
+  pm-stack/console/test/devices.test.ts 24436
+  pm-stack/console/test/direct.test.ts 35202
+  pm-stack/console/test/edge.test.ts 236037
+  pm-stack/console/test/outbox.test.ts 39625
+  pm-stack/console/test/plan.test.ts 48930
+  pm-stack/console/test/platform.test.ts 22877
+  pm-stack/console/test/proto.test.ts 10100
+  pm-stack/console/test/push.test.ts 25613
+  pm-stack/console/test/redeploy.test.ts 7891
+  pm-stack/console/test/release.test.ts 25426
+  pm-stack/console/test/signin.test.ts 10094
+  pm-stack/console/test/support.ts 5175
+  pm-stack/console/test/sw.test.ts 35585
+  pm-stack/console/test/work.test.ts 59025
+  pm-stack/console/tsconfig.json 416
+pm-stack/dispatch exists True
+  pm-stack/dispatch/README.md 28827
+  pm-stack/dispatch/bun.lock 1734
+  pm-stack/dispatch/examples/dispatch-workflow.yml 3645
+  pm-stack/dispatch/install.sh 7405
+  pm-stack/dispatch/package.json 543
+  pm-stack/dispatch/src/auth.ts 9942
+  pm-stack/dispatch/src/config.ts 7537
+  pm-stack/dispatch/src/fetchTimeout.ts 891
+  pm-stack/dispatch/src/github.ts 18661
+  pm-stack/dispatch/src/launch_annotations.ts 4209
+  pm-stack/dispatch/src/launch_failure.ts 9933
+  pm-stack/dispatch/src/opencode.ts 7689
+  pm-stack/dispatch/src/packet.ts 9093
+  pm-stack/dispatch/src/placement-guard.ts 5489
+  pm-stack/dispatch/src/queue.ts 13456
+  pm-stack/dispatch/src/server.ts 42036
+  pm-stack/dispatch/src/validate.ts 15505
+  pm-stack/dispatch/src/worktree.ts 4112
+  pm-stack/dispatch/src/worktree_cleanup.ts 21331
+  pm-stack/dispatch/test/attach_verify.test.ts 6847
+  pm-stack/dispatch/test/auth.test.ts 13200
+  pm-stack/dispatch/test/config.test.ts 4601
+  pm-stack/dispatch/test/dispatch_preexisting.test.ts 11161
+  pm-stack/dispatch/test/fetch-timeout.test.ts 2611
+  pm-stack/dispatch/test/github.test.ts 12876
+  pm-stack/dispatch/test/launch_annotations.test.ts 6645
+  pm-stack/dispatch/test/launch_failure.test.ts 16194
+  pm-stack/dispatch/test/opencode.test.ts 9603
+  pm-stack/dispatch/test/packet.test.ts 6398
+  pm-stack/dispatch/test/placement-guard.test.ts 5889
+  pm-stack/dispatch/test/queue.test.ts 9159
+  pm-stack/dispatch/test/server.test.ts 16300
+  pm-stack/dispatch/test/validate.test.ts 23626
+  pm-stack/dispatch/test/worktree.test.ts 17237
+  pm-stack/dispatch/test/zz_fetch_hygiene.test.ts 1280
+  pm-stack/dispatch/tsconfig.json 306
+pm-stack/projector exists True
+  pm-stack/projector/.env.example 755
+  pm-stack/projector/.gitignore 71
+  pm-stack/projector/README.md 21675
+  pm-stack/projector/bun.lock 6650
+  pm-stack/projector/fixtures/01-push.json 348
+  pm-stack/projector/fixtures/02-issue-opened.json 747
+  pm-stack/projector/fixtures/03-issue-comment.json 841
+  pm-stack/projector/fixtures/04-pr-opened.json 751
+  pm-stack/projector/fixtures/05-pr-review.json 916
+  pm-stack/projector/fixtures/06-pr-review-comment.json 1038
+  pm-stack/projector/fixtures/07-openchamber-issue.json 727
+  pm-stack/projector/fixtures/08-issue-transferred.json 12071
+  pm-stack/projector/package.json 617
+  pm-stack/projector/schema.sql 12066
+  pm-stack/projector/scripts/setup-deps.sh 1974
+  pm-stack/projector/src/bun.d.ts 860
+  pm-stack/projector/src/cli.ts 6818
+  pm-stack/projector/src/config.ts 585
+  pm-stack/projector/src/github.ts 11815
+  pm-stack/projector/src/index.ts 877
+  pm-stack/projector/src/operation-forwarder.ts 5816
+  pm-stack/projector/src/projector.ts 16717
+  pm-stack/projector/src/queue-view-html.ts 5615
+  pm-stack/projector/src/queue-view.ts 10462
+  pm-stack/projector/src/reconcile.ts 13649
+  pm-stack/projector/src/server.ts 28347
+  pm-stack/projector/src/store.ts 29321
+  pm-stack/projector/src/webhook.ts 2253
+  pm-stack/projector/test/cli-argv.test.ts 2180
+  pm-stack/projector/test/config.test.ts 1037
+  pm-stack/projector/test/e2e.test.ts 15645
+  pm-stack/projector/test/error-boundary.test.ts 1585
+  pm-stack/projector/test/github.test.ts 11662
+  pm-stack/projector/test/health-isolation.test.ts 6662
+  pm-stack/projector/test/hot.test.ts 12162
+  pm-stack/projector/test/limit.test.ts 7106
+  pm-stack/projector/test/links-ref-gate-6211.test.ts 3298
+  pm-stack/projector/test/links-validation.test.ts 4133
+  pm-stack/projector/test/projector.test.ts 25184
+  pm-stack/projector/test/queue-view-html.test.ts 6084
+  pm-stack/projector/test/queue-view.test.ts 9410
+  pm-stack/projector/test/read-bounds.test.ts 7377
+  pm-stack/projector/test/reconcile.test.ts 19231
+  pm-stack/projector/test/store.test.ts 17809
+  pm-stack/projector/test/subjects.test.ts 2729
+  pm-stack/projector/test/webhook-delivery-id.test.ts 11549
+  pm-stack/projector/test/webhook-operation-forwarding.test.ts 8549
+  pm-stack/projector/test/write-bounds.test.ts 4720
+  pm-stack/projector/tsconfig.json 411
+pm-stack/platform exists True
+  pm-stack/platform/README.md 3612
+  pm-stack/platform/workers.json 11088
+  pm-stack/platform/workers.test.ts 3380
+pm-stack/shared-schema exists True
+  pm-stack/shared-schema/ORCHESTRATION.md 8579
+  pm-stack/shared-schema/README.md 22983
+  pm-stack/shared-schema/ainventory-turso-guards.sql 3837
+  pm-stack/shared-schema/migrations/20261105_0001_action_event_store.down.sql 523
+  pm-stack/shared-schema/migrations/20261105_0001_action_event_store.up.sql 5860
+  pm-stack/shared-schema/migrations/20261111_0001_orchestration_state.down.sql 509
+  pm-stack/shared-schema/migrations/20261111_0001_orchestration_state.up.sql 3793
+  pm-stack/shared-schema/migrations/20261116_0001_aggregator_remote_stores.down.sql 848
+  pm-stack/shared-schema/migrations/20261116_0001_aggregator_remote_stores.up.sql 5733
+  pm-stack/shared-schema/migrations/20261122_0001_shared_comments.down.sql 525
+  pm-stack/shared-schema/migrations/20261122_0001_shared_comments.up.sql 3197
+  pm-stack/shared-schema/orchestration-writer.py 7865
+  pm-stack/shared-schema/test-migration.sh 21616
+  pm-stack/shared-schema/test-orchestration-migration.sh 11430
+  pm-stack/shared-schema/test_ainventory_turso_guards.py 1627
+  pm-stack/shared-schema/test_orchestration_writer_args.py 2443
+  pm-stack/shared-schema/test_orchestration_writer_turso.py 6832
+
+===WRANGLER_CONTENTS===
+--- pm-stack/console/edge/wrangler.jsonc ---
+{
+  // The Worker in front of pm.security.cab: the app, its state,
+  // notifications and the phone widget, served from Cloudflare.
+  //
+  // Deployed by the pm-console-edge-deploy workflow (release.mjs: an
+  // empty Worker from init/ if there is none, then this as a version).
+  // It has no route here on purpose: scripts/expose.py on the host puts
+  // the hostname's route on it once it answers its health check, and can
+  // take the route away again, which is the whole rollback.
+  "name": "pm-console-edge",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // The workers.dev address answers the health check and the public
+  // files only: every other path needs the owner's sign-in token, which
+  // is only issued for the routed hostname.
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "vars": { "PUBLIC_HOST": "pm.security.cab" },
+  // The app's files, put together by build.mjs. Every request reaches
+  // the Worker first; it serves a file only after checking who asks.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  // One object holds the state: the copy of what the host last
+  // reported, what is held for it, notification subscriptions and keys,
+  // linked phones. Three secrets are optional, put there by
+  // scripts/expose.py --edge-direct (off by default): GITHUB_TOKEN and
+  // QUEUE_TOKEN, which let the Worker read and write GitHub and the
+  // queue store itself while the laptop is away, and EDGE_DIRECT, the
+  // explicit opt-in that must read `on` for either to be used.
+  "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
+}
+
+--- pm-stack/console/edge/init/wrangler.jsonc ---
+{
+  // The empty Worker release.mjs stands up when there is none: see
+  // worker.ts. Everything here that is not a version's own (the name,
+  // the Durable Object class and its migration, the workers.dev
+  // address, logs) must say what ../wrangler.jsonc says; a test holds
+  // the two together (test/release.test.ts).
+  "name": "pm-console-edge",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "vars": { "PUBLIC_HOST": "pm.security.cab", "VERSION": "empty" },
+  "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
+}
+
+--- pm-stack/notify-relay/wrangler.toml ---
+# pm-notify relay Worker (#8569 Phase 2, design record
+# doc/2026-11-17_design_pm8569_notifications_phase2.md): the edge half
+# of the pm-stack dead-man's switch. One Worker + one singleton
+# Durable Object (pm-notify) holding the mirrored subscription
+# snapshot and the heartbeat alarm state. The DO alarm is the only
+# scheduler — there is no cron anywhere in this design.
+#
+# Secrets (wrangler secret put; values never in this file):
+#   RELAY_SHARED_SECRET  authenticates the laptop -> edge POSTs
+#     (/mirror/*, /heartbeat). Vaulted in Bitwarden by name
+#     `pm-aggregator.notify-relay-shared-secret`; the aggregator
+#     resolves the same name at send time.
+#   VAPID_PRIVATE_KEY    signs the edge's Web Push sends. The existing
+#     aggregator VAPID keypair — custody moves, the keypair does not
+#     change (design §4): the value is the same one the laptop fetches
+#     from Bitwarden by name `pm-aggregator.vapid-private-key`
+#     (base64url raw private scalar, the web-push package's form).
+name = "pm-notify"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[durable_objects]
+bindings = [{ name = "PM_NOTIFY", class_name = "PmNotify" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PmNotify"]
+
+--- pm-stack/voice-line-worker/wrangler.toml ---
+name = "voice-line"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+# Workers AI: Whisper (speech-to-text) + MeloTTS (speech out), called
+# directly per #9800 — the pooled/failover speech route is #9801.
+[ai]
+binding = "AI"
+
+[durable_objects]
+bindings = [{ name = "VOICE_SESSIONS", class_name = "VoiceSession" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VoiceSession"]
+
+# Turso session ledger (#9800). TURSO_TOKEN and STATUS_INGEST_TOKEN are
+# secrets (wrangler secret put), never vars in this file.
+[vars]
+TURSO_URL = "https://voice-line-ledger-dezren39.aws-us-east-1.turso.io"
+
+--- pm-stack/decision-events-worker/wrangler.toml ---
+# decision-events Worker (#9335 Track B): receives decision-set
+# events on an authenticated webhook, stores them in D1, and fans
+# them out through a Durable Object per set (keyed by setId).
+#
+# Secrets (wrangler secret put; values never in this file):
+#   WEBHOOK_SECRET  shared secret for POST /events and the GET
+#                   read-back endpoints; vaulted in Bitwarden by name
+#                   `cloudflare.decision-events.webhook-secret`.
+name = "decision-events"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "decision-events"
+database_id = "68ade85e-6835-46a8-af6a-a9f2f2d966ae"
+
+[durable_objects]
+bindings = [{ name = "SET_EVENTS", class_name = "DecisionSetEvents" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DecisionSetEvents"]
+
+
+===ENV_INTERFACES_AND_DESTRUCTURING===
+pm-stack/console/edge/src/worker.ts:14: interface Env {
+ENVIFACE pm-stack/console/edge/src/worker.ts: PM: DurableObjectNamespace;
+  ASSETS: { fetch(request: Request): Promise<Response>
+pm-stack/console/src/config.ts:79: type Env = Record<string, string | undefined>;
+pm-stack/console/src/config.ts:82: const raw = env[name];
+pm-stack/console/src/config.ts:91: const raw = env[name];
+pm-stack/projector/src/reconcile.ts:10: type Env = Record<string, string | undefined>;
+pm-stack/notify-relay/src/index.ts:43: export interface Env {
+ENVIFACE pm-stack/notify-relay/src/index.ts: PM_NOTIFY: DurableObjectNamespace;
+  /** Shared secret for the laptop -> edge POSTs (wrangler secret
+   * put; Bitwarden name `pm-aggregator.notify-relay-shared-secret`). */
+  RELAY_SHARED_SECRET?: string;
+  /** The aggregator VAPID keypair's private key (wrangler secret
+   * put; Bitwarden name `pm-aggregator.vapid-private-key`). */
+  VAPID_PRIVATE_KEY?: string;
+pm-stack/voice-line-worker/src/session.ts:22: export interface Env {
+ENVIFACE pm-stack/voice-line-worker/src/session.ts: AI: Ai;
+  VOICE_SESSIONS: DurableObjectNamespace;
+  TURSO_URL: string;
+  TURSO_TOKEN: string;
+pm-stack/voice-line-worker/scripts/upload-version.mjs:60: const value = process.env[name];
+pm-stack/voice-line-worker/scripts/promote-version.mjs:123: const value = process.env[name];
+pm-stack/private-laptop-bridge/smoke-upload.mjs:367: const value = process.env[name];
+pm-stack/decision-events-worker/src/index.ts:44: export interface Env {
+ENVIFACE pm-stack/decision-events-worker/src/index.ts: DB: D1Database;
+  SET_EVENTS: DurableObjectNamespace;
+  WEBHOOK_SECRET?: string;
+pm-stack/exporters/src/adapters.ts:65: .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, k: string) => env[k] ?? "")
+
+===SYSTEMD_ENV_LINES===
+pm-stack/systemd/pm-tunnel.service:22: EnvironmentFile=%h/pm-stack/tunnel.env
+pm-stack/systemd/pm-console-android-release.service:13: Environment=PATH=%h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin
+pm-stack/systemd/pm-console-expose.service:11: Environment=PATH=%h/.local/bin:/run/current-system/sw/bin:/etc/profiles/per-user/%u/bin:/usr/bin:/bin
+pm-stack/systemd/pm-dispatch.service:17: EnvironmentFile=%h/pm-stack/dispatch/.env
+pm-stack/systemd/pm-dispatch.service:22: EnvironmentFile=-%h/secrets/dispatch.env
+pm-stack/systemd/pm-console.service:12: EnvironmentFile=%h/.local/state/pm-console/.env
+pm-stack/systemd/pm-console.service:14: Environment=PATH=%h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin
+pm-stack/systemd/pm-quota-watchdog.service:9: Environment=QUOTA_WATCHDOG_ADAPTERS_DIR=/home/user/.config/quota-watchdog/adapters
+pm-stack/systemd/pm-quota-watchdog.service:10: Environment=QUOTA_WATCHDOG_LIVE=1
+pm-stack/systemd/pm-quota-watchdog.service:11: Environment=QUOTA_WATCHDOG_LIVE_REPAIRS=1
+pm-stack/systemd/pm-console-redeploy.service:12: Environment=PATH=%h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin
+pm-stack/systemd/pm-aggregator.service:14: EnvironmentFile=%h/.local/state/pm-aggregator/.env
+pm-stack/systemd/pm-aggregator.service:18: Environment=PM_AGG_DIGESTS_DIR=%h/.local/state/pm-aggregator/digests
+pm-stack/aggregator/systemd/digest-weekly.service:9: Environment=PM_AGG_SOURCE=live
+pm-stack/aggregator/systemd/digest-weekly.service:10: EnvironmentFile=%h/.local/state/pm-aggregator/.env
+pm-stack/aggregator/systemd/digest-weekly.service:11: Environment=PM_AGG_DIGESTS_DIR=%h/.local/state/pm-aggregator/digests
+pm-stack/aggregator/systemd/digest-daily.service:12: Environment=PM_AGG_SOURCE=live
+pm-stack/aggregator/systemd/digest-daily.service:13: EnvironmentFile=%h/.local/state/pm-aggregator/.env
+pm-stack/aggregator/systemd/digest-daily.service:14: Environment=PM_AGG_DIGESTS_DIR=%h/.local/state/pm-aggregator/digests
+pm-stack/aggregator/systemd/quota-gatherer.service:14: Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json
+pm-stack/aggregator/systemd/quota-gatherer.service:15: Environment=QUOTA_HEARTBEAT_PATH=%h/.local/state/pm-aggregator/quota-gatherer-heartbeat.json
+pm-stack/aggregator/systemd/quota-gatherer.service:16: Environment=QUOTA_GATHERER_STATE_PATH=%h/.local/state/pm-aggregator/quota-gatherer-state.json
+pm-stack/aggregator/systemd/quota-gatherer.service:17: Environment=QUOTA_SNAPSHOTS_DIR=%h/.local/state/pm-aggregator/snapshots
+pm-stack/ready-for-agent/systemd/ready-for-agent.service:39: Environment=PATH=%h/.local/bin:/etc/profiles/per-user/user/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin
+pm-stack/opencode-scheduled-jobs/systemd/user/opencode-quota-freshness-summary.service:10: Environment=PATH=%h/.local/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:@PYTHON_BIN_DIR@:/usr/bin:/bin
+pm-stack/opencode-scheduled-jobs/systemd/user/opencode-quota-freshness-summary.service:11: Environment=OPENCODE_BIN=@OPENCODE_BIN@
+pm-stack/opencode-scheduled-jobs/systemd/user/opencode-quota-freshness-summary.service:12: Environment=OPENCODE_MODEL=opencode-route/workhorse
+pm-stack/opencode-scheduled-jobs/systemd/user/opencode-quota-freshness-summary.service:13: Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json
+pm-stack/opencode-scheduled-jobs/systemd/user/opencode-quota-freshness-summary.service:14: Environment=OPENCODE_SCHEDULED_JOB_DIR=%h/.local/state/opencode-scheduled/quota-freshness-summary
+pm-stack/cloudflare-export/cloudflare-quota-export.service:11: Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+nixos/services/pm-stack/default.nix:117: # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
+nixos/services/pm-stack/default.nix:248: EnvironmentFile = "${projState}/.env";
+nixos/services/pm-stack/default.nix:249: Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
+nixos/services/pm-stack/default.nix:278: EnvironmentFile = "${aggState}/.env";
+nixos/services/pm-stack/default.nix:286: Environment = [
+nixos/services/pm-stack/default.nix:379: EnvironmentFile = [
+nixos/services/pm-stack/default.nix:407: EnvironmentFile = "${projState}/.env";
+nixos/services/pm-stack/default.nix:423: EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
+nixos/services/pm-stack/default.nix:424: Environment = [
+nixos/services/pm-stack/default.nix:450: EnvironmentFile = "${aggState}/.env";
+nixos/services/pm-stack/default.nix:451: Environment = [
+nixos/services/pm-stack/default.nix:471: EnvironmentFile = "${aggState}/.env";
+nixos/services/pm-stack/default.nix:472: Environment = [
+nixos/services/pm-stack/default.nix:517: # the environment.
+nixos/services/pm-stack/default.nix:527: Environment = [
+nixos/services/pm-apps/default.nix:178: Environment = [
+
+===COMPOSE_ENV===
+--- pm-stack/compose.yml ---
+# Project-management stack — Phase 1: Kaneo + PostgreSQL.
+#
+# Pinned by release tag and manifest digest; bump both deliberately (see
+# README.md "Updating"). Based on Kaneo's official compose
+# (github.com/usekaneo/kaneo compose.yml + docs "Install with Docker
+# Compose"), with two local changes:
+#   - both images are pinned by tag and digest instead of following a
+#     mutable tag;
+#   - the web port binds to host loopback only — public access arrives
+#     through the Cloudflare Tunnel (see README.md), never directly.
+#
+# All configuration comes from ./.env, which deploy.sh renders from
+# ../secrets/pm-stack.sops.yaml. Never hand-edit .env on a host and
+# never commit it.
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kaneo}
+      POSTGRES_DB: ${POSTGRES_DB:-kaneo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kaneo:
+    image: ghcr.io/usekaneo/kaneo:2.47.0@sha256:3df62194406061d9a162409b4c08d8af5225e423ce813d509694cea616ac9d23
+    ports:
+      - "127.0.0.1:5173:5173"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-Y",
+          "off",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:5173/api/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  postgres_data:
+
+--- pm-stack/grist/compose.yml ---
+# Project-management stack — Phase 2: Grist (roadmap/table layer).
+#
+# Grist (github.com/gristlabs/grist-core, Apache-2.0) — chosen over
+# Baserow in Phase 2; the evaluation is recorded in the design
+# record. The image is gristlabs/grist-oss: the pure Apache-2.0
+# build. (The main gristlabs/grist image toggles in a proprietary
+# "full" edition — we do not use it.) Upstream publishes floating
+# tags only, so the image is pinned BY DIGEST (the digest is the
+# pin; the comment records the release it was at pin time).
+#
+# Local changes vs the upstream one-liner:
+#   - the web port binds to host loopback and the host's tailnet
+#     address only — no public endpoint (Grist needs no inbound
+#     webhooks; the aggregator reaches it over the tailnet). The
+#     tailnet address is PM_STACK_TAILNET_IP from the rendered .env
+#     (deploy.sh detects it via `tailscale ip -4`); when it is unset
+#     the second binding falls back to loopback, so the stack binds
+#     loopback only — never a public interface, never another host's
+#     address (#781);
+#   - state lives in a named volume at /persist (Grist's own path
+#     for its SQLite-backed documents);
+#   - configuration comes from ./.env, rendered by deploy.sh from
+#     ../../secrets/pm-stack.sops.yaml. Never hand-edit .env on a
+#     host and never commit it.
+services:
+  grist:
+    # Grist OSS v1.7.21, image pulled 2026-10-24. Pinned by digest.
+    image: gristlabs/grist-oss@sha256:d761de16871ad0022c0ff966b46a92360c23073db8414ebb356cf879f510b1c4
+    ports:
+      - "127.0.0.1:8484:8484"
+      - "${PM_STACK_TAILNET_IP:-127.0.0.1}:8484:8484"
+    env_file:
+      - .env
+    environment:
+      # Rendered by deploy.sh from the SOPS key grist_default_email;
+      # the fallback is the operator's documented default address,
+      # kept only so a secrets file without the key renders the same
+      # value the stack has always run with (#781).
+      GRIST_DEFAULT_EMAIL: ${GRIST_DEFAULT_EMAIL:-drewrypope@gmail.com}
+    volumes:
+      - grist_data:/persist
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://127.0.0.1:8484/api/session/access/active"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  grist_data:
+
+--- pm-stack/pad/compose.yml ---
+# Project-management stack — Phase 2: Pad (planning layer).
+#
+# Pad (github.com/PerpetualSoftware/pad, Apache-2.0) is a single Go
+# binary + SQLite. The image is pinned by tag AND digest (the tag
+# names the release for humans; the digest is the binding pin).
+# Bump deliberately, like every other pin in this stack.
+#
+# Based on Pad's official docker-compose example, with local changes:
+#   - the web port binds to host loopback and the host's tailnet
+#     address only — no public endpoint (Pad needs no inbound
+#     webhooks; the aggregator reaches it over the tailnet). The
+#     tailnet address is PM_STACK_TAILNET_IP from the rendered .env
+#     (deploy.sh detects it via `tailscale ip -4`); when it is unset
+#     the second binding falls back to loopback, so the stack binds
+#     loopback only — never a public interface, never another host's
+#     address (#781);
+#   - configuration comes from ./.env, rendered by deploy.sh from
+#     ../../secrets/pm-stack.sops.yaml. Never hand-edit .env on a
+#     host and never commit it.
+services:
+  pad:
+    # Pad v0.18.1 (2026-10-18). Tag + digest pin (tag for humans,
+    # digest is the binding pin).
+    image: ghcr.io/perpetualsoftware/pad:0.18.1@sha256:45e5a63b941e7562f5e07990224f91ae8019b0185f87c06fc21ab5bec254f13e
+    ports:
+      - "127.0.0.1:7777:7777"
+      - "${PM_STACK_TAILNET_IP:-127.0.0.1}:7777:7777"
+    env_file:
+      - .env
+    environment:
+      PAD_PORT: "7777"
+      PAD_DB: /data/pad.db
+    volumes:
+      - pad_data:/data
+    working_dir: /data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-Y",
+          "off",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:7777/api/v1/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  pad_data:
+

@@ -1,0 +1,9 @@
+[Unit]
+Description=repo-universe issue checker (read-only delta report, #1651)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 %h/git/code/scripts/fleet/repo-universe/check_issues.py --inventory %h/git/code/doc/fleet/repo-universe.yaml
+WorkingDirectory=%h/git/code

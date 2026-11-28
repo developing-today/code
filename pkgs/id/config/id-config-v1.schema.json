@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "behavior": {
+      "additionalProperties": false,
+      "description": "Behavioral values in partial form: an absent field leaves the previous resolution plane's value in place. Resolved behavior must stay within every applicable ceiling.",
+      "properties": {
+        "max_hops": { "minimum": 0, "type": "integer" },
+        "sync_scope": { "enum": ["metadata", "full"], "type": "string" },
+        "tier": { "enum": ["cold", "warm", "hot"], "type": "string" }
+      },
+      "type": "object"
+    },
+    "ceiling_override": {
+      "additionalProperties": false,
+      "description": "A scoped narrowing of the hard ceilings. Every present field must be less than or equal to the document ceiling; an attempt to widen rejects the document.",
+      "properties": {
+        "max_bytes": { "minimum": 1, "type": "integer" },
+        "max_fan_out": { "minimum": 1, "type": "integer" },
+        "max_hops": { "minimum": 1, "type": "integer" },
+        "max_time_ms": { "minimum": 1, "type": "integer" }
+      },
+      "type": "object"
+    },
+    "ceilings": {
+      "additionalProperties": false,
+      "description": "Hard resource ceilings: non-overridable. Lower scopes may only narrow them.",
+      "properties": {
+        "max_bytes": { "minimum": 1, "type": "integer" },
+        "max_fan_out": { "minimum": 1, "type": "integer" },
+        "max_hops": { "minimum": 1, "type": "integer" },
+        "max_time_ms": { "minimum": 1, "type": "integer" }
+      },
+      "required": ["max_hops", "max_bytes", "max_time_ms", "max_fan_out"],
+      "type": "object"
+    },
+    "fixed_gates": {
+      "additionalProperties": false,
+      "description": "The fixed admission gates (mechanism, not behavior). Each gate is const true: a document that attempts to disable one is rejected, never honored.",
+      "properties": {
+        "authorization": { "const": true },
+        "replay_protection": { "const": true },
+        "signature_verification": { "const": true },
+        "tenant_scope": { "const": true },
+        "validation": { "const": true }
+      },
+      "type": "object"
+    },
+    "scoped_override": {
+      "additionalProperties": false,
+      "properties": {
+        "behavior": { "$ref": "#/$defs/behavior" },
+        "ceilings": { "$ref": "#/$defs/ceiling_override" },
+        "scope": { "minLength": 1, "type": "string" }
+      },
+      "required": ["scope"],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/developing-today/code/pkgs/id/config/id-config-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical versioned configuration document for the id V2 program (slice 9111-01, issue #10178). Design basis: doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md, section 'Configuration data model and precedence' (statements S7.1, S7.10-S7.13). Kept in lockstep with the Rust contract in pkgs/id/crates/id-config by pkgs/id/tests/config_invariants.rs. Rules stated here and enforced by the reference validator: fixed admission gates cannot be disabled (const true), ceilings are hard and may only narrow at lower scopes, unknown fields reject the document, and extensions must be namespaced and are retained but never executed.",
+  "properties": {
+    "behavior": { "$ref": "#/$defs/behavior" },
+    "ceilings": { "$ref": "#/$defs/ceilings" },
+    "config_id": { "description": "Stable configuration identity.", "minLength": 1, "type": "string" },
+    "extensions": {
+      "additionalProperties": true,
+      "description": "Namespaced optional extensions. Retained verbatim in resolved output; never executed unless understood and authorized by a consumer.",
+      "propertyNames": {
+        "description": "Extension keys must be namespaced: at least one '.' or '/' separator, e.g. 'example.com/experiment'.",
+        "pattern": "^[^./\\s]+([./][^./\\s]+)+$"
+      },
+      "type": "object"
+    },
+    "gates": { "$ref": "#/$defs/fixed_gates" },
+    "mode": {
+      "description": "Named mode: a coherent behavior bundle that contributes behavioral defaults only. A mode cannot confer identity or privilege.",
+      "enum": ["single-node", "hosted-tenant", "federated-relay"],
+      "type": "string"
+    },
+    "overrides": {
+      "description": "Scoped overrides. Applied in scope-name order during resolution; two overrides for the same scope reject the document.",
+      "items": { "$ref": "#/$defs/scoped_override" },
+      "type": "array"
+    },
+    "protocol_versions": {
+      "description": "Protocol-version allowlist. Resolved output is sorted; authoring order carries no meaning.",
+      "items": { "minLength": 1, "type": "string" },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "revision": { "description": "Monotonic revision of this configuration.", "minimum": 0, "type": "integer" },
+    "schema_version": {
+      "const": 1,
+      "description": "Schema version. Only version 1 is accepted; any other version rejects the document.",
+      "type": "integer"
+    }
+  },
+  "required": ["schema_version", "config_id", "revision", "mode", "protocol_versions", "ceilings"],
+  "title": "id ConfigDocument v1",
+  "type": "object"
+}

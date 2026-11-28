@@ -1,0 +1,6 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: GatewayClass
+metadata:
+  name: apisix
+spec:
+  controllerName: gateway.apisix.apache.org/gateway-controller

@@ -1,0 +1,7 @@
+warning: input 'git-hooks' has an override for a non-existent input 'gitignore'
+warning: input 'id-bun2nix' has an override for a non-existent input 'import-tree'
+warning: input 'nix-topology' has an override for a non-existent input 'devshell'
+warning: input 'nix-topology' has an override for a non-existent input 'flake-utils'
+warning: input 'nix-topology' has an override for a non-existent input 'pre-commit-hooks'
+warning: input 'pre-commit-hooks' has an override for a non-existent input 'gitignore'
+warning: input 'zig-overlay' has an override for a non-existent input 'flake-utils'

@@ -1,0 +1,15 @@
+dt-migration:*.dtm.sql;*.dtm.go
+dt-sql-migration:*.dtm.sql
+dt-go-migration:*.dtm.go
+dtid:
+dt:
+dt-identity:
+dt-id:
+dt-code-migration:
+dt-code-map:
+dt-code-graph:
+id:
+dt-cuid2:
+cuid2:
+000:
+dt-000:

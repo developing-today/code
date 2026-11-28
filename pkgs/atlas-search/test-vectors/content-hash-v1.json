@@ -1,0 +1,43 @@
+{
+  "chunk_content_hash": {
+    "algorithm": null,
+    "input_bytes": null,
+    "interop_claims": "forbidden until a producer is pinned here with a known-answer vector (design: crosscut/versioned-design.md, Remaining evidence gaps)",
+    "producer": null,
+    "profile": null,
+    "scope": "Atlas corpus chunk identity (chunks.content_hash, chunks_raw.content_hash)",
+    "status": "producer_unavailable",
+    "vectors": []
+  },
+  "issue": "https://github.com/developing-today/code/issues/10147",
+  "manifest_content_hash": {
+    "algorithm": "SHA-256, lowercase hex",
+    "canonical_form": "v{version}\\n then one {name}|{shape}|{semantics}|{label_column}\\n line per dimension, declaration order, label_column empty when None",
+    "scope": "Classification manifest surface identity ONLY (crates/atlas-core/src/manifest.rs Manifest::compute_hash). NOT the chunk content_hash; recorded to keep the two apart.",
+    "status": "pinned",
+    "vectors": [
+      {
+        "canonical": "v1\n",
+        "dimensions": [],
+        "sha256": "2d27fbdf4e8ca207afbfa388ca9172fbcc6c70e534af2476b3b704f87debadcf",
+        "version": 1
+      },
+      {
+        "canonical": "v1\nkind|scalar_in|exact|kind\nclient|scalar_in|exact|client\ntopics|json_list|exact|topics\nprojects|json_list|exact|projects\ncreated_at|timestamp_range|exact|created_at\n",
+        "dimensions": [
+          { "label_column": "kind", "name": "kind", "semantics": "exact", "shape": "scalar_in" },
+          { "label_column": "client", "name": "client", "semantics": "exact", "shape": "scalar_in" },
+          { "label_column": "topics", "name": "topics", "semantics": "exact", "shape": "json_list" },
+          { "label_column": "projects", "name": "projects", "semantics": "exact", "shape": "json_list" },
+          { "label_column": "created_at", "name": "created_at", "semantics": "exact", "shape": "timestamp_range" }
+        ],
+        "note": "The source's own builtin_manifest() (manifest.rs): version SUPPORTED_MANIFEST_VERSION = 1 and the five code-defined dimensions.",
+        "sha256": "f73854edf3cf4e93458728c2904900f8a3eee2bf8c1fc39997d1a29d33afc277",
+        "version": 1
+      }
+    ]
+  },
+  "schema": "atlas-content-hash-vectors/v1",
+  "traced_at": "2026-11-16",
+  "traced_at_main": "67596fcbac55c8788c6ae587f5436b5c3fc250d3"
+}

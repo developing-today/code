@@ -1,0 +1,26 @@
+publisher's record on the testnet 170.050975ms after online
+A dht only: connected 92.432305ms, replied 102.07369ms, echoed true, handshake over relay http://localhost:41889/
+  path after reply: * relay http://localhost:41889/
+  C before dial, item: memory_lookup: 1 relay, 0 direct
+  C before dial, item: pkarr: 1 relay, 0 direct
+C memory: wrong relay, dht: right relay: connected 1.025157167s, replied 1.03540633s, echoed true, handshake over relay http://localhost:41889/
+  path after reply: * relay http://localhost:41889/
+  D before dial, item: memory_lookup: 0 relay, 1 direct
+  D before dial, item: pkarr: 1 relay, 0 direct
+D memory: dead direct, dht: right relay: connected 1.023456746s, replied 1.033336305s, echoed true, handshake over relay http://localhost:41889/
+  path after reply: * relay http://localhost:41889/
+E control (only a wrong relay known): failed after 30.002498114s: timed out
+case, round, reply time, attempts, selected path
+A dht only                                 1     102.1 ms  1 attempt(s)  relay http://localhost:41889/
+B memory only (Q)                          1      33.5 ms  1 attempt(s)  relay http://localhost:41889/
+C memory: wrong relay, dht: right relay    1    1035.4 ms  1 attempt(s)  relay http://localhost:41889/
+D memory: dead direct, dht: right relay    1    1033.3 ms  1 attempt(s)  relay http://localhost:41889/
+A dht only                                 2     101.0 ms  1 attempt(s)  relay http://localhost:41889/
+B memory only (Q)                          2      32.8 ms  1 attempt(s)  relay http://localhost:41889/
+C memory: wrong relay, dht: right relay    2    1037.3 ms  1 attempt(s)  relay http://localhost:41889/
+D memory: dead direct, dht: right relay    2    1039.8 ms  1 attempt(s)  relay http://localhost:41889/
+A dht only                                 3     116.1 ms  1 attempt(s)  relay http://localhost:41889/
+B memory only (Q)                          3      37.6 ms  1 attempt(s)  relay http://localhost:41889/
+C memory: wrong relay, dht: right relay    3    1041.7 ms  1 attempt(s)  relay http://localhost:41889/
+D memory: dead direct, dht: right relay    3    1046.3 ms  1 attempt(s)  relay http://localhost:41889/
+RESULT t5: PASS

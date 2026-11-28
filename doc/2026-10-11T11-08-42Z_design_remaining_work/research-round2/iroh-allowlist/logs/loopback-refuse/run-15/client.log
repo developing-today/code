@@ -1,0 +1,17 @@
+2026-10-11T17:22:20.399025Z  INFO harness: dialing with one loopback hint role="client" event="start" me=ed4928c628 kind=connect ticket=[127.0.0.1:55518]
+2026-10-11T17:22:20.399847Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:22:20.399969Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=ResolveRemote(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state::path_state: added addressing information
+2026-10-11T17:22:20.401647Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=SendDatagram(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: sending datagram to all known paths paths=[Ip(127.0.0.1:55518)]
+2026-10-11T17:22:20.402042Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: local addrs updated, triggering holepunching
+2026-10-11T17:22:20.402078Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: not holepunching: no connections
+2026-10-11T17:22:20.402104Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: Address Lookup not configured
+2026-10-11T17:22:20.493526Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(98255085836640) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={127.0.0.1:52349}
+2026-10-11T17:22:20.494400Z  INFO harness: connect() returned a Connection role="client" event="connect_ok" elapsed_ms=95.25549799999999 remote_info=["Ip(127.0.0.1:55518)/Active"]
+2026-10-11T17:22:20.591256Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_path_event{conn_id=ConnId(98255085836640) event=Ok(RemoteStatus { id: PathId(0), status: Available })}: iroh::socket::remote_map::remote_state: path event
+2026-10-11T17:22:20.591389Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: remote addrs updated, triggering holepunching id=ConnId(98255085836640) evt=Ok(AddressAdded(127.0.0.1:55518))
+2026-10-11T17:22:20.591468Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: candidates to holepunch? last_hp=HolepunchAttempt { when: Instant { tv_sec: 36977, tv_nsec: 932823317 }, local_candidates: {127.0.0.1:52349}, remote_candidates: {} } local_candidates={127.0.0.1:52349} remote_candidates={127.0.0.1:55518}
+2026-10-11T17:22:20.600288Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:22:20.602671Z  INFO harness: peer closed role="client" event="closed_by_peer" elapsed_ms=203.525341 why=closed by peer: not on allowlist (code 4097) dbg=ApplicationClosed(ApplicationClose { error_code: 4097, reason: b"not on allowlist" }) remote_info=["Ip(127.0.0.1:55518)/Active"]
+2026-10-11T17:22:20.804546Z  INFO harness: final snapshot role="client" event="remote_info_final" remote_info=["Ip(127.0.0.1:55518)/Active"]
+2026-10-11T17:22:20.804801Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor cancelled
+2026-10-11T17:22:20.804843Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor terminating

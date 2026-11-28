@@ -1,0 +1,8 @@
+server: 1 relay(s), policy RelayOnly, no lookups
+client: 1 relay(s), policy RelayOnly, no lookups
+online: server 3.011857771s, client 6.222µs
+server's own address: 1 relay, 2 direct
+ticket: 103 chars, 1 relay, 0 direct
+dial by ticket: connected 13.088238ms, replied 22.714688ms, echoed true, handshake over relay http://localhost:35529/
+  path after reply: * relay http://localhost:35529/
+RESULT t1: PASS

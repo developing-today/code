@@ -1,0 +1,146 @@
+/**
+ * Render-time effective state for one dashboard card (#1443/#1449/
+ * #1450/#1451, epic #1442).
+ *
+ * The bug this fixes: dashboard clicks recorded actions in the store,
+ * but the rendered card never changed — the only consumer runs hourly,
+ * so a snooze/dismiss sat invisible for up to an hour and the card
+ * "would not go away". The dashboard owns the store, so the card's
+ * effective state is derived HERE, at render, from the same records
+ * the consumers will later apply:
+ *
+ * - Suppression: the latest effective snooze (until in the future),
+ *   dismiss, or mark-done action on the object takes the card out of
+ *   its main list immediately — pending (state "new") counts exactly
+ *   like applied. A consumer REJECTION lifts the suppression again
+ *   (the item resurfaces, with the rejection badge explaining why).
+ * - Restore (#1450): a `restore` action cancels the action it names
+ *   in `supersedes`, even one the consumer already applied — the card
+ *   returns to its list with its full history intact. (The store's
+ *   own supersede transition only reaches still-new actions; cancels
+ *   of applied actions are a derivation concern, so they live here.)
+ * - Acknowledged: an effective acknowledge (pending or applied) marks
+ *   the card quiet — seen, not resolved.
+ * - Survey answers (#1451): answer actions merge per question, the
+ *   latest answer to a question wins, so partial submits accumulate
+ *   on the card until every required question is answered.
+ *
+ * Pure derivation over the object's action list (oldest first, the
+ * store's order) — no I/O, so renderers and tests share one truth.
+ */
+import { latestInFamily, type DashAction } from "./actions.ts";
+import { isRecord } from "./validate.ts";
+
+export type CardSuppression =
+  | { kind: "snoozed"; until: string; action: DashAction }
+  | { kind: "dismissed"; action: DashAction }
+  | { kind: "done"; action: DashAction };
+
+export interface CardState {
+  /** The card leaves its main list while this is set. */
+  suppressed: CardSuppression | null;
+  /** An effective acknowledge exists (pending or applied). */
+  acked: boolean;
+  /** Actions still waiting for their consumer (state "new"). */
+  pending: DashAction[];
+  /** Merged survey answers by question id, latest answer wins. */
+  answered: Map<string, string | string[]>;
+  /** Action that supplied the current value for each answered question. */
+  answerActionsByQuestion: Map<string, DashAction>;
+  /** The option picked by the latest effective option answer, if any. */
+  answeredOptionId?: string;
+  /** Action that supplied the latest standalone option pick. */
+  answeredOptionAction?: DashAction;
+  /** All effective option actions, including legacy records without a
+   *  canonical question pointer, for render-time mapping to current items. */
+  answeredOptionActionsById: Map<string, DashAction>;
+}
+
+/** Ids cancelled by a restore: any non-superseded, non-rejected
+ *  restore action cancels the action it names in `supersedes`
+ *  (a consumer rejection is non-effective, as for every other verb) —
+ *  unless the restore is itself cancelled by a later effective
+ *  restore (#4310). A restore chain therefore alternates: restore R1
+ *  cancels dismiss D, restore R2 superseding R1 cancels R1 and so
+ *  revives D, R3 superseding R2 cancels R2 and re-cancels D, and so
+ *  on. Deriving newest first (input is oldest first) makes each
+ *  restore's own cancellation known before its target is considered,
+ *  which settles chains of any depth in one pass. */
+export function cancelledActionIds(actions: DashAction[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = actions.length - 1; i >= 0; i--) {
+    const a = actions[i];
+    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes && !out.has(a.id))
+      out.add(a.supersedes);
+  }
+  return out;
+}
+
+/** The actions that still speak for the object: not superseded, not
+ *  cancelled by a restore. Input order (oldest first) is preserved. */
+export function effectiveActions(actions: DashAction[] | undefined): DashAction[] {
+  if (!actions?.length) return [];
+  const cancelled = cancelledActionIds(actions);
+  return actions.filter((a) => a.state !== "superseded" && !cancelled.has(a.id));
+}
+
+export function cardState(actions: DashAction[] | undefined, now = Date.now()): CardState {
+  const eff = effectiveActions(actions);
+  const suppressors: CardSuppression[] = [];
+  const snooze = latestInFamily(eff, "snooze");
+  const snoozeUntil = isRecord(snooze?.payload) ? snooze.payload.until : undefined;
+  if (snooze && snooze.state !== "rejected" && typeof snoozeUntil === "string" && Date.parse(snoozeUntil) > now) {
+    suppressors.push({ kind: "snoozed", until: snoozeUntil, action: snooze });
+  }
+  const dismiss = latestInFamily(eff, "dismiss");
+  if (dismiss && dismiss.state !== "rejected") suppressors.push({ kind: "dismissed", action: dismiss });
+  const done = latestInFamily(eff, "done");
+  if (done && done.state !== "rejected") suppressors.push({ kind: "done", action: done });
+  suppressors.sort((a, b) => a.action.createdAt.localeCompare(b.action.createdAt));
+
+  const ack = latestInFamily(eff, "ack");
+  const answered = new Map<string, string | string[]>();
+  const answerActionsByQuestion = new Map<string, DashAction>();
+  let answeredOptionId: string | undefined;
+  let answeredOptionAction: DashAction | undefined;
+  const answeredOptionActionsById = new Map<string, DashAction>();
+  for (const a of eff) {
+    if (a.verb !== "answer" || a.state === "rejected" || !isRecord(a.payload)) continue;
+    if (Array.isArray(a.payload.answers)) {
+      for (const entry of a.payload.answers) {
+        if (!isRecord(entry) || typeof entry.questionId !== "string") continue;
+        const value = entry.value;
+        if (typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+          answered.set(entry.questionId, value);
+          answerActionsByQuestion.set(entry.questionId, a);
+        }
+      }
+    }
+    if (typeof a.payload.optionId === "string") {
+      answeredOptionId = a.payload.optionId;
+      answeredOptionAction = a;
+      answeredOptionActionsById.set(a.payload.optionId, a);
+      if (typeof a.payload.questionId === "string") {
+        answered.set(a.payload.questionId, a.payload.optionId);
+        answerActionsByQuestion.set(a.payload.questionId, a);
+      }
+    }
+  }
+  return {
+    suppressed: suppressors.at(-1) ?? null,
+    acked: ack !== undefined && ack.state !== "rejected",
+    pending: eff.filter((a) => a.state === "new"),
+    answered,
+    answerActionsByQuestion,
+    ...(answeredOptionId ? { answeredOptionId } : {}),
+    ...(answeredOptionAction ? { answeredOptionAction } : {}),
+    answeredOptionActionsById,
+  };
+}
+
+/** The pending action of one verb on a card, if any — the render uses
+ *  it to disable the matching control so repeat clicks cannot pile up
+ *  duplicate pending actions (#1443). */
+export function pendingVerb(cs: CardState, verb: DashAction["verb"]): DashAction | undefined {
+  return cs.pending.find((a) => a.verb === verb);
+}

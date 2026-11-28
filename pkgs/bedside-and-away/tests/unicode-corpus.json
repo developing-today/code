@@ -1,0 +1,62 @@
+{
+  "_note": "Golden corpus for the BA-046 text classes (worker/text.mjs). Each comment and identifier entry is [text, accepted]; each name entry is [input, cleaned]. Lone surrogates are written as JSON escapes.",
+  "comment": [
+    ["Plain text", true],
+    [
+      "\u65e5\u672c\u8a9e\u3068\u041f\u0440\u0438\u0432\u0435\u0442 and \u0627\u0644\u0639\u0631\u0628\u064a\u0629",
+      true
+    ],
+    ["Family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67", true],
+    ["Flag \ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f", true],
+    ["Skin tone \ud83d\udc4d\ud83c\udffd", true],
+    ["Heart on fire \u2764\ufe0f\u200d\ud83d\udd25", true],
+    ["Keycap 1\ufe0f\u20e3", true],
+    ["Two lines\nand a\ttab\r\n", true],
+    ["Persian \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", true],
+    ["Bidi override \u202e is free text in a comment", true],
+    ["", true],
+    ["Bell \u0007", false],
+    ["Escape \u001b[31m", false],
+    ["NUL \u0000", false],
+    ["DEL \u007f", false],
+    ["C1 \u0085", false],
+    ["Lone high \ud800", false],
+    ["Lone low \udc00 first", false]
+  ],
+  "identifier": [
+    ["item_1", true],
+    ["asin:B01CKMP24E", true],
+    ["\u65e5\u672c\u8a9e", true],
+    ["receipt:2026-01", true],
+    ["", false],
+    ["a\u200db", false],
+    ["a\u202eb", false],
+    ["a\u2066b", false],
+    ["tab\there", false],
+    ["zero\u200bwidth", false],
+    ["\ud800", false],
+    [
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      false
+    ]
+  ],
+  "name": [
+    ["Kids \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67", "Kids \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67"],
+    [
+      "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f trip",
+      "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f trip"
+    ],
+    ["  Spaced  ", "Spaced"],
+    [
+      "\u65e5\u672c\u8a9e\u200d\u0001 \u041f\u0440\u0438\u0432\u0435\u0442",
+      "\u65e5\u672c\u8a9e \u041f\u0440\u0438\u0432\u0435\u0442"
+    ],
+    ["a\u202eb", "ab"],
+    ["Zero\u200bwidth", "Zerowidth"],
+    ["\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"],
+    ["\u200c leading", "leading"],
+    ["Lone \ud800 surrogate", "Lone  surrogate"],
+    ["Dangling\u200d", "Dangling"],
+    ["Thumbs \ud83d\udc4d\ud83c\udffd", "Thumbs \ud83d\udc4d\ud83c\udffd"]
+  ]
+}

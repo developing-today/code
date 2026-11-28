@@ -1,0 +1,30 @@
+[2m2026-10-11T12:28:23.559847Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:28:23.561536Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:28:23.562302Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:28:26.896106Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:28:26.896319Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:28:26.897767Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:28:27.350669Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:35398[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0mceb8cfec8b [3mconnection_id[0m[2m=[0m0[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting
+[2m2026-10-11T12:28:27.570195Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:28:27.570954Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:28:27.571681Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:28:27.928040Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:35428[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:28:28.014311Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:35434[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:28:28.114785Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:35442[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:28:36.004586Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:48222[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0mb660736172 [3mconnection_id[0m[2m=[0m0[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof, exiting
+[2m2026-10-11T12:28:36.241276Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:48226[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0m35501b7686 [3mconnection_id[0m[2m=[0m1[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting
+[2m2026-10-11T12:28:36.468716Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:48232[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:28:36.567011Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:48238[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:28:36.666431Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:48244[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA

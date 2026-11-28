@@ -1,0 +1,10 @@
+## T1: c's replica is copied (compromise); c stays in the group
+  after b's update, the copy derives the new root: true
+  after c's own update, the copy derives the new root: false
+  the copy derives the epoch-0 root (earlier than the compromise): true
+
+## T2: a removes c; c's copy is then fed public ops
+  b (a member) derives the post-removal root: true
+  c, informed of its removal, derives a root: false
+  c that ignores its removal, given a's later update: Some(OutOfOrderOperation)
+  c's copy derives the pre-removal (epoch-0) root: true

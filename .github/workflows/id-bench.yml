@@ -1,0 +1,136 @@
+# Benchmark regression reporting for pkgs/id — F11.8 slice 3 (#1513).
+#
+# Runs the existing F11.8 workloads plus the #557 many-worlds measurement
+# (world_bench) and diffs their medians against the committed baselines in
+# pkgs/id/benches/baseline.txt,
+# using .github/scripts/id-bench-compare.sh. The report lands in the job
+# summary and as a run artifact.
+#
+# Main tier only (Phase 2, #1781): benchmarks no longer run on PRs.
+#
+# NON-BLOCKING BY DESIGN: this workflow is separate from the required
+# "nix flake check" gate in id-check.yml, the bench step is
+# continue-on-error, and the compare script always exits 0. A regression
+# flag informs the PR — it never fails a required check. Baselines were
+# taken on the fleet laptop (see pkgs/id/benches/BASELINES.md); shared
+# CI runners are a different machine class, so flags are a prompt to
+# investigate, not a verdict.
+
+name: id bench
+
+# CI tier policy: see .github/ci-policy.md
+
+on:
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Same concurrency shape as id-check.yml: push-to-main runs are keyed by
+# run_id so every merged tree gets its own completed run; PR runs share
+# a per-ref group so a new push supersedes the stale run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: "full (main tier): benchmark regression report"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
+
+      # Same store cache as the PR gate, so the bench build starts warm
+      # (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      # The compare script is the only regression signal for these
+      # benchmarks; its own tests (#1619) are plain bash+awk and run
+      # before the bench build so a broken script fails fast.
+      - name: Test the compare script
+        run: .github/scripts/id-bench-compare.test.sh
+
+      # The benchmark crate is a standalone workspace; its adapter and
+      # workload-oracle integration targets are not reached by pkgs/id's
+      # default-member test checks.
+      - name: Test benchmark adapters and workload oracle
+        run: nix develop ./pkgs/id --command cargo test --manifest-path ./pkgs/id/benchmarks/Cargo.toml --tests
+
+      # Full-size workloads, exactly as the baselines were taken
+      # (BASELINES.md): --quick numbers are smoke sizes and are never
+      # comparable to the committed baselines.
+      # The matrix bundle (#5896) is stamped with the ci-runner machine
+      # class (#5894: a relative-only series, never compared against
+      # the fleet-laptop baselines) and this run's commit.
+      - name: Run benchmarks
+        id: bench
+        continue-on-error: true
+        working-directory: pkgs/id
+        env:
+          ID_BENCH_MACHINE_CLASS: ci-runner
+          ID_BENCH_GIT_SHA: ${{ github.sha }}
+          ID_BENCH_RESULTS: ${{ github.workspace }}/results.jsonl
+        run: |
+          nix develop --command just bench 2>&1 | tee "$GITHUB_WORKSPACE/bench-output.txt"
+
+      - name: Compare against committed baselines
+        if: always()
+        run: |
+          if [ "${{ steps.bench.outcome }}" != "success" ]; then
+            {
+              echo "## Benchmark regression report"
+              echo
+              echo "⚠️ The benchmark run did not complete (step outcome: ${{ steps.bench.outcome }}), so there are no results to compare. This report is non-blocking; see the run log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          .github/scripts/id-bench-compare.sh bench-output.txt pkgs/id/benches/baseline.txt | tee bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          # Matrix comparison (#5896): keyed on the full matrix
+          # identity. The committed baseline.jsonl is the fleet-laptop
+          # class and this run is ci-runner, so rows report as
+          # incomparable (machine class differs) until a ci-runner
+          # baseline is committed — cross-class comparison is never
+          # performed. The job summary is an index: it links the
+          # uploaded bundle below, it is not the record.
+          if [ -f results.jsonl ]; then
+            {
+              echo
+              echo "Matrix results bundle: \`results.jsonl\` in the **bench-output** artifact of this run (run ${{ github.run_id }})."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ -f pkgs/id/benches/baseline.jsonl ]; then
+              .github/scripts/id-bench-compare.sh results.jsonl pkgs/id/benches/baseline.jsonl | tee -a bench-report.md >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-output
+          path: |
+            bench-output.txt
+            bench-report.md
+            results.jsonl
+          if-no-files-found: ignore

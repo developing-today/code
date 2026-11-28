@@ -1,0 +1,13 @@
+[Unit]
+Description=PM console — put merged console code into service, if it starts (pm-stack)
+Documentation=https://github.com/developing-today/code/tree/main/pm-stack/console
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Does nothing unless the checkout holds console code that is not the
+# code in service. New code is started in a self-check first; code that
+# does not start is never put into service.
+ExecStart=/run/current-system/sw/bin/bash %h/git/code/pm-stack/console/redeploy.sh
+Environment=PATH=%h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin
+TimeoutStartSec=300
