@@ -5900,6 +5900,86 @@ mod tests {
             .unwrap();
         assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
     }
+    #[tokio::test]
+    async fn probe_records_read_shape_trusted_prefix_after() {
+        #[derive(Debug, Default)]
+        struct ShapeProbe {
+            answered: BTreeSet<String>,
+            results: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>>,
+        }
+        impl WorldProgram for ShapeProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result"
+                        && let Some(id) = value["id"].as_str()
+                    {
+                        self.answered.insert(id.to_owned());
+                        self.results.lock().unwrap().insert(id.to_owned(), value);
+                    }
+                }
+                Ok(())
+            }
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"count": 1, "other": 2, "zebra": 3}).to_string(),
+                ))
+            }
+            fn wants(&mut self) -> Result<Option<String>> {
+                let requests: Vec<serde_json::Value> = [
+                    ("control-prefix", serde_json::json!({"prefix": "co"})),
+                    ("control-after", serde_json::json!({"after": "count"})),
+                    ("bad-prefix-num", serde_json::json!({"prefix": 123})),
+                    ("bad-prefix-null", serde_json::json!({"prefix": null})),
+                    ("bad-after-num", serde_json::json!({"after": 123})),
+                    ("bad-after-obj", serde_json::json!({"after": {"x": 1}})),
+                ]
+                .into_iter()
+                .filter(|(id, _)| !self.answered.contains(*id))
+                .map(|(id, args)| serde_json::json!({"id": id, "cap": "records.read", "args": args}))
+                .collect();
+                Ok(Some(
+                    serde_json::json!({"v": 1, "requests": requests}).to_string(),
+                ))
+            }
+        }
+        let mut core = world(128);
+        core.ledger
+            .set_granted(BTreeSet::from(["records.read".to_owned()]));
+        let captured: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let probe = ShapeProbe {
+            results: captured.clone(),
+            ..Default::default()
+        };
+        let mut actor = WorldActor::for_test(core, Box::new(probe), None);
+        actor.after_change().await;
+        let captured = captured.lock().unwrap();
+        println!("CAPTURED: {}", serde_json::to_string_pretty(&*captured).unwrap());
+        let keys = |id: &str| -> Vec<String> {
+            let r = &captured[id];
+            assert_eq!(r["ok"], true, "{r}");
+            r["value"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["key"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(keys("control-prefix"), vec!["count".to_owned()]);
+        assert_eq!(
+            keys("control-after"),
+            vec!["other".to_owned(), "zebra".to_owned()]
+        );
+        // BUG (probe asserts today's behavior): a non-string prefix/after is
+        // silently treated as omitted, widening the page to every record.
+        let all = vec!["count".to_owned(), "other".to_owned(), "zebra".to_owned()];
+        assert_eq!(keys("bad-prefix-num"), all);
+        assert_eq!(keys("bad-prefix-null"), all);
+        assert_eq!(keys("bad-after-num"), all);
+        assert_eq!(keys("bad-after-obj"), all);
+    }
 }
 
 #[cfg(test)]
@@ -8004,6 +8084,7 @@ mod audit_tests {
             );
         }
     }
+
 }
 
 /// Structural guard for the one client projection (F11.11, #543).
