@@ -1,1 +1,0 @@
-{ "table": "agent.mirror_sessions", "conflict": ["session_id"], "jsonb_cols": ["payload"], "mode": "update" }

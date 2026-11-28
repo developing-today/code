@@ -1,8 +1,0 @@
-{
-  "author": "ed25519:bbbb2222forum",
-  "body": { "board": "events", "text": "Saturday meetup retrospective — post your photos and notes here." },
-  "created_claim": "2026-11-24T01:40:00Z",
-  "kind": "forum-post",
-  "object_id": "post-meetup-thread",
-  "schema_version": 1
-}

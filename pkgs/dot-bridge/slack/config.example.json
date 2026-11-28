@@ -1,8 +1,0 @@
-{
-  "team_id": "T_REPLACE",
-  "app_id": "A_REPLACE",
-  "channel_id": "G_REPLACE_PRIVATE_CHANNEL",
-  "bot_user_id": "U_REPLACE_BRIDGE_BOT",
-  "dot_user_id": "U_REPLACE_VERIFIED_DOT_ID",
-  "allowed_sender_ids": ["U_REPLACE_VERIFIED_DOT_ID", "U_REPLACE_DREW"]
-}

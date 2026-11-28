@@ -1,9 +1,0 @@
-[Unit]
-Description=repo-universe pull-in surface (mirrored tracking issues, #1652)
-After=network-online.target repo-universe-issue-check.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/env python3 %h/git/code/scripts/fleet/repo-universe/pull_in.py --inventory %h/git/code/doc/fleet/repo-universe.yaml
-WorkingDirectory=%h/git/code

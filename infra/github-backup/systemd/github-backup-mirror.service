@@ -1,8 +1,0 @@
-[Unit]
-Description=github-backup: synchronize and verify all fleet plain Git mirrors
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/env python3 __GB_DIR__/bin/plain_mirror_all.py

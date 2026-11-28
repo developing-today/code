@@ -1,5 +1,0 @@
-{"from": "client", "frame": {"type": "join", "capability": "tui-capability", "after": 6, "resume_token": "r4"}}
-{"from": "server", "frame": {"type": "event", "event": {"sequence": 7, "participant_id": 1, "kind": {"kind": "input", "data": [97]}}}}
-{"from": "server", "frame": {"type": "view", "sequence": 7, "data": "Lobby", "view_revision": 2, "resume_token": "r7"}}
-{"from": "client", "frame": {"type": "chat", "text": "back", "screen_revision": null}}
-{"from": "server", "frame": {"type": "event", "event": {"sequence": 8, "participant_id": 1, "kind": {"kind": "chat", "data": "back"}}}}

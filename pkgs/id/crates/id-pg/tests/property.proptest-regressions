@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 399c6b7e56b99061941f32b2ac13f4146a1b4e1260f1cfd0dc7ea6e29362f4a4 # shrinks to (collection, query) = (CollectionAllowlist { schema: "public", relation: "items", columns: [ColumnDecl { name: "id", filterable: false, orderable: false }, ColumnDecl { name: "title", filterable: true, orderable: true }, ColumnDecl { name: "created_at", filterable: true, orderable: false }, ColumnDecl { name: "owner", filterable: true, orderable: false }], unique_key: ["id", "title"], max_limit: None }, Query { method: Get, target: Collection("items"), select: [], filter: Some(Leaf(FilterLeaf { column: "title", op: Neq, value: Int(-461) })), order: [OrderKey { column: "title", direction: Asc }, OrderKey { column: "title", direction: Desc }, OrderKey { column: "title", direction: Desc }], pagination: Keyset { cursor: [Int(237), Float(834456.4197682268)] }, limit: Some(40), count: None })

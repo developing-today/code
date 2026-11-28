@@ -1,8 +1,0 @@
-[Unit]
-Description=github-backup: verify all five backup copies and file freshness alerts
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/env bash __GB_DIR__/systemd/run-freshness.sh

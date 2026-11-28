@@ -1,8 +1,0 @@
-{"fixture":1,"world":"tic-tac-toe-determinism","module_hash":"a3fbe44805adfbec2fe7000dc9440af23171da997ca088d13f150debe4a3c583","current_sequence":7,"complete":true,"records":{"board":"XXXOO----","plays":5,"winner":"X"}}
-{"sequence":1,"kind":"other","name":"program_installed"}
-{"sequence":2,"participant_id":1,"kind":"chat","text":"gl hf"}
-{"sequence":3,"participant_id":1,"kind":"input","hex":"30"}
-{"sequence":4,"participant_id":2,"kind":"input","hex":"33"}
-{"sequence":5,"participant_id":1,"kind":"input","hex":"31"}
-{"sequence":6,"participant_id":2,"kind":"input","hex":"34"}
-{"sequence":7,"participant_id":1,"kind":"input","hex":"32"}

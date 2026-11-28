@@ -1,7 +1,0 @@
-[package]
-name = "fleet-registry"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-description = "The full fleet domain registry: names, one-line descriptions, argv0 aliases, capabilities and variant profiles. Std-only; compiled into every fleet variant."

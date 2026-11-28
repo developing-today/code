@@ -1,8 +1,0 @@
-{
-  "dependencies": {
-    "@knikolov/opencode-plugin-simple-memory": "^2.0.0",
-    "@opencode-ai/plugin": "1.19.6",
-    "opencode-mem": "2.43.0",
-    "true-mem": "^1.4.1"
-  }
-}

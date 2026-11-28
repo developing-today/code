@@ -1,3 +1,0 @@
-AUDIT-7 Lane 4 (MERGED-PR-AUDIT, tracking https://github.com/developing-today/code/issues/13879) — PR-vs-issue comparison record for PR #100:
-
-PR #100 merged 2026-11-23T04:24Z with the mode=min cache-export fix for this issue's deterministic build-leg failure, and the fix is verified present on main. However, this standing issue records further build-leg failures AFTER that merge — 2026-11-23T11:25Z (run 45161352548) and 2026-11-23T23:08Z (run 45283270086). Verdict: **partial** — the #100 root-cause fix landed, but the leg is not yet proven green; the remaining verification/failure belongs to this standing issue (no duplicate filed). PR #100 is labelled `audit:partial` by Lane 4.

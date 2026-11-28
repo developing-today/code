@@ -1,6 +1,0 @@
-<document version="1">
-  <page title="Settings">
-    <heading level="1">Settings</heading>
-    <button action="save">Save</button>
-  </page>
-</document>

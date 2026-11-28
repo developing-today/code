@@ -1,7 +1,0 @@
-# MOB-00 (#9467): test/browser/*.spec.ts are Playwright acceptance
-# specs, run by the browser job via playwright.config.ts
-# (pm-aggregator-tests.yml) — not by bun test. Loading them under
-# bun test registers Playwright hooks outside a Playwright run and
-# fails the suite (#10469), so bun test ignores that directory.
-[test]
-pathIgnorePatterns = ["**/test/browser/**"]

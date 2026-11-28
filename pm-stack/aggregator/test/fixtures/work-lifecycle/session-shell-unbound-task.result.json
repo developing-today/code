@@ -1,7 +1,0 @@
-{
-  "column": "Backlog",
-  "rule": "R8",
-  "reason_codes": ["not_ready"],
-  "conflicts": ["session_shell_unbound"],
-  "stale_facets": []
-}

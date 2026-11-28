@@ -1,6 +1,0 @@
-# git grep outputs — census C, 2026-11-24
-
-## git grep -i tenmazu (whole repo, tracked files)
-(no matches — exit 1; the device is spelled Tanmatsu)
-
-## git grep -i tenma (doc planning pkgs infra)

@@ -1,8 +1,0 @@
-nix
-git-firefly
-golangci-lint
-base16
-html
-lua
-nickel
-log

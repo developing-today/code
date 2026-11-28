@@ -1,7 +1,0 @@
-this derivation will be built:
-  /nix/store/11v3rgm76jwm1dm4wqhl0x9l2msc6ikz-fleet-static-static-x86_64-unknown-linux-musl-0.1.0.drv
-building '/nix/store/11v3rgm76jwm1dm4wqhl0x9l2msc6ikz-fleet-static-static-x86_64-unknown-linux-musl-0.1.0.drv'...
-fleet gh: no cache daemon answered (tried 127.0.0.1:4802, 100.99.113.103:4802: cache daemon 127.0.0.1:4802: connect failed: Connection refused (os error 111); cache daemon 100.99.113.103:4802: connect failed: Connection refused (os error 111)); resolving in-process
-https://github.com/developing-today/code/releases/tag/fleet-static-f56dc7f
-tag=fleet-static-f56dc7f
-sha256=145635246a876036f24451a3ddf35c25fda767deb75d8321751fa245c8fe12ef

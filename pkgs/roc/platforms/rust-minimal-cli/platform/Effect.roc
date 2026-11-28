@@ -1,4 +1,0 @@
-hosted [
-    log!,
-]
-log! : Str => {}
