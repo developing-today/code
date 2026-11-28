@@ -49,7 +49,9 @@
 //! through the re-export.
 
 use std::fmt;
+use std::io::Read as _;
 use std::ops::RangeBounds;
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::{Map, Value as Json, json};
@@ -444,11 +446,32 @@ pub trait PipelineTransport: fmt::Debug + Send + Sync + 'static {
 /// `/v2/pipeline` endpoint, authorised by the tenant's scoped token.
 /// The token is a credential: it is never logged, and `Debug` redacts
 /// it (design §2.3: a dump must not yield database access).
+/// Connect timeout for [`HttpTransport`], mirroring the sibling
+/// hand-rolled transport in `foreign_libsql.rs` (`CONNECT_TIMEOUT`).
+pub const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Total deadline for one [`HttpTransport`] pipeline call, mirroring
+/// the sibling transport's default statement timeout (30 s). Before
+/// this bound existed the blocking client had no timeout at all, so a
+/// wedged endpoint parked the calling thread forever (#16504).
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cap on a pipeline response body, mirroring the sibling transport's
+/// `MAX_RESPONSE_BYTES` (16 MiB). A larger body is refused with a typed
+/// [`TursoError::Transport`] instead of being buffered whole (#16504).
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1_024 * 1_024;
+
+/// How much of a non-success response body is embedded in the error
+/// string. The whole body used to be formatted into the error, so a
+/// huge failure body allocated twice (#16504).
+const MAX_ERROR_BODY_BYTES: usize = 1_024;
+
 #[derive(Clone)]
 pub struct HttpTransport {
     client: reqwest::blocking::Client,
     url: String,
     token: String,
+    max_response_bytes: usize,
 }
 
 impl fmt::Debug for HttpTransport {
@@ -471,7 +494,26 @@ impl HttpTransport {
     /// Returns [`TursoError::Transport`] when the HTTP client cannot be
     /// built.
     pub fn new(base_url: &str, token: String) -> Result<Self, TursoError> {
+        Self::with_limits(base_url, token, HTTP_TIMEOUT, MAX_RESPONSE_BYTES)
+    }
+
+    /// A transport with an explicit total `timeout` and response-body
+    /// cap — the seam the timeout / over-cap oracles drive with small
+    /// values against a stub endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TursoError::Transport`] when the HTTP client cannot be
+    /// built.
+    pub fn with_limits(
+        base_url: &str,
+        token: String,
+        timeout: Duration,
+        max_response_bytes: usize,
+    ) -> Result<Self, TursoError> {
         let client = reqwest::blocking::Client::builder()
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|err| TursoError::Transport(err.to_string()))?;
         // The pipeline endpoint is HTTPS; a libsql:// address names
@@ -484,13 +526,14 @@ impl HttpTransport {
             client,
             url: format!("{}/v2/pipeline", base.trim_end_matches('/')),
             token,
+            max_response_bytes,
         })
     }
 }
 
 impl PipelineTransport for HttpTransport {
     fn pipeline(&self, body: &[u8]) -> Result<Vec<u8>, TursoError> {
-        let response = self
+        let mut response = self
             .client
             .post(&self.url)
             .header("Authorization", format!("Bearer {}", self.token))
@@ -499,16 +542,40 @@ impl PipelineTransport for HttpTransport {
             .send()
             .map_err(|err| TursoError::Transport(err.to_string()))?;
         let status = response.status();
-        let bytes = response
-            .bytes()
+        // Content-length pre-check: refuse an over-cap body before
+        // reading any of it (oracle: over-cap refusal, #16504).
+        if let Some(declared) = response.content_length() {
+            if declared > self.max_response_bytes as u64 {
+                return Err(TursoError::Transport(format!(
+                    "pipeline response too large: content-length {declared} exceeds {} byte cap",
+                    self.max_response_bytes
+                )));
+            }
+        }
+        // Capped read: at most cap+1 bytes are ever buffered; the +1
+        // distinguishes an exactly-at-cap body from an over-cap one.
+        let mut bytes = Vec::new();
+        response
+            .by_ref()
+            .take((self.max_response_bytes + 1) as u64)
+            .read_to_end(&mut bytes)
             .map_err(|err| TursoError::Transport(err.to_string()))?;
-        if !status.is_success() {
+        if bytes.len() > self.max_response_bytes {
             return Err(TursoError::Transport(format!(
-                "pipeline endpoint answered {status}: {}",
-                String::from_utf8_lossy(&bytes)
+                "pipeline response too large: exceeds {} byte cap",
+                self.max_response_bytes
             )));
         }
-        Ok(bytes.to_vec())
+        if !status.is_success() {
+            let excerpt_len = bytes.len().min(MAX_ERROR_BODY_BYTES);
+            let truncated = bytes.len() > excerpt_len;
+            return Err(TursoError::Transport(format!(
+                "pipeline endpoint answered {status}: {}{}",
+                String::from_utf8_lossy(&bytes[..excerpt_len]),
+                if truncated { " [truncated]" } else { "" }
+            )));
+        }
+        Ok(bytes)
     }
 }
 
@@ -1392,6 +1459,116 @@ mod tests {
         let debug = format!("{transport:?}");
         assert!(debug.contains("tenant.example.com"));
         assert!(!debug.contains("secret-token-value"));
+    }
+
+    /// Stub HTTP endpoint on a loopback port. The handler runs on its
+    /// own thread for the one accepted connection (one connection is
+    /// all a single pipeline call makes).
+    fn stub_endpoint(handler: impl Fn(std::net::TcpStream) + Send + 'static) -> String {
+        use std::io::Read as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drain the request so the client is not blocked
+                // writing while the handler decides.
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                handler(stream);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Oracle (a) for #16504: a stub endpoint that accepts and never
+    /// responds yields a typed Transport error within the deadline
+    /// instead of hanging the blocking thread. Red before the fix
+    /// (no timeout existed), green after.
+    #[test]
+    fn test_http_transport_times_out_on_silent_endpoint() {
+        let base = stub_endpoint(|_stream| {
+            // Accept and never answer; hold past the client deadline.
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        let transport = HttpTransport::with_limits(
+            &base,
+            "token".to_owned(),
+            Duration::from_millis(200),
+            MAX_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let err = transport.pipeline(b"{}").unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "pipeline must fail within the deadline, took {:?}",
+            started.elapsed()
+        );
+        match err {
+            TursoError::Transport(_) => {}
+            other => panic!("expected a Transport error, got {other:?}"),
+        }
+    }
+
+    /// Oracle (b) for #16504: an over-cap body is refused with a typed
+    /// Transport error — via the content-length pre-check when the
+    /// length is declared, and via the capped read when it is not.
+    #[test]
+    fn test_http_transport_refuses_over_cap_body() {
+        use std::io::Write as _;
+        // Declared length over the cap.
+        let base = stub_endpoint(|mut stream| {
+            let body = vec![b'x'; 64];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        let transport =
+            HttpTransport::with_limits(&base, "token".to_owned(), HTTP_TIMEOUT, 16).unwrap();
+        match transport.pipeline(b"{}").unwrap_err() {
+            TursoError::Transport(msg) => assert!(msg.contains("too large"), "{msg}"),
+            other => panic!("expected a Transport error, got {other:?}"),
+        }
+        // Undeclared length (close-delimited) over the cap.
+        let base = stub_endpoint(|mut stream| {
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.write_all(&vec![b'y'; 64]);
+        });
+        let transport =
+            HttpTransport::with_limits(&base, "token".to_owned(), HTTP_TIMEOUT, 16).unwrap();
+        match transport.pipeline(b"{}").unwrap_err() {
+            TursoError::Transport(msg) => assert!(msg.contains("too large"), "{msg}"),
+            other => panic!("expected a Transport error, got {other:?}"),
+        }
+    }
+
+    /// The non-success error embeds only a truncated excerpt of the
+    /// body, never the whole body (#16504).
+    #[test]
+    fn test_http_transport_error_truncates_large_body() {
+        use std::io::Write as _;
+        let base = stub_endpoint(|mut stream| {
+            let body = vec![b'z'; 4096];
+            let head = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        let transport = HttpTransport::new(&base, "token".to_owned()).unwrap();
+        match transport.pipeline(b"{}").unwrap_err() {
+            TursoError::Transport(msg) => {
+                assert!(msg.contains("[truncated]"), "{msg}");
+                assert!(msg.len() < 2048, "error must stay bounded: {}", msg.len());
+            }
+            other => panic!("expected a Transport error, got {other:?}"),
+        }
     }
 
     /// The oracle is the native store's table semantics (redb):
