@@ -112,18 +112,6 @@ id host start hosts/b alpha
 
 `export` talks to the running host through its control socket. `import` uses the socket when a host is running on the target root and writes the root directly when none is. The restored world carries its journal, its directory and its module files, and its journal bytes are identical to the source's.
 
-## Scheduled snapshots of hosted worlds
-
-A running world host can take these exports on a schedule and prune old ones. Scheduled snapshots are off until you set a policy.
-
-- **Host-wide default:** `id host snapshots <ROOT> --every 6h --keep 7` takes a set of every live world every six hours and keeps the newest seven. Add `--max-age 30d` to also drop sets older than thirty days. The newest set is always kept.
-- **One world:** `id host snapshots <ROOT> --world <WORLD> --every 1h --keep 24` gives that world its own policy. `--off` turns its snapshots off, and `--inherit` makes it follow the host default again.
-- **Show:** `id host snapshots <ROOT>` prints the host default; add `--world <WORLD>` to see that world's policy and the sets on disk.
-
-The command reaches the running host through its control socket, or edits the host file when no host is running. A host checks once a minute which live worlds are due. It needs its signing key (`id host key`), as a manual export does.
-
-Sets live in `<ROOT>/.snapshots/<WORLD>/`, or under the `snapshot_dir` the host file names, which must be an absolute path such as another disk. Each set is one export file named `<unix seconds>-<journal entries>.idexport`, so it restores with `id host import` exactly as above. Only live worlds get new sets: an asleep or archived world cannot change, so its newest set stays current. When a world's journal has not grown since its newest set, the new set replaces that one instead of adding a copy. Pruning removes whole set files and never touches a journal. `id host list` shows each world's set count and bytes (`snapshots=<sets>:<bytes>`) and adds the bytes to each lifecycle state's total.
-
 ## The hosted edition
 
 There is nothing for an operator to back up in the hosted edition today, because there is no deployed hosted service: the Worker package is a local-only scaffold (see [Running a node: serve, worlds and the hosted edition](services.md)). Inside that scaffold, a user's data would live in one `UserDO` Durable Object (SQLite tables at schema version `3`) with blob bytes in the R2 binding `BLOBS`, and the `UserDO` exposes a `GET /v1/export` route that returns the full key-value and blob index export. **Unverified as a restore path:** the surveys record the export route and no corresponding import or restore route in the Worker. Do not describe hosted export as hosted backup and restore.

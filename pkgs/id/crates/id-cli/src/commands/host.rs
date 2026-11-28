@@ -5,9 +5,8 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use id_worlds::host::{
     Census, HostFile, Supervisor, WakeMode, WorldInspection, census_of, inspect_world,
-    settings_body, snapshot_settings_body,
+    settings_body,
 };
-use id_worlds::host_snapshots::{SnapshotPolicy, parse_duration_secs};
 
 use crate::cli::HostCommand;
 
@@ -122,19 +121,6 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             actor,
             json,
         } => import_act(&root, &file, &source, actor, json).await,
-        HostCommand::Snapshots {
-            root,
-            world,
-            every,
-            keep,
-            max_age,
-            off,
-            inherit,
-            json,
-        } => {
-            let change = snapshot_change(every.as_deref(), keep, max_age.as_deref(), off, inherit)?;
-            snapshots_act(&root, world, change, json).await
-        }
         HostCommand::List { root, json } => {
             let file = HostFile::read_or_rebuild(&root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
@@ -391,128 +377,6 @@ async fn settings_act(
     Ok(())
 }
 
-/// A snapshot-policy change asked for on the command line: `None` only
-/// shows, `Some(None)` clears a world's own policy, `Some(Some(_))` sets.
-type SnapshotChange = Option<Option<SnapshotPolicy>>;
-
-fn snapshot_change(
-    every: Option<&str>,
-    keep: Option<u32>,
-    max_age: Option<&str>,
-    off: bool,
-    inherit: bool,
-) -> Result<SnapshotChange> {
-    if inherit {
-        return Ok(Some(None));
-    }
-    if off {
-        return Ok(Some(Some(SnapshotPolicy::OFF)));
-    }
-    let Some(every) = every else {
-        return Ok(None);
-    };
-    let policy = SnapshotPolicy {
-        every_secs: parse_duration_secs(every)?,
-        keep: keep.context("--every needs --keep")?,
-        max_age_secs: max_age.map(parse_duration_secs).transpose()?,
-    };
-    anyhow::ensure!(
-        policy.is_on(),
-        "--every must be more than 0; use --off to stop"
-    );
-    policy.validate()?;
-    Ok(Some(Some(policy)))
-}
-
-/// Show or change the snapshot policy on the host running on `root`, or
-/// in its host file when no host answers, and print the settings.
-async fn snapshots_act(
-    root: &std::path::Path,
-    world: Option<String>,
-    change: SnapshotChange,
-    json: bool,
-) -> Result<()> {
-    #[cfg(unix)]
-    let answered: Option<std::result::Result<serde_json::Value, String>> = {
-        use id_worlds::host_control::{ControlRequest, try_request};
-        let message = match change {
-            Some(policy) => ControlRequest::SetSnapshots {
-                world: world.clone(),
-                policy,
-            },
-            None => ControlRequest::Snapshots {
-                world: world.clone(),
-            },
-        };
-        try_request(root, &message).await?.map(|answer| {
-            if answer.ok {
-                Ok(answer.body.unwrap_or_default())
-            } else {
-                Err(answer
-                    .error
-                    .unwrap_or_else(|| "the host refused without a reason".to_owned()))
-            }
-        })
-    };
-    #[cfg(not(unix))]
-    let answered: Option<std::result::Result<serde_json::Value, String>> = None;
-    let body = match answered {
-        Some(Ok(body)) => body,
-        Some(Err(error)) => anyhow::bail!("{error}"),
-        None => {
-            let mut file = HostFile::read_or_rebuild(root)
-                .with_context(|| format!("reading data root {}", root.display()))?;
-            if let Some(policy) = change {
-                file.set_snapshot_policy(world.as_deref(), policy)?;
-                file.save(root)?;
-            }
-            snapshot_settings_body(root, &file, world.as_deref())?
-        }
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&body)?);
-    } else {
-        print!("{}", snapshot_lines(&body));
-    }
-    Ok(())
-}
-
-/// `snapshots <world|host> every=<secs> keep=<n> [max-age=<secs>] dir=<path>`
-/// (or `off`), then one `set <time> entries=<n> bytes=<n> <path>` line per
-/// set.
-fn snapshot_lines(body: &serde_json::Value) -> String {
-    let who = body["world"].as_str().unwrap_or("host").to_owned();
-    let policy = &body["policy"];
-    let every = policy["every_secs"].as_u64().unwrap_or(0);
-    let mut out = if every == 0 {
-        format!("snapshots {who} off")
-    } else {
-        let mut line = format!(
-            "snapshots {who} every={every}s keep={}",
-            policy["keep"].as_u64().unwrap_or(0)
-        );
-        if let Some(age) = policy["max_age_secs"].as_u64() {
-            let _ = write!(line, " max-age={age}s");
-        }
-        line
-    };
-    if body["own_policy"] == serde_json::Value::Bool(false) {
-        out.push_str(" (host default)");
-    }
-    let _ = writeln!(out, " dir={}", body["dir"].as_str().unwrap_or("?"));
-    for set in body["sets"].as_array().map_or(&[][..], Vec::as_slice) {
-        let _ = writeln!(
-            out,
-            "set {} entries={} bytes={} {}",
-            set["at_secs"].as_u64().unwrap_or(0),
-            set["entries"].as_u64().unwrap_or(0),
-            set["bytes"].as_u64().unwrap_or(0),
-            set["path"].as_str().unwrap_or("?")
-        );
-    }
-    out
-}
-
 /// `<world> <state> pinned=<bool> wake=<mode>`.
 fn settings_line(body: &serde_json::Value) -> String {
     let text = |key: &str| body[key].as_str().unwrap_or("?").to_owned();
@@ -652,14 +516,8 @@ fn census_lines(census: &Census, file: &HostFile) -> String {
         };
         let _ = writeln!(
             out,
-            "{} {} journal={} modules={} other={} snapshots={}:{} changed={last}{missing}",
-            row.name,
-            row.state,
-            row.journal_bytes,
-            row.modules_bytes,
-            row.other_bytes,
-            row.snapshot_sets,
-            row.snapshot_bytes
+            "{} {} journal={} modules={} other={} changed={last}{missing}",
+            row.name, row.state, row.journal_bytes, row.modules_bytes, row.other_bytes
         );
     }
     for (state, totals) in [
@@ -669,12 +527,8 @@ fn census_lines(census: &Census, file: &HostFile) -> String {
     ] {
         let _ = writeln!(
             out,
-            "total {state}: worlds={} journal={} modules={} other={} snapshots={}",
-            totals.worlds,
-            totals.journal_bytes,
-            totals.modules_bytes,
-            totals.other_bytes,
-            totals.snapshot_bytes
+            "total {state}: worlds={} journal={} modules={} other={}",
+            totals.worlds, totals.journal_bytes, totals.modules_bytes, totals.other_bytes
         );
     }
     out
@@ -700,11 +554,11 @@ mod tests {
         assert_eq!(file.worlds["beta"].state, LifecycleState::Archived);
         let text = census_lines(&census_of(root.path(), &file), &file);
         assert!(
-            text.contains("alpha asleep journal=0 modules=0 other=0 snapshots=0:0 changed="),
+            text.contains("alpha asleep journal=0 modules=0 other=0 changed="),
             "{text}"
         );
         assert!(
-            text.contains("beta archived journal=0 modules=0 other=0 snapshots=0:0 changed="),
+            text.contains("beta archived journal=0 modules=0 other=0 changed="),
             "{text}"
         );
         assert!(text.contains(" by ops\n"), "{text}");
@@ -754,68 +608,6 @@ mod tests {
             "{text}"
         );
         assert!(inspect_world(root.path(), &file, "gamma").is_err());
-    }
-
-    #[tokio::test]
-    async fn snapshot_policy_edits_the_host_file_when_no_host_answers() {
-        let root = tempfile::TempDir::new().unwrap();
-        let dir = root.path().join("w");
-        std::fs::create_dir_all(dir.join("modules")).unwrap();
-        std::fs::write(dir.join("journal.jsonl"), "").unwrap();
-        let hourly = snapshot_change(Some("1h"), Some(3), Some("2d"), false, false).unwrap();
-        snapshots_act(root.path(), None, hourly, false)
-            .await
-            .unwrap();
-        let file = HostFile::load(root.path()).unwrap();
-        let policy = SnapshotPolicy {
-            every_secs: 3_600,
-            keep: 3,
-            max_age_secs: Some(172_800),
-        };
-        assert_eq!(file.snapshots, Some(policy));
-        assert_eq!(file.snapshot_policy("w"), policy);
-
-        let off = snapshot_change(None, None, None, true, false).unwrap();
-        snapshots_act(root.path(), Some("w".to_owned()), off, false)
-            .await
-            .unwrap();
-        let file = HostFile::load(root.path()).unwrap();
-        assert_eq!(file.snapshot_policy("w"), SnapshotPolicy::OFF);
-        let body = snapshot_settings_body(root.path(), &file, Some("w")).unwrap();
-        let text = snapshot_lines(&body);
-        assert!(text.starts_with("snapshots w off dir="), "{text}");
-        let text = snapshot_lines(&snapshot_settings_body(root.path(), &file, None).unwrap());
-        assert!(
-            text.starts_with("snapshots host every=3600s keep=3 max-age=172800s dir="),
-            "{text}"
-        );
-
-        let inherit = snapshot_change(None, None, None, false, true).unwrap();
-        snapshots_act(root.path(), Some("w".to_owned()), inherit, true)
-            .await
-            .unwrap();
-        let file = HostFile::load(root.path()).unwrap();
-        assert_eq!(file.snapshot_policy("w"), policy);
-        let text = snapshot_lines(&snapshot_settings_body(root.path(), &file, Some("w")).unwrap());
-        assert!(text.contains(" (host default) dir="), "{text}");
-
-        // Bad cadences are refused before anything is written.
-        assert!(snapshot_change(Some("30s"), Some(1), None, false, false).is_err());
-        assert!(snapshot_change(Some("0"), Some(1), None, false, false).is_err());
-        assert!(snapshot_change(Some("6w"), Some(1), None, false, false).is_err());
-        assert!(snapshot_change(Some("1h"), Some(0), None, false, false).is_err());
-        assert_eq!(
-            snapshot_change(None, None, None, false, false).unwrap(),
-            None
-        );
-        // Only shows: the file stays as it was.
-        snapshots_act(root.path(), None, None, false).await.unwrap();
-        assert_eq!(HostFile::load(root.path()).unwrap(), file);
-        assert!(
-            snapshots_act(root.path(), Some("nobody".to_owned()), None, false)
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]
