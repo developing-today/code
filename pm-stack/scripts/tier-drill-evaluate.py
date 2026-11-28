@@ -8,7 +8,9 @@ reading evidence files. Stdout is one JSON verdict; exit 0 complete, 1
 incomplete with named gaps, 2 invalid arguments or unreadable evidence.
 A complete verdict is evidence completeness, not drill success: it says the
 package names its surfaces, keeps every record labelled provesDrill false,
-and orders the outage window honestly. It never stops services, flips
+and orders the outage window honestly. Every observation must carry an
+ordered startedAt/finishedAt pair so mistimed or undated evidence cannot
+verdict complete. It never stops services, flips
 routes, or declares a drill passed.
 """
 
@@ -105,6 +107,13 @@ def evaluate(before, during, after, window):
             if "status" not in observation or "error" not in observation:
                 gaps.append(
                     "%s: observation %s is missing status/error"
+                    % (name, observation.get("url"))
+                )
+            started = parse_timestamp(observation.get("startedAt"))
+            finished = parse_timestamp(observation.get("finishedAt"))
+            if started is None or finished is None or not started <= finished:
+                gaps.append(
+                    "%s: observation %s has no ordered startedAt/finishedAt"
                     % (name, observation.get("url"))
                 )
             urls.append(observation["url"])
