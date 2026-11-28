@@ -328,6 +328,24 @@ jobs:
           fi
           python3 -m unittest test_lane_guard.py
 
+      # Report-only content-creation gap adapter (#2227 spec item 6):
+      # pm-stack/fleet-monitor/test_content_creation_gap.py pins the
+      # monitor-side wiring of the throttle's gap-check exit-code
+      # contract (0 clear, 2 alert, anything else detector failure and
+      # never a clear record). The suite imports its module the way
+      # the monitor's own suites do, so it runs from that directory;
+      # the file is asserted to exist first, so a green run cannot
+      # be a silently skipped suite.
+      - name: Test content-creation gap monitor adapter
+        working-directory: pm-stack/fleet-monitor
+        run: |
+          set -euo pipefail
+          if [ ! -f test_content_creation_gap.py ]; then
+            echo "::error::Missing suite file pm-stack/fleet-monitor/test_content_creation_gap.py — the content-creation gap adapter suite was not run."
+            exit 1
+          fi
+          python3 -m unittest test_content_creation_gap.py
+
       # Bun suite for #6091: pm-stack/opencode-claimant/
       # test/install.test.mjs (13 tests, the #3278 typo'd-flag
       # install guard) was run by no workflow — #5951 wired only
