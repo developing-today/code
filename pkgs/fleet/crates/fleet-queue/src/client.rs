@@ -886,6 +886,37 @@ fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
 }
 
+/// Resolve a queue for commands that must never silently target the
+/// shadow queue. An explicitly supplied flag wins over the configured
+/// environment default; with neither, fail and tell the caller how to
+/// choose rather than inventing a queue.
+fn resolve_required_queue(
+    flag: Option<&str>,
+    env_default: Option<&str>,
+    command: &str,
+) -> Result<String, String> {
+    for candidate in [flag, env_default] {
+        if let Some(queue) = candidate.map(str::trim).filter(|queue| !queue.is_empty()) {
+            return Ok(queue.to_string());
+        }
+    }
+    Err(format!(
+        "{command}: no queue resolved — pass --queue or set REPO_QUEUE_DEFAULT_QUEUE (no default queue)"
+    ))
+}
+
+fn required_queue(args: &Args, command: &str) -> String {
+    let env_default = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    match resolve_required_queue(
+        args.get("queue").as_deref(),
+        env_default.as_deref(),
+        command,
+    ) {
+        Ok(queue) => queue,
+        Err(error) => die(2, &error),
+    }
+}
+
 fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
@@ -1219,7 +1250,7 @@ fn cmd_list(rest: &[String]) -> i32 {
     let resp = call(
         "/list",
         &json!({
-            "queue": opt_queue(&args),
+            "queue": required_queue(&args, "list"),
             "status": args.get("status"),
             "limit": limit,
             "not_before": args.get("not-before"),
@@ -1247,11 +1278,15 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane", "task"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "worker", "lease-seconds", "lane", "task"],
+        &[],
+    );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
-        "queue": opt_queue(&args),
+        "queue": required_queue(&args, "claim"),
         "worker": worker,
         "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
     });
@@ -1769,10 +1804,7 @@ fn cmd_complete(rest: &[String]) -> i32 {
 fn cmd_health(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue"], &[]);
     reject_extra_pos("health", &args, 0);
-    let mut body = json!({});
-    if let Some(q) = args.get("queue") {
-        body["queue"] = json!(q);
-    }
+    let body = json!({"queue": required_queue(&args, "health")});
     let resp = unwrap_ok_fb(call_fb("/health", &body), "/health");
     let netloc = resp
         .get("project_netloc")
@@ -2001,6 +2033,32 @@ mod tests {
         assert!(resolve_enqueue_queue(None, &json!({}), None).is_err());
         assert!(resolve_enqueue_queue(None, &json!({"queue": "  "}), Some("")).is_err());
         assert!(resolve_enqueue_queue(Some(""), &json!({}), None).is_err());
+    }
+
+    #[test]
+    fn claim_list_health_queue_resolution_requires_flag_or_env() {
+        // All three commands use the same policy: no hidden shadow default,
+        // with --queue taking precedence over the configured env default.
+        for command in ["claim", "list", "health"] {
+            let error = resolve_required_queue(None, None, command).unwrap_err();
+            assert!(error.contains(command), "{error}");
+            assert!(error.contains("--queue"), "{error}");
+        }
+
+        assert_eq!(
+            resolve_required_queue(
+                Some(" repo-health-code-shadow "),
+                Some("repo-health-code-pilot"),
+                "claim"
+            )
+            .unwrap(),
+            "repo-health-code-shadow"
+        );
+        assert_eq!(
+            resolve_required_queue(None, Some(" repo-health-code-pilot "), "list").unwrap(),
+            "repo-health-code-pilot"
+        );
+        assert!(resolve_required_queue(Some("  "), Some("\t"), "health").is_err());
     }
 
     #[test]
