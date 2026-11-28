@@ -434,11 +434,18 @@ pub struct SignedBoardObject {
 
 impl SignedBoardObject {
     /// Sign a board object using the existing per-author artifact chain.
+    ///
+    /// The artifact is freshly minted from `object`, so it is returned
+    /// directly without re-verifying its just-created signature: that
+    /// verification is pure overhead (one ed25519 verify per signed
+    /// object, #15142). The body is `to_value(object)` by construction,
+    /// so the canonical-shape check `from_artifact` performs holds
+    /// trivially, and `validate_shape` already ran above.
     pub fn sign(key: &SigningKey, seq: u64, prev: &str, object: BoardObject) -> Result<Self> {
         object.validate_shape()?;
         let body = serde_json::to_value(&object)?;
         let artifact = SignedArtifact::sign(key, seq, prev, BOARD_OBJECT_KIND, body)?;
-        Self::from_artifact(artifact)
+        Ok(Self { artifact, object })
     }
 
     /// Verify and strictly decode an existing signed artifact as a board object.
