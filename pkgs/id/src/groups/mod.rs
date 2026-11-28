@@ -28,16 +28,14 @@ pub mod log;
 pub mod warnings;
 pub mod worlds;
 
-pub use id_events::groups::{event, fold, friendship, policy};
 pub use id_events::groups::{
     Body, Create, DEVICE_ADD_KIND, DEVICE_REVOKE_KIND, Delegate, DeviceOp, Event, Grant, Key,
     MemberOp, Role,
 };
 pub use id_events::groups::{
-    DeviceGrant, FoldError, GroupView, Outcome, Projection, Refusal,
-};
-pub use id_events::groups::{Pair, friendship_id};
-pub use id_events::groups::{
     Delegation, History, Join, OnMemberRemoved, Policy, Removal, RemoveMode, RemoveModeKind,
     RemovePolicy, RemoveSuccessor, RoleRules, Scheme, SuccessorKind, Template, TransferOpts,
 };
+pub use id_events::groups::{DeviceGrant, FoldError, GroupView, Outcome, Projection, Refusal};
+pub use id_events::groups::{Pair, friendship_id};
+pub use id_events::groups::{event, fold, friendship, policy};

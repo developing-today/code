@@ -583,7 +583,10 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/files", get(files_list_handler))
         .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
-        .route("/api/blocks", get(blocks_partial_handler).post(block_create_handler))
+        .route(
+            "/api/blocks",
+            get(blocks_partial_handler).post(block_create_handler),
+        )
         .route("/api/blocks/remove", post(block_remove_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
@@ -615,8 +618,14 @@ fn create_router_inner(state: AppState) -> Router {
         // Identity API routes
         .route("/api/identity/register", post(identity_register_handler))
         // Seitan admission API (#8487)
-        .route("/api/seitan/invite", post(super::seitan::seitan_invite_handler))
-        .route("/api/seitan/admit", post(super::seitan::seitan_admit_handler))
+        .route(
+            "/api/seitan/invite",
+            post(super::seitan::seitan_invite_handler),
+        )
+        .route(
+            "/api/seitan/admit",
+            post(super::seitan::seitan_admit_handler),
+        )
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
@@ -2348,7 +2357,9 @@ mod upload_router_tests {
     ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let (_, mut state, dir, endpoint, docs) = router_with_state().await;
         if with_account {
-            seitan.sign_up_keyed(&seitan_account_key(), "joiner").unwrap();
+            seitan
+                .sign_up_keyed(&seitan_account_key(), "joiner")
+                .unwrap();
         }
         state.seitan = seitan;
         state.world = Some(hub_with_world("arena", Some("s3cret")));
@@ -2410,13 +2421,9 @@ mod upload_router_tests {
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let uid = seitan_account_key();
-        let proof = crate::seitan::accept::sign(
-            &token,
-            &uid,
-            1,
-            seitan_now_ms().saturating_sub(480_000),
-        )
-        .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms().saturating_sub(480_000))
+                .unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
         let body = seitan_response_json(admitted).await;
@@ -2461,8 +2468,8 @@ mod upload_router_tests {
         let token = crate::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
     }
@@ -2474,11 +2481,14 @@ mod upload_router_tests {
         let (app, _state, _dir, _endpoint, _docs) =
             seitan_app(crate::web::SeitanState::default(), true).await;
         let token = crate::seitan::Token::generate();
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
-            .unwrap();
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_invite");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_invite"
+        );
     }
 
     #[tokio::test]
@@ -2495,7 +2505,10 @@ mod upload_router_tests {
         let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
+        assert_eq!(
+            seitan_response_json(refused).await["reason"],
+            "unknown_account"
+        );
 
         state.seitan.sign_up_keyed(&uid, "joiner").unwrap();
         let admitted = seitan_admit(&app, &proof).await;

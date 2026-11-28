@@ -551,7 +551,8 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
     );
     ensure!(
         payload.styles.iter().map(Vec::len).sum::<usize>()
-            + payload.tokens.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
+            + payload.tokens.iter().map(Vec::len).sum::<usize>()
+            <= MAX_SCREEN_STYLE_SPANS,
         "world screen has too many style spans"
     );
 
@@ -651,10 +652,22 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
             let mut previous_end = 0;
             for span in spans {
                 ensure!(span.length > 0, "world screen token span must not be empty");
-                let end = span.x.checked_add(span.length).context("world screen token span overflows")?;
-                ensure!(end <= payload.width, "world screen token span exceeds its row");
-                ensure!(span.x >= previous_end, "world screen token spans overlap or are unsorted");
-                ensure!(boundaries[span.x] && boundaries[end], "world screen token span splits a wide glyph");
+                let end = span
+                    .x
+                    .checked_add(span.length)
+                    .context("world screen token span overflows")?;
+                ensure!(
+                    end <= payload.width,
+                    "world screen token span exceeds its row"
+                );
+                ensure!(
+                    span.x >= previous_end,
+                    "world screen token spans overlap or are unsorted"
+                );
+                ensure!(
+                    boundaries[span.x] && boundaries[end],
+                    "world screen token span splits a wide glyph"
+                );
                 let (fg, bold) = span.token.ansi_style();
                 for cell in &mut cells[row_start + span.x..row_start + end] {
                     cell.token = Some(span.token);
@@ -890,7 +903,10 @@ mod tests {
             "rows":["x"], "tokens":[[{"x":0,"length":1,"token":"warning"}]]});
         let screen = parsed_screen(doc.clone());
         assert_eq!(screen.cells[0].token, Some(StyleToken::Warning));
-        assert_eq!(screen.render_ansi().unwrap(), "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m");
+        assert_eq!(
+            screen.render_ansi().unwrap(),
+            "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m"
+        );
         assert_eq!(screen.text_projection(), "x");
         doc["tokens"][0][0]["token"] = json!("<script>");
         assert!(parse_surface(&doc.to_string()).is_err());

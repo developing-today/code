@@ -217,10 +217,10 @@ pub mod serve_proxy;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;
-pub use id_store::note_links;
-pub use id_store::notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
+pub use id_store::note_links;
+pub use id_store::notes;
 pub mod protocol;
 pub mod publications;
 pub mod publications_runtime;
@@ -250,8 +250,8 @@ pub use id_store::tag_index;
 pub use id_store::tags;
 #[cfg(test)]
 mod test_forgeries;
-pub(crate) use id_core::text;
 pub(crate) use id_core::is_format_char;
+pub(crate) use id_core::text;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;

@@ -20,8 +20,8 @@ use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
-use id_store::chain::Event;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
+use id_store::chain::Event;
 
 /// Bytes before a row's dependencies: the author, the sequence number, the arrival time, the
 /// arrival number, and the dependency count.

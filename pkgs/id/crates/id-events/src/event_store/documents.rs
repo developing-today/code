@@ -16,8 +16,8 @@ use redb::{ReadableDatabase, ReadableTable};
 
 use super::resolve::author_of;
 use super::{APPLIED, EVENTS, EventStore, StoreError, corrupt, decode_stored};
-use id_store::documents::{DOCUMENT_KIND, DocumentRecord, REMOVAL_KIND};
 use id_core::waiting::AuthorKey;
+use id_store::documents::{DOCUMENT_KIND, DocumentRecord, REMOVAL_KIND};
 
 impl EventStore {
     /// The documents in the store: each applied `document.put`, sorted by event ID. A document

@@ -103,13 +103,13 @@ use super::{
     store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
-use id_store::chain::{self, Event};
-use id_store::documents::{is_document_kind, is_removal_kind};
 use id_core::membership::AuthId;
 use id_core::membership::body::decode_body;
 use id_core::rejection::Reason;
-use id_store::tag_claims::is_tag_kind;
 use id_core::waiting::{AuthorKey, WaitingPool};
+use id_store::chain::{self, Event};
+use id_store::documents::{is_document_kind, is_removal_kind};
+use id_store::tag_claims::is_tag_kind;
 
 /// What the store decides for one event, before the waiting pool sees it.
 #[derive(Debug, PartialEq, Eq)]
@@ -1138,10 +1138,10 @@ pub(super) fn present_in(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use id_store::chain::{ChainExt, sign};
     use crate::event_store::waiting_rows::{self, Row};
     use id_core::rejection::Reason;
     use id_core::waiting::WaitingLimits;
+    use id_store::chain::{ChainExt, sign};
     use p2panda_core::SigningKey;
     use redb::ReadableDatabase;
 

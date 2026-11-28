@@ -207,7 +207,10 @@ pub fn search_store<S: EventStoreBackend>(
 ///
 /// Returns the errors of [`EventStore::tag_claims`], and if `terms` contains any
 /// [`Term::SubjectKind`], the errors of [`EventStore::event_by_id`].
-pub fn search_store_terms<S: EventStoreBackend>(store: &S, terms: &[Term<'_>]) -> Result<Vec<Hit>, StoreError> {
+pub fn search_store_terms<S: EventStoreBackend>(
+    store: &S,
+    terms: &[Term<'_>],
+) -> Result<Vec<Hit>, StoreError> {
     let claims = store.tag_claims()?;
 
     // ⚡ Bolt optimization: skip per-subject `event_by_id` store queries when no kind

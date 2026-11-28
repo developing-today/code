@@ -20,11 +20,11 @@ use p2panda_core::Hash;
 
 use super::fold::{FoldError, Outcome, Projection, fold};
 
+use super::{Body, Event, Key};
 /// The serde adapters for the group model types, re-exported from
 /// `id-events` (step 2b of the crate split, #4405): the model they
 /// serialize moved down with the fold, and the adapters moved with it.
 pub(crate) use id_events::groups::wire;
-use super::{Body, Event, Key};
 
 /// The file a node keeps its group log in, under its data directory.
 pub const FILE_NAME: &str = "groups.jsonl";

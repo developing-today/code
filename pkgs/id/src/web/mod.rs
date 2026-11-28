@@ -83,8 +83,8 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
-pub use seitan::SeitanState;
 pub use security::WebSecurity;
+pub use seitan::SeitanState;
 pub use templates::{AssetUrls, render_page};
 
 /// Default save rate limit cooldown period.

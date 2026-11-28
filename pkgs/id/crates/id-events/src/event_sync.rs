@@ -40,10 +40,10 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_base::EndpointId;
 use tokio::sync::Mutex;
 
-use crate::world_access::WorldAccess;
 use crate::event_store::sync::{ALPN, Outcome};
 use crate::local_events::LocalEvents;
 use crate::pull_policy::{PullGate, PullPolicy};
+use crate::world_access::WorldAccess;
 
 /// How long one sync session may run before it is abandoned. Both sides use it, so a
 /// silent peer ends the session instead of holding the shared store.

@@ -653,11 +653,7 @@ impl WorldHandle {
     /// capability" for every denial cause. Session paths use this as
     /// the early check before receiving upload bytes — the authorized
     /// operation commands still re-check at the effect boundary.
-    pub async fn authorize(
-        &self,
-        token: JoinCapability,
-        required: WorldScopes,
-    ) -> Result<u64> {
+    pub async fn authorize(&self, token: JoinCapability, required: WorldScopes) -> Result<u64> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::AuthorizeScope {

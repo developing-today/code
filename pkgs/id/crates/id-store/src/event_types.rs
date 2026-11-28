@@ -246,7 +246,6 @@ impl Block {
     }
 }
 
-
 /// The operator block list as the enforcement seams consult it (#2245).
 ///
 /// A seam holds an `Arc<dyn BlockList>` and asks it about a peer, a topic

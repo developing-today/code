@@ -59,7 +59,6 @@ use tokio::fs as afs;
 /// iroh-docs store under `docs/`. Only one process can open it at a time.
 pub const STORE_PATH: &str = ".iroh-store";
 
-
 /// Loads an existing Ed25519 keypair from a file, or creates a new one.
 ///
 /// This function provides lazy initialization for node identity:

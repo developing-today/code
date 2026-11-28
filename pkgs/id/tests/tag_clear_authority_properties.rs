@@ -22,14 +22,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use id::chain::{sign, ChainExt, Event};
+use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest};
-use id::membership::body::encode_body;
 use id::membership::AuthId;
-use id::tag_claims::{TagOp, CLEAR_KIND, SET_KIND};
+use id::membership::body::encode_body;
+use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
-use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_auth::Access;
+use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
 

@@ -44,10 +44,7 @@ pub mod opt_key {
     use super::{Key, key_text, text_to_key};
 
     #[allow(clippy::ref_option)] // serde passes the field by reference.
-    pub fn serialize<S: Serializer>(
-        key: &Option<Key>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(key: &Option<Key>, serializer: S) -> Result<S::Ok, S::Error> {
         key.as_ref().map(key_text).serialize(serializer)
     }
 
@@ -85,10 +82,7 @@ pub mod opt_hash {
     use super::{hash_text, text_to_hash};
 
     #[allow(clippy::ref_option)] // serde passes the field by reference.
-    pub fn serialize<S: Serializer>(
-        hash: &Option<Hash>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(hash: &Option<Hash>, serializer: S) -> Result<S::Ok, S::Error> {
         hash.as_ref().map(hash_text).serialize(serializer)
     }
 
@@ -117,9 +111,7 @@ pub mod hashes {
             .serialize(serializer)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<Hash>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Hash>, D::Error> {
         Vec::<String>::deserialize(deserializer)?
             .iter()
             .map(|text| text_to_hash::<D::Error>(text))

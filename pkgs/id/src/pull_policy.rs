@@ -229,5 +229,4 @@ mod tests {
         );
         assert!(gate.admits(&key(2).public()), "an unlisted peer pulls");
     }
-
 }
