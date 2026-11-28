@@ -177,6 +177,26 @@ policy epoch, and refuses to change shared to private or back
 designation only). Hosts see a change after their next
 `fleet kv sync`.
 
+## fleet kv grant
+
+```
+fleet kv grant list GROUP
+fleet kv grant revoke GROUP DB NS
+```
+
+Operator verbs over a group's central grants; they need the central
+store and an admin credential (the hosted door's kv-admin role) and
+never open a local store. `list` prints one line per grant row:
+`GROUP<TAB>DB<TAB>NS<TAB>OPS<TAB>EPOCH`, where OPS is a
+comma-separated subset of `read,write,delete`. A group with no grant
+rows is refused with `unknown_group` (fail-closed: no grant, no group
+database). `revoke` removes GROUP's grant for NS in DB and prints
+`revoked group=GROUP database=DB namespace=NS`; an ungranted
+namespace refuses `namespace_not_granted`, and revoking the group's
+last grant dissolves the group. Admitting a grant stays with the
+kv-admin door statement (`grants.upsert`): this verb never creates a
+grant row. (#13316, PR #16384)
+
 ## fleet kv blob
 
 ```
