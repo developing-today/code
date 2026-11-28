@@ -425,6 +425,9 @@ pub enum TopicLogSyncError {
 
     #[error("{0}")]
     DecodeMessage(String),
+
+    #[error("no overlap between local and remote topic logs")]
+    NoTopicOverlap,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

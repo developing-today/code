@@ -65,6 +65,9 @@ pub struct LogSync<L, E, S, Evt> {
     store: S,
     event_tx: broadcast::Sender<Evt>,
     buffer_capacity: usize,
+    /// Optional callback invoked when the remote's Have message is received.
+    /// Receives (local_log_heights, remote_log_heights). Return Err to abort sync.
+    on_remote_have: Option<Box<dyn FnOnce(&LogHeights<VerifyingKey, L>, &LogHeights<VerifyingKey, L>) -> Result<(), LogSyncError> + Send>>,
     _marker: PhantomData<E>,
 }
 
@@ -85,8 +88,19 @@ impl<L, E, S, Evt> LogSync<L, E, S, Evt> {
             event_tx,
             logs,
             buffer_capacity,
+            on_remote_have: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Set a callback to be invoked when the remote's Have message is received.
+    /// The callback receives (local_log_heights, remote_log_heights) and can return an error to abort the sync.
+    pub fn on_remote_have<F>(mut self, callback: F) -> Self
+    where
+        F: FnOnce(&LogHeights<VerifyingKey, L>, &LogHeights<VerifyingKey, L>) -> Result<(), LogSyncError> + Send + 'static,
+    {
+        self.on_remote_have = Some(Box::new(callback));
+        self
     }
 }
 
@@ -149,6 +163,11 @@ where
                         debug!(parent: &span, ?message, "Unexpected message type");
                         return Err(LogSyncError::UnexpectedMessage(message.to_string()));
                     };
+
+                    // Invoke the optional on_remote_have callback to allow checking topic overlap.
+                    if let Some(callback) = self.on_remote_have.take() {
+                        callback(&local, &remote)?;
+                    }
 
                     let remote_needs = compare_logs(&local, &remote);
 
