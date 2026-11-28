@@ -1073,6 +1073,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  docs-history check [--diff FILE] [--trivial] [--changes-dir DIR] <file.md>...")
 }
 
+// rejectUnknownFlag is the operator-script argument contract (#3352)
+// for argv this tool does not recognize: a dash-led token is never a
+// valid file operand, so per #16402 it is a usage error naming the
+// token (exit 2), never a file to open and fail on opaquely.
+func rejectUnknownFlag(subcommand, token string) {
+	fmt.Fprintf(os.Stderr, "docs-history: %s: unknown argument %q\n", subcommand, token)
+	usage()
+	os.Exit(2)
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "supports" {
@@ -1098,6 +1108,8 @@ func main() {
 		for _, a := range args[1:] {
 			if a == "--agent" {
 				agent = true
+			} else if strings.HasPrefix(a, "-") {
+				rejectUnknownFlag("render", a)
 			} else {
 				files = append(files, a)
 			}
@@ -1152,6 +1164,9 @@ func main() {
 				}
 				changesDir = rest[i]
 			default:
+				if strings.HasPrefix(rest[i], "-") {
+					rejectUnknownFlag("stamp", rest[i])
+				}
 				files = append(files, rest[i])
 			}
 		}
@@ -1188,6 +1203,9 @@ func main() {
 				}
 				changesDir = rest[i]
 			default:
+				if strings.HasPrefix(rest[i], "-") {
+					rejectUnknownFlag("check", rest[i])
+				}
 				files = append(files, rest[i])
 			}
 		}
