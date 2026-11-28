@@ -308,6 +308,7 @@
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
         "pkgs/id/hosted-worker/test/request-cap.test.ts",
+        "pkgs/id/hosted-worker/test/storage-contract.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
         "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
@@ -318,6 +319,8 @@
         "pkgs/id/hosted-worker/test/d1-bridge-store.test.ts",
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts",
+        "pkgs/id/hosted-worker/test/sync-peer-auth.test.ts",
+        "pkgs/id/hosted-worker/test/sync-coord.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
         "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
         "pkgs/id/hosted-worker/test/identity-link.test.ts",
@@ -325,12 +328,18 @@
         "pkgs/id/hosted-worker/test/export.test.ts",
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
         "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/migration-fence.test.ts",
+        "pkgs/id/hosted-worker/test/migration-snapshot.test.ts",
+        "pkgs/id/hosted-worker/test/migration-coordinator.test.ts",
         "pkgs/id/hosted-worker/test/migration-operator.test.ts",
         "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
         "pkgs/id/hosted-worker/test/references.test.ts",
-        "pkgs/id/hosted-worker/test/reference-index.test.ts"
+        "pkgs/id/hosted-worker/test/reference-index.test.ts",
+        "pkgs/id/hosted-worker/test/gc-sweep.test.ts",
+        "pkgs/id/hosted-worker/test/publication.test.ts",
+        "pkgs/id/hosted-worker/test/gc-revocation-conformance.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/d1-bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/request-cap.test.ts test/storage-contract.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/d1-bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/sync-peer-auth.test.ts test/sync-coord.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-fence.test.ts test/migration-snapshot.test.ts test/migration-coordinator.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts test/gc-sweep.test.ts test/publication.test.ts test/gc-revocation-conformance.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -339,7 +348,7 @@
       },
       "status": "mapped",
       "related_issues": [6095],
-      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329). Trued up again 2026-11-23 (#12230): the bridge suites and provisioning had joined npm test without registry rows, and admission-gate was added to the npm test script in the same change (it ran nowhere; verified 8/8 standalone before wiring)."
+      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329). Trued up again 2026-11-23 (#12230): the bridge suites and provisioning had joined npm test without registry rows, and admission-gate was added to the npm test script in the same change (it ran nowhere; verified 8/8 standalone before wiring). Trued up again 2026-11-28 (#12808 slice 6): nine suites had joined npm test without registry rows (storage-contract, sync-peer-auth, sync-coord, migration-fence, migration-snapshot, migration-coordinator, gc-sweep, publication, gc-revocation-conformance); full npm test verified 427/427 green on origin/main and the invocation re-synced to the package.json file list."
     },
     {
       "id": "id.hosted-worker.smoke",
