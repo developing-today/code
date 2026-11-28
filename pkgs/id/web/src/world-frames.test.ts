@@ -105,6 +105,15 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
     expect(status().textContent).toBe("Connected");
   });
 
+  it("documents requests are refused unless the joined socket is open", () => {
+    socket.close();
+    q<HTMLButtonElement>("[data-world-documents-refresh]").click();
+    expect(status().textContent).toBe("Join the world before listing documents");
+    expect(socket.sent("documents")).toHaveLength(0);
+    socket.open();
+    socket.deliver({ type: "snapshot", snapshot: { world_id: "lobby", current_sequence: 4, participants: [] } });
+  });
+
   afterAll(() => {
     vi.stubGlobal("WebSocket", realWebSocket);
     vi.stubGlobal("ResizeObserver", realResizeObserver);
@@ -176,6 +185,41 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
     socket.deliver({ type: "error" });
     expect(status().textContent).toBe("World request failed");
   });
+
+  it("lists public documents through every page and reads the selected document", () => {
+    const prefix = q<HTMLInputElement>("[data-world-documents-prefix]");
+    prefix.value = "guide";
+    q<HTMLButtonElement>("[data-world-documents-refresh]").click();
+    expect(socket.sent("documents").at(-1)).toMatchObject({
+      capability: "cap-valid-123",
+      prefix: "guide",
+    });
+    socket.deliver({ type: "documents", names: ["guide.md"], next_after: "guide.md" });
+    expect(socket.sent("documents").at(-1)).toMatchObject({ after: "guide.md", prefix: "guide" });
+    socket.deliver({ type: "documents", names: ["guide-2.md"], next_after: null });
+    const list = q<HTMLElement>("[data-world-documents-list]");
+    expect(list.textContent).toContain("guide.md");
+    expect(list.textContent).toContain("guide-2.md");
+
+    q<HTMLButtonElement>('[data-world-document-name="guide.md"]').click();
+    expect(socket.sent("document").at(-1)).toMatchObject({ name: "guide.md", capability: "cap-valid-123" });
+    socket.deliver({ type: "document", name: "guide.md", size: 12, text: "hello\nworld" });
+    expect(q<HTMLElement>("[data-world-document-title]").textContent).toBe("guide.md");
+    expect(q<HTMLElement>("[data-world-document-size]").textContent).toContain("12 bytes");
+    expect(q<HTMLElement>("[data-world-document-text]").textContent).toBe("hello\nworld");
+  });
+
+  it("rejects malformed document replies without rendering peer values", () => {
+    const list = q<HTMLElement>("[data-world-documents-list]");
+    const before = list.textContent;
+    socket.deliver({ type: "documents", names: ["safe.md", { forged: true }], next_after: null });
+    expect(status().textContent).toBe("Received an invalid world frame");
+    expect(list.textContent).toBe(before);
+    socket.deliver({ type: "document", name: "bad.md", size: "12", text: "forged" });
+    expect(status().textContent).toBe("Received an invalid world frame");
+    expect(q<HTMLElement>("[data-world-document-text]").textContent).toBe("hello\nworld");
+  });
+
   it("property: generated invite/view/error frame shapes follow the acceptance oracle; rejected frames preserve state", () => {
     // Oracle — the #7924 validation in world.ts receive(), restated:
     // - invite: reject iff `invite` is present and not a record, or a
