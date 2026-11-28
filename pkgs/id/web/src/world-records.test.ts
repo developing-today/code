@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * #1458 regression tests: the world page's records fetch.
@@ -104,7 +105,7 @@ describe("world page records fetch (#1458)", () => {
     expect(root.dataset.initialized).toBe("true");
 
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     socket = FakeSocket.all[0];
     socket.open();

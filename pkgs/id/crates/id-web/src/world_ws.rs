@@ -17,6 +17,8 @@ use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
+use id_caps::cap_baseline::BaselineStore;
+use id_caps::cap_notice::{GrantPageWorld, grant_page_listing};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -96,6 +98,10 @@ pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
 /// session as the WSS bridge above — degraded timing only.
 pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
+        .route(
+            "/api/world/grant-page",
+            axum::routing::post(grant_page_handler),
+        )
         .route("/api/world/invite", axum::routing::post(invite_handler))
         .route(
             "/api/world/host-view",
@@ -115,6 +121,28 @@ pub fn world_http_routes() -> axum::Router<WorldWebState> {
             "/id/session/{id}/stream",
             axum::routing::get(https_session_sse_handler),
         )
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantPageRequest {
+    /// The caller owns this client-side state; the server only maps it to the
+    /// fixed-text listing model and never stores or changes the baseline.
+    baseline_store: BaselineStore,
+}
+
+#[derive(Debug, Serialize)]
+struct GrantPageResponse {
+    worlds: Vec<GrantPageWorld>,
+}
+
+async fn grant_page_handler(Json(request): Json<GrantPageRequest>) -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(GrantPageResponse {
+            worlds: grant_page_listing(&request.baseline_store),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -861,6 +889,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
     use ed25519_dalek::SigningKey;
+    use id_caps::cap_baseline::{BaselineHistoryKind, BaselineStore, CapBaseline};
     use id_worlds::world::{
         JoinCapability, Participant, WorldCore, WorldHandle, WorldLimits, WorldProgram,
     };
@@ -897,6 +926,43 @@ mod tests {
             builder = builder.header("x-world-admin-token", auth);
         }
         builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn grant_page_projects_client_baseline_through_fixed_class_text() {
+        let mut store = BaselineStore::new();
+        store.insert(CapBaseline::establish(
+            "world-a",
+            "release-a",
+            [id_caps::cap_class::CLASS_DEVICE_LOCATION.to_owned()]
+                .into_iter()
+                .collect(),
+            id_caps::cap_class::CAP_CLASS_TABLE_VERSION,
+            BaselineHistoryKind::Accept,
+            "2026-11-25T08:00:00Z",
+        ));
+        let request = Request::post("/api/world/grant-page")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "baseline_store": store })).unwrap(),
+            ))
+            .unwrap();
+        let response = world_http_routes()
+            .with_state(WorldWebState::default())
+            .oneshot(request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["worlds"][0]["world_id"], "world-a");
+        assert_eq!(value["worlds"][0]["current"][0]["class"], "device.location");
+        assert_eq!(value["worlds"][0]["current"][0]["message"], "Use this device's location.");
+        assert_eq!(value["worlds"][0]["history"][0]["kind"], "accept");
+        assert_eq!(value["worlds"][0]["history"][0]["at"], "2026-11-25T08:00:00Z");
     }
 
     #[tokio::test]

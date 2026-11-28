@@ -9,6 +9,7 @@ import {
   worldSnapshotStoreKey,
   type StoredWorldSnapshot,
 } from "./world-snapshot-store";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * #10927 (shells v1 slice 1) behavioral tests: the browser shell's
@@ -175,7 +176,7 @@ describe("world page offline read model (#10927)", () => {
 
   it("persists the snapshot store as frames arrive", () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     const socket = FakeSocket.all[0];
     socket.open();
@@ -235,7 +236,7 @@ describe("world page offline read model (#10927)", () => {
     // The persisted sequence has no durable journal identity. Reconnect
     // must ask for an authoritative snapshot rather than replay from it.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     const socket = FakeSocket.all[0];
     socket.open();

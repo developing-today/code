@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * Slice F of #787: the per-connection keyboard opt-in. The page's keydown
@@ -99,7 +100,7 @@ async function bootWorld(search: string): Promise<{ root: HTMLElement; session: 
   const capability = root.querySelector<HTMLInputElement>("[data-world-capability]");
   if (!capability) throw new Error("missing capability input");
   capability.value = "guest-capability";
-  root.querySelector<HTMLButtonElement>("[data-world-join]")?.click();
+  clickWorldJoin(root);
   const session = FakeSocket.all.at(-1) as FakeSocket;
   session.open();
   expect(session.sent("join")).toHaveLength(1);

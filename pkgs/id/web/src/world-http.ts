@@ -36,9 +36,28 @@ export type WorldInviteResponse = {
   display_name: string | null;
 };
 
+export type GrantPageWorld = {
+  world_id: string;
+  current: Array<{
+    class: string;
+    message: string;
+    deniable: boolean;
+    load_bearing: boolean;
+  }>;
+  history: Array<{
+    at: string;
+    kind: "accept" | "narrow" | "pin" | "grant-page-edit" | "yolo-auto-accept";
+    message_set: string[];
+  }>;
+};
+
+export type GrantPageResponse = { worlds: GrantPageWorld[] };
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
 
 const isWorldSnapshotShape = (value: unknown): value is WorldSnapshotShape =>
   isRecord(value) &&
@@ -140,4 +159,59 @@ export function parseWorldInviteResponse(payload: unknown): WorldInviteResponse 
     capability,
     display_name: typeof display_name === "string" ? display_name : null,
   };
+}
+
+const GRANT_HISTORY_KINDS = new Set([
+  "accept",
+  "narrow",
+  "pin",
+  "grant-page-edit",
+  "yolo-auto-accept",
+]);
+
+/** Validate the Rust grant-page projection before rendering any client state. */
+export function parseGrantPageResponse(payload: unknown): GrantPageResponse {
+  if (!isRecord(payload) || !Array.isArray(payload.worlds)) {
+    throw new Error("Grant page unavailable: malformed listing response");
+  }
+  const worlds = payload.worlds.map((world, index): GrantPageWorld => {
+    if (!isRecord(world) || typeof world.world_id !== "string" || !Array.isArray(world.current) || !Array.isArray(world.history)) {
+      throw new Error(`Grant page unavailable: malformed world row ${index + 1}`);
+    }
+    const current = world.current.map((line, lineIndex) => {
+      if (
+        !isRecord(line) ||
+        typeof line.class !== "string" ||
+        typeof line.message !== "string" ||
+        typeof line.deniable !== "boolean" ||
+        typeof line.load_bearing !== "boolean"
+      ) {
+        throw new Error(`Grant page unavailable: malformed permission line ${lineIndex + 1}`);
+      }
+      return {
+        class: line.class,
+        message: line.message,
+        deniable: line.deniable,
+        load_bearing: line.load_bearing,
+      };
+    });
+    const history = world.history.map((entry, entryIndex) => {
+      if (
+        !isRecord(entry) ||
+        typeof entry.at !== "string" ||
+        typeof entry.kind !== "string" ||
+        !GRANT_HISTORY_KINDS.has(entry.kind) ||
+        !isStringArray(entry.message_set)
+      ) {
+        throw new Error(`Grant page unavailable: malformed history entry ${entryIndex + 1}`);
+      }
+      return {
+        at: entry.at,
+        kind: entry.kind as GrantPageWorld["history"][number]["kind"],
+        message_set: entry.message_set,
+      };
+    });
+    return { world_id: world.world_id, current, history };
+  });
+  return { worlds };
 }

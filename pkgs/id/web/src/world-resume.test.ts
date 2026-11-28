@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * #12648 / #10927 regression tests: browser reconnect continuity.
@@ -125,7 +126,7 @@ describe("world page reconnect resume (#12648)", () => {
 
   it("re-snapshots after a disconnect instead of applying a patch from an unproven history", async () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     const first = FakeSocket.all.at(-1) as FakeSocket;
     first.open();
     expect(first.sent("join")).toHaveLength(1);

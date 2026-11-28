@@ -9,6 +9,7 @@ import {
   parseShellContract,
   type ShellContract,
 } from "./shell-contract";
+import { clickWorldJoin } from "./world-test-connect";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const contractDocument: unknown = JSON.parse(
@@ -433,7 +434,7 @@ describe("web shell conformance", () => {
 
     // Join.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     const session = FakeSocket.all.at(-1) as FakeSocket;
     expect(session.url).toMatch(/\/ws\/world$/);
     session.open();

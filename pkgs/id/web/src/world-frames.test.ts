@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * #7924 regression tests: the world page's session-WS invite, view and
@@ -94,7 +95,7 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
     root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
     expect(root.dataset.initialized).toBe("true");
     capability().value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     socket = FakeSocket.all[0];
     socket.open();

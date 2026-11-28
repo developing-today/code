@@ -1,7 +1,13 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
-import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import { renderCapabilityGrants } from "./capability-grants";
+import {
+  advanceHostViewCursor,
+  parseGrantPageResponse,
+  parseWorldHostViewPage,
+  parseWorldInviteResponse,
+} from "./world-http";
 import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
@@ -114,6 +120,35 @@ function initWorld(): void {
   const documentsPrefix = element<HTMLInputElement>(root, "[data-world-documents-prefix]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
+  const grantPage = element<HTMLDetailsElement>(root, "[data-world-grant-page]");
+  const grantPageRefresh = element<HTMLButtonElement>(root, "[data-world-grant-page-refresh]");
+  const grantPageStatus = element<HTMLElement>(root, "[data-world-grant-page-status]");
+  const grantPageList = element<HTMLElement>(root, "[data-world-grant-page-list]");
+  // Until this client can verify a world's signed release manifest, a
+  // connection is treated as an unknown capability change. Keep the
+  // decision surface in the page and require an explicit, per-session
+  // choice before constructing the join socket.
+  const connectNotice = document.createElement("section");
+  connectNotice.hidden = true;
+  connectNotice.dataset.worldConnectNotice = "unknown";
+  connectNotice.setAttribute("role", "alertdialog");
+  connectNotice.setAttribute("aria-labelledby", "world-connect-notice-title");
+  connectNotice.className = "card border border-warning bg-base-100 p-4 space-y-3";
+  connectNotice.innerHTML = `
+    <h2 id="world-connect-notice-title" tabindex="-1" class="font-bold">World capabilities could not be verified</h2>
+    <p>This version of the app cannot describe what this world may do. No world connection has been opened.</p>
+    <h3 class="font-semibold">Using your client</h3>
+    <ul><li>Do something this version of the app cannot describe.</li></ul>
+    <h3 class="font-semibold">Through the server side</h3>
+    <ul><li>Server-side capabilities cannot be verified before connecting; the world host decides them.</li></ul>
+    <p>The app cannot verify whether this world may ask for more while you are connected.</p>
+    <div class="flex gap-2">
+      <button type="button" data-world-connect-once class="btn btn-primary">Connect once</button>
+      <button type="button" data-world-connect-decline class="btn btn-ghost">Don't connect</button>
+    </div>`;
+  root.prepend(connectNotice);
+  const connectOnceButton = element<HTMLButtonElement>(connectNotice, "[data-world-connect-once]");
+  const declineConnectButton = element<HTMLButtonElement>(connectNotice, "[data-world-connect-decline]");
   // The host controls (admin token, invite minting, module install,
   // host view) are optional: the program-only surface (#2146 phase 2)
   // renders a guest page without them, and their wiring below is
@@ -163,6 +198,14 @@ function initWorld(): void {
   const storageKey = `id-world-capability:${window.location.host}`;
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
+  let connectConsent: { token: string; world: string | null } | null = null;
+  let connectPending = false;
+  capability.addEventListener("input", () => {
+    connectConsent = null;
+  });
+  worldInput.addEventListener("input", () => {
+    connectConsent = null;
+  });
   let cursor = 0;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
@@ -244,6 +287,54 @@ function initWorld(): void {
     );
     setStatus("Offline — saved snapshot");
   };
+
+  const refreshGrantPage = async () => {
+    if (!grantPageRefresh || !grantPageStatus || !grantPageList) return;
+    grantPageRefresh.disabled = true;
+    grantPageStatus.textContent = "Loading remembered permissions…";
+    try {
+      const clientId = localStorage.getItem("id_identity_client_id")?.trim() || "unregistered";
+      const key = `id-capability-baselines:${window.location.host}:${clientId}`;
+      let baselineStore: unknown = { baselines: {} };
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        try {
+          const parsed: unknown = JSON.parse(stored);
+          if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            !Array.isArray(parsed) &&
+            "baselines" in parsed &&
+            typeof parsed.baselines === "object" &&
+            parsed.baselines !== null &&
+            !Array.isArray(parsed.baselines)
+          ) {
+            baselineStore = parsed;
+          }
+        } catch {
+          baselineStore = { baselines: {} };
+        }
+      }
+      const response = await fetch("/api/world/grant-page", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ baseline_store: baselineStore }),
+      });
+      if (!response.ok) throw new Error(`grant-page request failed (${response.status})`);
+      const listing = parseGrantPageResponse(await response.json());
+      if (!root.isConnected) return;
+      renderCapabilityGrants(grantPageList, listing.worlds);
+      grantPageStatus.textContent = `${listing.worlds.length} world${listing.worlds.length === 1 ? "" : "s"} with remembered decisions.`;
+    } catch {
+      if (root.isConnected) grantPageStatus.textContent = "Remembered permissions are unavailable.";
+    } finally {
+      if (grantPageRefresh) grantPageRefresh.disabled = false;
+    }
+  };
+  grantPage?.addEventListener("toggle", () => {
+    if (grantPage.open) void refreshGrantPage();
+  });
+  grantPageRefresh?.addEventListener("click", () => void refreshGrantPage());
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
     status.textContent = text;
@@ -892,6 +983,17 @@ function initWorld(): void {
       setStatus("Create or paste a guest capability first", "error");
       return;
     }
+    const world = selectedWorld();
+    if (connectConsent?.token !== token || connectConsent.world !== world) {
+      if (!connectPending) {
+        connectPending = true;
+        connectNotice.hidden = false;
+        element<HTMLElement>(connectNotice, "#world-connect-notice-title")?.focus();
+        setStatus("Review the capability notice before connecting");
+      }
+      return;
+    }
+    connectNotice.hidden = true;
     intentionalClose = false;
     // #10927: joining a world other than the one the accumulated
     // snapshot belongs to restores that world's stored snapshot first
@@ -990,6 +1092,17 @@ function initWorld(): void {
       }, wait);
     });
   };
+
+  connectOnceButton?.addEventListener("click", () => {
+    connectConsent = { token: capability.value.trim(), world: selectedWorld() };
+    connectPending = false;
+    connect();
+  });
+  declineConnectButton?.addEventListener("click", () => {
+    connectPending = false;
+    connectNotice.hidden = true;
+    setStatus("Not connected", "idle");
+  });
 
   inviteButton?.addEventListener("click", async () => {
     if (!admin || !inviteButton) return;
@@ -1268,6 +1381,9 @@ function initWorld(): void {
       retired.close();
     }
     intentionalClose = false;
+    // A button press is a new user initiated connection. The previous
+    // one-time choice only covers its own live session and reconnects.
+    connectConsent = null;
     connect();
   });
 

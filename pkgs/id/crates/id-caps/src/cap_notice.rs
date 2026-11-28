@@ -27,6 +27,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::Serialize;
+
 use crate::cap_baseline::{BaselineHistoryEntry, BaselineStore};
 use crate::cap_class::resolve_cap_class;
 use crate::cap_diff::{CapDiff, uncomputable_diff};
@@ -53,7 +55,7 @@ pub fn honesty_line_for_policy(policy: &str) -> Option<&'static str> {
 /// client's fixed text for that class id (#5959 §3.1). The registry
 /// entry supplies the id, never the sentence — a server cannot soften
 /// the wording of the warning it triggers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NoticeLine {
     /// The new class this line names.
     pub class: String,
@@ -355,7 +357,7 @@ pub fn apply_choice(
 /// history in display order (oldest first — the order the record
 /// stores, suitable for rendering as a timeline). The actual `id-web`
 /// rendering is follow-on work; this is the data it reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GrantPageWorld {
     /// The world instance id.
     pub world_id: String,

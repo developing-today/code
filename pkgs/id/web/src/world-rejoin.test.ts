@@ -112,14 +112,19 @@ describe("world page rejoin (ghost WebSocket, #1461)", () => {
   it("rejoin retires the old socket: its async close spawns no ghost connection", async () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
     q<HTMLButtonElement>("[data-world-join]").click();
+    expect(FakeSocket.all).toHaveLength(0);
+    q<HTMLButtonElement>("[data-world-connect-once]").click();
     expect(FakeSocket.all).toHaveLength(1);
     const first = FakeSocket.all[0];
     first.open();
     expect(first.sent("join")).toHaveLength(1);
 
     // Rejoin. The click retires socket 1, creates socket 2; socket 1's
-    // close event lands afterwards, asynchronously.
+    // close event lands afterwards, asynchronously. Unknown capabilities
+    // require a fresh explicit choice for each user initiated connection.
     q<HTMLButtonElement>("[data-world-join]").click();
+    expect(FakeSocket.all).toHaveLength(1);
+    q<HTMLButtonElement>("[data-world-connect-once]").click();
     expect(FakeSocket.all).toHaveLength(2);
     const second = FakeSocket.all[1];
     await flushAsync();
@@ -157,14 +162,28 @@ describe("world page rejoin (ghost WebSocket, #1461)", () => {
     expect(FakeSocket.all).toHaveLength(2);
   });
 
+  it("holds the join socket until the unknown capability notice is answered", () => {
+    FakeSocket.all.length = 0;
+    q<HTMLInputElement>("[data-world-capability]").value = "unverified-capability";
+    q<HTMLButtonElement>("[data-world-join]").click();
+    expect(FakeSocket.all).toHaveLength(0);
+    expect(q("[data-world-connect-notice]").hidden).toBe(false);
+    q<HTMLButtonElement>("[data-world-connect-decline]").click();
+    expect(FakeSocket.all).toHaveLength(0);
+    q<HTMLButtonElement>("[data-world-join]").click();
+    expect(FakeSocket.all).toHaveLength(0);
+    q<HTMLButtonElement>("[data-world-connect-once]").click();
+    expect(FakeSocket.all).toHaveLength(1);
+  });
+
   it("a genuine unexpected drop still auto-reconnects with backoff", async () => {
     const current = FakeSocket.all.at(-1) as FakeSocket;
     current.serverDrop();
     await flushAsync();
     expect(status()).toBe("Disconnected; retrying…");
 
-    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(3), { timeout: 3000, interval: 50 });
-    const reconnected = FakeSocket.all[2];
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2), { timeout: 3000, interval: 50 });
+    const reconnected = FakeSocket.all[1];
     reconnected.open();
     expect(reconnected.sent("join")).toHaveLength(1);
   });
