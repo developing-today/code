@@ -1,8 +1,0 @@
-node_modules/
-data/
-.env
-.env.local
-*.db
-*.db-journal
-*.db-wal
-*.db-shm

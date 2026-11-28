@@ -1,7 +1,0 @@
-{
-  "schema": "mcpx-e2e-timings/v1",
-  "note": "Per-test wall time in seconds for pkgs/mcpx/internal/e2e. Refreshed from the e2e-shard-<n> artifacts that the mcpx-test workflow uploads (sum each test's Elapsed in the go test -json stream). Tests absent here use the median of the measured values, so this file may grow incrementally.",
-  "measured_at": "2026-11-04",
-  "measured_on": "GitHub Actions ubuntu-latest, shard artifacts only (no local measurements committed yet)",
-  "tests": {}
-}

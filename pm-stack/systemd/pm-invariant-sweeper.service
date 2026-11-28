@@ -1,7 +1,0 @@
-[Unit]
-Description=Epic-invariant sweeper — closed-with-open-sub-issues, open status:done, Kaneo<->GitHub mismatches (code#10139)
-After=network.target docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/invariant-sweeper.py --post-epic'

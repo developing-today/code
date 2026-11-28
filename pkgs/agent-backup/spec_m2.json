@@ -1,1 +1,0 @@
-{ "table": "agent.mirror_scheduler_job_runs", "conflict": ["run_id"], "jsonb_cols": ["payload"], "mode": "update" }
