@@ -615,6 +615,47 @@ async function run() {
   // file keeps its comments and formatting.
   const edits = [];
 
+  // 0. Carry the provider switchboard (#16565): disabled_providers is
+  // deliberate configuration that lives in the tracked default, but the
+  // server layers this overlay via OPENCODE_CONFIG and an overlay that
+  // lacks the list leaves every built-in provider enabled - including the
+  // meta provider, the pay-as-you-go API-key door Drew ordered disabled.
+  // Mirror the tracked default list into the overlay on every run: repo
+  // config first (this checkout), then the deployed user config - the
+  // same order OPENCODE_CONFIG_PATH itself resolves in.
+  let disabledProvidersChanged = false;
+  {
+    let authoritative = null;
+    for (const candidate of [REPO_CONFIG_PATH, USER_CONFIG_PATH]) {
+      if (candidate === OPENCODE_CONFIG_PATH) continue;
+      try {
+        const parsed = parseJsonc(fs.readFileSync(candidate, "utf-8"));
+        if (Array.isArray(parsed.disabled_providers)) {
+          authoritative = parsed.disabled_providers.filter(
+            (id) => typeof id === "string",
+          );
+          break;
+        }
+      } catch {
+        // Unreadable or unparseable candidate: try the next one. A read
+        // failure is never an empty list - that would re-enable doors.
+      }
+    }
+    if (authoritative === null) {
+      console.warn(
+        "[sync-models] ! No disabled_providers found in the tracked default (repo or user config) - leaving the overlay list untouched.",
+      );
+    } else if (
+      !jsonValueEqual(config.disabled_providers ?? null, authoritative)
+    ) {
+      edits.push({ set: ["disabled_providers"], value: authoritative });
+      disabledProvidersChanged = true;
+      console.log(
+        `[sync-models] disabled_providers: mirroring the tracked default (${authoritative.length} providers) into the overlay.`,
+      );
+    }
+  }
+
   // 1. Sync _antigravity (the CLI-wire door; antigravity-agy &
   // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
   if (agyModels.length > 0) {
@@ -785,7 +826,7 @@ async function run() {
     );
   }
 
-  if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0) {
+  if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0 && !disabledProvidersChanged) {
     if (skippedProviders.length > 0) {
       console.error('[sync-models] Failed: skipped providers above were not synced.');
       process.exit(2);
