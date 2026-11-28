@@ -54,6 +54,9 @@ central namespaces (operators, need kv-admin):
   namespace define NS (--shared SCOPE | --private)
                                                define or update NS on central
   namespace list                               print every central namespace
+  grant list GROUP                             print GROUP's grant rows, or
+                                               refuse unknown_group when none
+  grant revoke GROUP DB NS                     remove GROUP's grant for NS in DB
   blob gc        JUR/TIER [--grace-ms MS] [--purge]
                                                collect unreferenced blobs in a
                                                partition after their grace
@@ -104,6 +107,7 @@ const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consisten
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
 const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES] [--blob-partition JUR/TIER]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). --blob-partition JUR/TIER places NS's blobs in that\njurisdiction and sensitivity tier; with none, values over the threshold wait\n(no_blob_placement) and the upload door refuses them. Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-<TAB>JUR/TIER|-,\nwhere SCOPE is shared:ID or private.\n";
 const BLOB_USAGE: &str = "usage: fleet kv blob gc JURISDICTION/TIER [--grace-ms MS] [--purge]\n\nRun one garbage-collection pass over a central blob partition. Needs the\ncentral store and an admin credential (the hosted door's kv-admin role); the\nlocal store is not opened. The pass marks published blobs that no key\nreferences as candidates, clears candidates that gained a reference or lost\ntheir object, then fences the delete of every candidate unreferenced for at\nleast the grace (--grace-ms, default 24 hours). A reference that lands during\nthe grace keeps the blob. A fenced delete retires the central record only.\n--purge then asks the blob door to remove the bytes of every deleted blob\nthat no published row names, in rounds until none are left.\n\nPrints `partition=JUR/TIER marked=N cleared=N deleted=N`, then\n`deleted content=DIGEST epoch=N` for each fenced delete. With --purge it\nthen prints `purged content=DIGEST` for each removal, `released\ncontent=DIGEST` for each removal the door will retry later, and\n`purged=N released=N`.\n";
+const GRANT_USAGE: &str = "usage: fleet kv grant list GROUP\n       fleet kv grant revoke GROUP DB NS\n\nInspect or remove a group's central grants. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. `list` prints one line per grant row: GROUP<TAB>DB<TAB>NS<TAB>OPS<TAB>EPOCH,\nwhere OPS is a comma-separated subset of read,write,delete. A group with no\ngrant rows is refused with unknown_group (fail-closed: no grant, no group\ndatabase). `revoke` removes GROUP's grant for NS in DB and prints\n`revoked group=GROUP database=DB namespace=NS`; revoking the group's last\ngrant dissolves the group. Admitting a grant stays with the kv-admin door\nstatement (grants.upsert): this verb never creates a grant row.";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +124,7 @@ enum Verb {
     Snapshot,
     Restore,
     Namespace,
+    Grant,
     Blob,
 }
 
@@ -138,6 +143,7 @@ impl Verb {
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
             "namespace" => Self::Namespace,
+            "grant" => Self::Grant,
             "blob" => Self::Blob,
             _ => return None,
         })
@@ -157,6 +163,7 @@ impl Verb {
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
             Self::Namespace => NAMESPACE_USAGE,
+            Self::Grant => GRANT_USAGE,
             Self::Blob => BLOB_USAGE,
         }
     }
@@ -260,6 +267,16 @@ enum Command {
     },
     /// `namespace list`: print every central namespace definition.
     NamespaceList,
+    /// `grant list`: print one group's grant rows.
+    GrantList {
+        group: String,
+    },
+    /// `grant revoke`: remove one group's grant for a namespace.
+    GrantRevoke {
+        group: String,
+        database: String,
+        namespace: String,
+    },
     /// `blob gc`: one central GC pass over a blob partition.
     BlobGc {
         partition: crate::blob::Partition,
@@ -286,6 +303,8 @@ impl Command {
             Self::Restore { .. } => "restore",
             Self::NamespaceDefine { .. } => "namespace-define",
             Self::NamespaceList => "namespace-list",
+            Self::GrantList { .. } => "grant-list",
+            Self::GrantRevoke { .. } => "grant-revoke",
             Self::BlobGc { .. } => "blob-gc",
         })
     }
@@ -296,7 +315,11 @@ impl Command {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
             Self::Sync { .. } | Self::RestoreArchive | Self::Rebase { .. } => true,
-            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. } => true,
+            Self::NamespaceDefine { .. }
+            | Self::NamespaceList
+            | Self::GrantList { .. }
+            | Self::GrantRevoke { .. }
+            | Self::BlobGc { .. } => true,
             _ => false,
         }
     }
@@ -305,7 +328,11 @@ impl Command {
     fn is_admin(&self) -> bool {
         matches!(
             self,
-            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. }
+            Self::NamespaceDefine { .. }
+                | Self::NamespaceList
+                | Self::GrantList { .. }
+                | Self::GrantRevoke { .. }
+                | Self::BlobGc { .. }
         )
     }
 }
@@ -344,6 +371,14 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             ));
         }
         return parse_namespace(&args[skip..]);
+    }
+    if verb == Verb::Grant {
+        if global {
+            return Err(usage(
+                "--global applies to get, set, list and delete, not `kv grant`",
+            ));
+        }
+        return parse_grant(&args[skip..]);
     }
     if verb == Verb::Blob {
         if global {
@@ -565,8 +600,9 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         | Verb::Snapshot
         | Verb::Restore
         | Verb::Namespace
+        | Verb::Grant
         | Verb::Blob => {
-            unreachable!("sync, host, namespace and blob verbs returned above")
+            unreachable!("sync, host, namespace, grant and blob verbs returned above")
         }
     })
 }
@@ -766,6 +802,86 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
     }
 }
 
+/// `grant list GROUP` and `grant revoke GROUP DB NS`.
+fn parse_grant(args: &[String]) -> Result<Command, ParseError> {
+    let Some(action) = args.first() else {
+        return Err(usage("`kv grant` needs `list` or `revoke`"));
+    };
+    if matches!(action.as_str(), "-h" | "--help" | "help") {
+        return Ok(Command::Help(GRANT_USAGE));
+    }
+    let mut positionals: Vec<String> = Vec::new();
+    let mut rest = args[1..].iter();
+    let mut only_positionals = false;
+    while let Some(arg) = rest.next() {
+        if only_positionals || !arg.starts_with("--") {
+            positionals.push(arg.clone());
+            continue;
+        }
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "--" => only_positionals = true,
+            "--help" | "-h" => return Ok(Command::Help(GRANT_USAGE)),
+            _ => {
+                let _ = inline;
+                return Err(usage(format!(
+                    "unknown argument `{arg}` for `kv grant {action}`"
+                )));
+            }
+        }
+    }
+    let bad_name = |kind: &str, value: &str| {
+        usage(format!(
+            "`kv grant {action}` needs a valid {kind}, got `{value}`"
+        ))
+    };
+    match action.as_str() {
+        "list" => {
+            if positionals.len() != 1 {
+                return Err(usage(format!(
+                    "`kv grant list` takes 1 argument (the group), got {}",
+                    positionals.len()
+                )));
+            }
+            let group = positionals.remove(0);
+            if !crate::grants::valid_name(&group) {
+                return Err(bad_name("group", &group));
+            }
+            Ok(Command::GrantList { group })
+        }
+        "revoke" => {
+            if positionals.len() != 3 {
+                return Err(usage(format!(
+                    "`kv grant revoke` takes 3 arguments (GROUP DB NS), got {}",
+                    positionals.len()
+                )));
+            }
+            let mut taken = positionals.into_iter();
+            let group = taken.next().unwrap_or_default();
+            let database = taken.next().unwrap_or_default();
+            let namespace = taken.next().unwrap_or_default();
+            if !crate::grants::valid_name(&group) {
+                return Err(bad_name("group", &group));
+            }
+            if !crate::grants::valid_name(&database) {
+                return Err(bad_name("database", &database));
+            }
+            crate::validate_namespace(&namespace).map_err(|_| bad_name("namespace", &namespace))?;
+            Ok(Command::GrantRevoke {
+                group,
+                database,
+                namespace,
+            })
+        }
+        other => Err(usage(format!(
+            "unknown `kv grant` action `{other}`: use list or revoke"
+        ))),
+    }
+}
+
 fn refuse(err: &mut dyn Write, error: &KvError) -> i32 {
     let _ = writeln!(err, "error: {}: {error}", error.code());
     EXIT_REFUSED
@@ -909,6 +1025,16 @@ fn central_exit(error: &CentralError) -> i32 {
 fn refuse_central(err: &mut dyn Write, error: &CentralError) -> i32 {
     let _ = writeln!(err, "error: {}: {error}", error.code());
     central_exit(error)
+}
+
+fn refuse_grant(err: &mut dyn Write, error: &crate::grants::GrantError) -> i32 {
+    match error {
+        crate::grants::GrantError::Central(central) => refuse_central(err, central),
+        other => {
+            let _ = writeln!(err, "error: {}: {other}", other.code());
+            EXIT_REFUSED
+        }
+    }
 }
 
 fn refuse_global(err: &mut dyn Write, error: &GlobalError) -> i32 {
@@ -1299,6 +1425,8 @@ fn execute_central(
         },
         command @ (Command::NamespaceDefine { .. }
         | Command::NamespaceList
+        | Command::GrantList { .. }
+        | Command::GrantRevoke { .. }
         | Command::BlobGc { .. }) => {
             return execute_admin(command, primary, out, err);
         }
@@ -1529,6 +1657,67 @@ fn execute_admin(
             }),
             Err(error) => return refuse_central(err, &error),
         },
+        Command::GrantList { group } => match crate::grants::grants(primary, &group) {
+            Ok(granted) => {
+                if granted.is_empty() {
+                    // Fail closed like placement does: a group with no grant
+                    // row is unknown, never an empty-but-valid group.
+                    return refuse_grant(
+                        err,
+                        &crate::grants::GrantError::UnknownGroup(group.clone()),
+                    );
+                }
+                granted.iter().try_for_each(|grant| {
+                    writeln!(
+                        out,
+                        "{}\t{}\t{}\t{}\t{}",
+                        grant.group_id,
+                        grant.database_name,
+                        grant.namespace,
+                        grant
+                            .allowed_ops
+                            .iter()
+                            .map(|op| op.as_str())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        grant.policy_epoch
+                    )
+                })
+            }
+            Err(error) => return refuse_grant(err, &error),
+        },
+        Command::GrantRevoke {
+            group,
+            database,
+            namespace,
+        } => {
+            let granted = match crate::grants::grants(primary, &group) {
+                Ok(granted) => granted,
+                Err(error) => return refuse_grant(err, &error),
+            };
+            if granted.is_empty() {
+                return refuse_grant(err, &crate::grants::GrantError::UnknownGroup(group.clone()));
+            }
+            if !granted
+                .iter()
+                .any(|grant| grant.database_name == database && grant.namespace == namespace)
+            {
+                return refuse_grant(
+                    err,
+                    &crate::grants::GrantError::NamespaceNotGranted {
+                        group_id: group.clone(),
+                        namespace: namespace.clone(),
+                    },
+                );
+            }
+            match crate::grants::revoke(primary, &group, &database, &namespace) {
+                Ok(()) => writeln!(
+                    out,
+                    "revoked group={group} database={database} namespace={namespace}"
+                ),
+                Err(error) => return refuse_grant(err, &error),
+            }
+        }
         Command::BlobGc {
             partition,
             grace_ms,
@@ -1798,6 +1987,8 @@ fn execute(
         | Command::Rebase { .. }
         | Command::NamespaceDefine { .. }
         | Command::NamespaceList
+        | Command::GrantList { .. }
+        | Command::GrantRevoke { .. }
         | Command::BlobGc { .. } => {
             let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
@@ -2439,6 +2630,103 @@ mod tests {
             text(&listed),
             "status\tshared:fleet-status\t3\t262144\tglobal\teu/standard\n"
         );
+    }
+
+    #[test]
+    fn central_cli_grant_list_and_revoke_are_fail_closed() {
+        use crate::grants::{GrantOp, GrantRequest, GroupDirectory, admit};
+
+        struct Directory;
+
+        impl GroupDirectory for Directory {
+            fn is_member(&self, group_id: &str, user_id: &str) -> bool {
+                group_id == "repo-code" && user_id == "admin"
+            }
+            fn owns_namespace(&self, group_id: &str, namespace: &str) -> bool {
+                group_id == "repo-code" && namespace == "status"
+            }
+        }
+
+        let central = Central::new();
+        let store = LocalStore::in_memory().expect("store");
+
+        // No grant row, no group: list refuses instead of printing nothing.
+        let missing = central.invoke(&store, "admin", &["grant", "list", "repo-code"], b"");
+        assert_eq!(missing.code, EXIT_REFUSED, "{}", missing.err);
+        assert!(
+            missing.err.starts_with("error: unknown_group:"),
+            "{}",
+            missing.err
+        );
+
+        // Seed one grant the way the kv-admin door statement would.
+        admit(
+            &*central.primary,
+            &Directory,
+            &GrantRequest {
+                requester: "admin".into(),
+                group_id: "repo-code".into(),
+                database_name: "code-build".into(),
+                namespace: "status".into(),
+                allowed_ops: vec![GrantOp::Write, GrantOp::Read],
+            },
+        )
+        .expect("admit");
+
+        let listed = central.invoke(&store, "admin", &["grant", "list", "repo-code"], b"");
+        assert_eq!(listed.code, EXIT_OK, "{}", listed.err);
+        assert_eq!(
+            text(&listed),
+            "repo-code\tcode-build\tstatus\tread,write\t1\n"
+        );
+
+        // Revoking a namespace the group holds nothing for refuses.
+        let wrong_ns = central.invoke(
+            &store,
+            "admin",
+            &["grant", "revoke", "repo-code", "code-build", "status-notes"],
+            b"",
+        );
+        assert_eq!(wrong_ns.code, EXIT_REFUSED, "{}", wrong_ns.err);
+        assert!(
+            wrong_ns.err.starts_with("error: namespace_not_granted:"),
+            "{}",
+            wrong_ns.err
+        );
+
+        let revoked = central.invoke(
+            &store,
+            "admin",
+            &["grant", "revoke", "repo-code", "code-build", "status"],
+            b"",
+        );
+        assert_eq!(revoked.code, EXIT_OK, "{}", revoked.err);
+        assert_eq!(
+            text(&revoked),
+            "revoked group=repo-code database=code-build namespace=status\n"
+        );
+
+        // The last grant is gone, so the group is unknown again.
+        let gone = central.invoke(&store, "admin", &["grant", "list", "repo-code"], b"");
+        assert_eq!(gone.code, EXIT_REFUSED, "{}", gone.err);
+        assert!(
+            gone.err.starts_with("error: unknown_group:"),
+            "{}",
+            gone.err
+        );
+
+        // Arity and name validation are usage errors, not refusals.
+        let no_args = central.invoke(&store, "admin", &["grant", "list"], b"");
+        assert_eq!(no_args.code, EXIT_USAGE, "{}", no_args.err);
+        let short = central.invoke(
+            &store,
+            "admin",
+            &["grant", "revoke", "repo-code", "code-build"],
+            b"",
+        );
+        assert_eq!(short.code, EXIT_USAGE, "{}", short.err);
+        let bad_group = central.invoke(&store, "admin", &["grant", "list", "0-bad"], b"");
+        assert_eq!(bad_group.code, EXIT_USAGE, "{}", bad_group.err);
     }
 
     struct Rounds(std::cell::RefCell<Vec<Result<crate::blob_central::Purged, CentralError>>>);

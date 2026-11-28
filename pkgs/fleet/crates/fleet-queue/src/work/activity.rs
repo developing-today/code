@@ -429,6 +429,195 @@ pub fn dedupe_replay(
         .collect()
 }
 
+/// Bounded reconcile planning — HYD-08 (child #9510; design §4
+/// crash table and §8: bounded `refresh` / `activity reconcile`
+/// behavior mapped to shared contracts).
+///
+/// The planner turns per-source refresh state into one bounded pass
+/// plan: each source is `UpToDate`, resumed from its continuation,
+/// or restarted as a full snapshot — and fetch work beyond
+/// `max_sources_per_pass` is explicitly deferred, never silently
+/// dropped and never folded into an unbounded pass. Input order is
+/// the caller's priority order: the first fetch actions win the
+/// budget and the rest wait for the next pass.
+///
+/// What this is not: no fetching, no cursor commits, no CLI. Those
+/// are later HYD-08 slices; this is the decision model they share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotReason {
+    /// No committed cursor: the first fetch is always a snapshot.
+    NoCursor,
+    /// Query fingerprint or API version moved: the opaque token is
+    /// never reused across incompatible queries — a new generation
+    /// starts from a snapshot.
+    QueryChanged,
+    /// Committed cursor is current but the last pass left work
+    /// (visibility gaps or tombstone follow-ups) with no
+    /// continuation pending: re-list from a snapshot.
+    FollowUp,
+}
+
+/// One source's refresh input for reconcile planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRefreshState {
+    /// Canonical source identity (matches [`PageCursor::source_ref`]).
+    pub source_ref: String,
+    /// Last committed cursor, if the source was ever fetched.
+    pub committed: Option<PageCursor>,
+    /// Query fingerprint the next fetch would use.
+    pub query_fingerprint: String,
+    /// API version the next fetch would use.
+    pub api_version: String,
+    /// True when the last pass left work (visibility gaps or
+    /// tombstone follow-ups) even though the cursor is committed.
+    pub needs_refetch: bool,
+}
+
+impl SourceRefreshState {
+    /// Build one source's refresh input; empty identity is a typed
+    /// rejection, never a silently accepted blank source.
+    pub fn new(
+        source_ref: impl Into<String>,
+        committed: Option<PageCursor>,
+        query_fingerprint: impl Into<String>,
+        api_version: impl Into<String>,
+        needs_refetch: bool,
+    ) -> Result<Self, ContractError> {
+        let source_ref = source_ref.into();
+        let query_fingerprint = query_fingerprint.into();
+        let api_version = api_version.into();
+        for (field, value) in [
+            ("source_ref", &source_ref),
+            ("query_fingerprint", &query_fingerprint),
+            ("api_version", &api_version),
+        ] {
+            if value.is_empty() {
+                return Err(ContractError::InvalidSchema {
+                    detail: format!("source refresh state has empty {field}"),
+                });
+            }
+        }
+        Ok(SourceRefreshState {
+            source_ref,
+            committed,
+            query_fingerprint,
+            api_version,
+            needs_refetch,
+        })
+    }
+}
+
+/// Planned refresh action for one source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshAction {
+    /// Cursor is current and nothing is pending: no fetch. Never
+    /// counts against the pass budget.
+    UpToDate { source_ref: String },
+    /// Resume listing from the committed continuation.
+    Resume {
+        source_ref: String,
+        continuation: String,
+    },
+    /// Restart the listing as a full snapshot.
+    FullSnapshot {
+        source_ref: String,
+        reason: SnapshotReason,
+    },
+}
+
+/// One bounded reconcile pass over all sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshPlan {
+    /// Decided actions in caller priority order. Sources beyond the
+    /// budget have no action here — see `deferred`.
+    pub actions: Vec<RefreshAction>,
+    /// Source identities postponed for lack of budget, in priority
+    /// order. Explicit, never silently dropped.
+    pub deferred: Vec<String>,
+    /// The budget this plan was built under.
+    pub budget: usize,
+}
+
+/// Plan one bounded refresh pass.
+///
+/// * A source whose cursor is committed, current (fingerprint and
+///   API version match), uncontinued, and unflagged is `UpToDate`.
+/// * A source with no cursor, or a moved fingerprint/version, is a
+///   `FullSnapshot` — the opaque token is never reused across
+///   incompatible queries.
+/// * A current cursor with no continuation but `needs_refetch` is a
+///   `FullSnapshot` for follow-up; with a continuation it resumes.
+/// * Fetch actions (resume and snapshot) consume the pass budget in
+///   caller priority order; sources beyond `max_sources_per_pass`
+///   are `deferred`, never silently skipped.
+/// * A zero budget is a typed rejection: a pass that can fetch
+///   nothing would silently mark everything complete.
+pub fn plan_refresh(
+    sources: &[SourceRefreshState],
+    max_sources_per_pass: usize,
+) -> Result<RefreshPlan, ContractError> {
+    if max_sources_per_pass == 0 {
+        return Err(ContractError::InvalidSchema {
+            detail: "refresh pass budget is zero: nothing could be fetched".to_string(),
+        });
+    }
+    let mut actions = Vec::with_capacity(sources.len());
+    let mut deferred = Vec::new();
+    let mut fetches_planned = 0usize;
+    for source in sources {
+        if source.source_ref.is_empty()
+            || source.query_fingerprint.is_empty()
+            || source.api_version.is_empty()
+        {
+            return Err(ContractError::InvalidSchema {
+                detail: "source refresh state has empty identity field".to_string(),
+            });
+        }
+        let action = match &source.committed {
+            None => RefreshAction::FullSnapshot {
+                source_ref: source.source_ref.clone(),
+                reason: SnapshotReason::NoCursor,
+            },
+            Some(cursor)
+                if cursor.query_fingerprint != source.query_fingerprint
+                    || cursor.api_version != source.api_version =>
+            {
+                RefreshAction::FullSnapshot {
+                    source_ref: source.source_ref.clone(),
+                    reason: SnapshotReason::QueryChanged,
+                }
+            }
+            Some(cursor) => match &cursor.next_continuation {
+                Some(continuation) => RefreshAction::Resume {
+                    source_ref: source.source_ref.clone(),
+                    continuation: continuation.clone(),
+                },
+                None if source.needs_refetch => RefreshAction::FullSnapshot {
+                    source_ref: source.source_ref.clone(),
+                    reason: SnapshotReason::FollowUp,
+                },
+                None => RefreshAction::UpToDate {
+                    source_ref: source.source_ref.clone(),
+                },
+            },
+        };
+        let is_fetch = !matches!(action, RefreshAction::UpToDate { .. });
+        if is_fetch {
+            if fetches_planned >= max_sources_per_pass {
+                deferred.push(source.source_ref.clone());
+                continue;
+            }
+            fetches_planned += 1;
+        }
+        actions.push(action);
+    }
+    Ok(RefreshPlan {
+        actions,
+        deferred,
+        budget: max_sources_per_pass,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,6 +1151,140 @@ mod tests {
         assert!(
             ObservedActivity::new("", None::<String>, None, None, None, None).is_err()
         );
+    }
+
+    fn refresh_state(
+        source_ref: &str,
+        committed: Option<PageCursor>,
+        query_fingerprint: &str,
+        api_version: &str,
+        needs_refetch: bool,
+    ) -> SourceRefreshState {
+        SourceRefreshState::new(
+            source_ref,
+            committed,
+            query_fingerprint,
+            api_version,
+            needs_refetch,
+        )
+        .expect("valid refresh state")
+    }
+
+    fn committed_cursor(next_continuation: Option<&str>) -> PageCursor {
+        PageCursor {
+            source_ref: "github://alpha/repo/issues/10".to_string(),
+            endpoint: "issues/comments".to_string(),
+            query_fingerprint: "qfp1".to_string(),
+            api_version: "v3".to_string(),
+            generation: 2,
+            last_event_key: Some("e-9".to_string()),
+            next_continuation: next_continuation.map(str::to_string),
+            pages_committed: 3,
+        }
+    }
+
+    #[test]
+    fn pmo_hyd_reconcile_plan_is_bounded_and_prefers_resume() {
+        // A: current cursor, nothing pending — UpToDate.
+        let a = refresh_state(
+            "github://alpha/repo/issues/10",
+            Some(committed_cursor(None)),
+            "qfp1",
+            "v3",
+            false,
+        );
+        // B: current cursor with continuation — resume wins the
+        // budget over later snapshots.
+        let b = refresh_state(
+            "github://alpha/repo/pulls/4",
+            Some(committed_cursor(Some("next-1"))),
+            "qfp1",
+            "v3",
+            false,
+        );
+        // C: never fetched — full snapshot.
+        let c = refresh_state("github://alpha/repo/issues/11", None, "qfp1", "v3", false);
+        // D: fingerprint moved — token never reused: snapshot, and
+        // with budget 2 it is explicitly deferred, not dropped.
+        let mut stale = committed_cursor(None);
+        stale.query_fingerprint = "qfp0".to_string();
+        let d = refresh_state(
+            "github://alpha/repo/issues/12",
+            Some(stale),
+            "qfp1",
+            "v3",
+            false,
+        );
+        // E: current cursor, no continuation, but the last pass
+        // left follow-up work — snapshot; deferred under budget 2.
+        let e = refresh_state(
+            "github://alpha/repo/issues/13",
+            Some(committed_cursor(None)),
+            "qfp1",
+            "v3",
+            true,
+        );
+
+        let plan = plan_refresh(&[a, b, c, d, e], 2).expect("valid budget");
+        assert_eq!(plan.budget, 2);
+        assert_eq!(
+            plan.actions,
+            vec![
+                RefreshAction::UpToDate {
+                    source_ref: "github://alpha/repo/issues/10".to_string(),
+                },
+                RefreshAction::Resume {
+                    source_ref: "github://alpha/repo/pulls/4".to_string(),
+                    continuation: "next-1".to_string(),
+                },
+                RefreshAction::FullSnapshot {
+                    source_ref: "github://alpha/repo/issues/11".to_string(),
+                    reason: SnapshotReason::NoCursor,
+                },
+            ]
+        );
+        // D and E are postponed explicitly — present in deferred,
+        // absent from actions, never silently skipped.
+        assert_eq!(
+            plan.deferred,
+            vec![
+                "github://alpha/repo/issues/12".to_string(),
+                "github://alpha/repo/issues/13".to_string(),
+            ]
+        );
+
+        // Negative: UpToDate never consumes budget — with budget 1
+        // the up-to-date source plus one fetch still both decide.
+        let plan = plan_refresh(
+            &[
+                refresh_state(
+                    "github://alpha/repo/issues/10",
+                    Some(committed_cursor(None)),
+                    "qfp1",
+                    "v3",
+                    false,
+                ),
+                refresh_state(
+                    "github://alpha/repo/pulls/4",
+                    Some(committed_cursor(Some("next-1"))),
+                    "qfp1",
+                    "v3",
+                    false,
+                ),
+            ],
+            1,
+        )
+        .expect("valid budget");
+        assert_eq!(plan.actions.len(), 2);
+        assert!(plan.deferred.is_empty());
+
+        // Negative: a zero budget would silently complete nothing —
+        // typed rejection, never an empty plan.
+        assert!(plan_refresh(&[], 0).is_err());
+
+        // Negative: empty identity is rejected, never silently
+        // accepted.
+        assert!(SourceRefreshState::new("", None, "qfp1", "v3", false).is_err());
     }
 }
 
