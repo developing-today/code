@@ -3,7 +3,8 @@
 // read model. V1 builds its `WorkView` inputs in code via
 // `projectWorkView` (no JSON fixtures yet); a later slice adds
 // `test/fixtures/work-mobile-views/expected.json` once `updated_at`,
-// labels and relations land in the read model (follow-ups F1/F2/F4).
+// labels, Area/Horizon and relations land in the read model
+// (follow-ups F1/F2/F3/F4).
 //
 // Record tests 5 (`group_split`) and 6 (`saved_filters`) cover
 // `groupWorkViews` / `matchesSavedFilters` in the second describe
@@ -146,6 +147,69 @@ describe("work_mobile_views/v1 pure filter", () => {
     ]);
   });
 
+  test("work_mobile_views_triage_matches_todo_with_null_area_or_horizon", () => {
+    // MOB-03 D2 (F3): triage = Project Status Todo with Area or
+    // Horizon explicitly null. A decided non-Todo status is out, not
+    // undecided; explicit null on either side places the row.
+    const todoNullArea = base("t1", {
+      project_status: { value: "Todo", source: "github_project_4" },
+      project_area: { value: null, source: "github_project_4" },
+      project_horizon: { value: "H2", source: "github_project_4" },
+    });
+    const todoNullHorizon = base("t2", {
+      project_status: { value: "Todo", source: "github_project_4" },
+      project_area: { value: "PM Stack", source: "github_project_4" },
+      project_horizon: { value: null, source: "github_project_4" },
+    });
+    const todoBothSet = base("t3", {
+      project_status: { value: "Todo", source: "github_project_4" },
+      project_area: { value: "PM Stack", source: "github_project_4" },
+      project_horizon: { value: "H2", source: "github_project_4" },
+    });
+    const doneNullArea = base("d1", {
+      project_status: { value: "Done", source: "github_project_4" },
+      project_area: { value: null, source: "github_project_4" },
+      project_horizon: { value: "H2", source: "github_project_4" },
+    });
+    const got = mobileView([todoBothSet, doneNullArea, todoNullHorizon, todoNullArea], "triage", CTX);
+    expect(got.unavailable).toBeNull();
+    // Same column (Backlog), so D5 is key order.
+    expect(got.refs.map((r) => r.work_id)).toEqual(["t1", "t2"]);
+    expect(got.undecided).toEqual([]);
+  });
+
+  test("work_mobile_views_triage_holds_rows_with_unread_dimensions", () => {
+    // D3: what cannot be confirmed is counted with its fact and
+    // state, never placed and never quietly dropped.
+    const noProject = base("u1", {
+      project_area: { value: null, source: "github_project_4" },
+    });
+    const todoNoArea = base("u2", {
+      project_status: { value: "Todo", source: "github_project_4" },
+      project_horizon: { value: "H2", source: "github_project_4" },
+    });
+    const todoStaleArea = base("u3", {
+      project_status: { value: "Todo", source: "github_project_4" },
+      project_area: { value: null, source: "github_project_4", freshness: "stale" },
+      project_horizon: { value: "H2", source: "github_project_4" },
+    });
+    const got = mobileView([noProject, todoNoArea, todoStaleArea], "triage", CTX);
+    expect(got.refs).toEqual([]);
+    expect(got.undecided).toEqual([
+      { ref: { authority_id: "fleet-authority", work_id: "u1" }, deciding_fact: "project", state: "absent" },
+      {
+        ref: { authority_id: "fleet-authority", work_id: "u2" },
+        deciding_fact: "project.area",
+        state: "absent",
+      },
+      {
+        ref: { authority_id: "fleet-authority", work_id: "u3" },
+        deciding_fact: "project.area",
+        state: "stale",
+      },
+    ]);
+  });
+
   test("work_mobile_views_reject_unknown_schema_version", () => {
     const bad = { ...backlog("b1"), schema_version: "pm_work_view/v0" } as unknown as WorkView;
     const got = mobileView([bad, ready("q1")], "all", CTX);
@@ -236,6 +300,21 @@ describe("work_mobile_views/v1 grouping and saved filters (slice 2)", () => {
     // A filter on an absent dimension (owner/author, F5) excludes the
     // row instead of matching it on a guess (record D6).
     expect(matchesSavedFilters(view, { owner: "someone" })).toBe(false);
+  });
+
+  test("work_mobile_views_saved_filters_see_carried_area_and_horizon", () => {
+    // F3: Area/Horizon ride the read model now, so a saved filter on
+    // them matches a carried value and still excludes a row whose
+    // dimension is absent (record D6).
+    const carried = base("a1", {
+      project_area: { value: "PM Stack", source: "github_project_4" },
+      project_horizon: { value: null, source: "github_project_4" },
+    });
+    expect(workViewLike(carried).area).toBe("PM Stack");
+    expect(workViewLike(carried).horizon).toBeNull();
+    expect(matchesSavedFilters(carried, { area: "PM Stack" })).toBe(true);
+    expect(matchesSavedFilters(carried, { area: "Other" })).toBe(false);
+    expect(matchesSavedFilters(backlog("b1"), { area: "PM Stack" })).toBe(false);
   });
 
   test("work_mobile_views_group_order_is_deterministic", () => {

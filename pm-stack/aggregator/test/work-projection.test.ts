@@ -209,4 +209,30 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     expect(projectWorkView(input)).toEqual(projectWorkView(input));
     expect(projectWorkView(input).facts.relations.hard_blocker_refs).toEqual(["a", "b"]);
   });
+
+  test("project_area_and_horizon_are_carried_as_facts_with_provenance", () => {
+    // MOB-01 F3 (#9468 follow-up): the Project Area/Horizon
+    // single-selects ride the read model so MOB-03 triage is
+    // decidable. Explicit null = read on the board and empty (never
+    // zeroed, never guessed); omitted = not read.
+    const view = projectWorkView({
+      ...base,
+      project_area: { value: "PM Stack", source: "github_project_4", revision: "fv-1", observed_at: GEN },
+      project_horizon: { value: null, source: "github_project_4", observed_at: GEN },
+    });
+    expect(view.facts.project_area).toMatchObject({ value: "PM Stack", source: "github_project_4", revision: "fv-1" });
+    expect(view.facts.project_horizon).toMatchObject({ value: null, source: "github_project_4" });
+    expect(view.freshness.facets.project_area).toBe("live");
+    expect(view.freshness.facets.project_horizon).toBe("live");
+    // Absent stays absent, never guessed.
+    const absent = projectWorkView(base);
+    expect(absent.facts.project_area).toEqual({ state: "absent", freshness: "absent" });
+    expect(absent.facts.project_horizon).toEqual({ state: "absent", freshness: "absent" });
+    // Stale is carried, never zeroed.
+    const stale = projectWorkView({
+      ...base,
+      project_area: { value: "PM Stack", source: "github_project_4", freshness: "stale" },
+    });
+    expect(stale.facts.project_area).toMatchObject({ value: "PM Stack", freshness: "stale" });
+  });
 });

@@ -91,6 +91,10 @@ export interface WorkProjectionInput {
   workflow_state?: Sourced<string>;
   project_status?: Sourced<string>;
   github_state?: Sourced<"open" | "closed" | "merged">;
+  /** Project Area/Horizon single-selects. Explicit null = read on the
+   *  board and empty; omitted = not read. Feeds MOB-03 triage (F3). */
+  project_area?: Sourced<string | null>;
+  project_horizon?: Sourced<string | null>;
   /** Queue/eligibility facet, from the fleet-queue broker read. */
   queue?: {
     eligible?: boolean;
@@ -136,6 +140,8 @@ export interface WorkView {
     workflow_state: Fact<string>;
     project: Fact<string>;
     github_state: Fact<string>;
+    project_area: Fact<string | null>;
+    project_horizon: Fact<string | null>;
     eligibility: Fact<string> & { hard_blocker_refs: string[] };
     claim: Fact<string> & { worker?: string; lane?: string };
     session: Fact<string>;
@@ -197,6 +203,8 @@ export function projectWorkView(
       })()
     : ({ state: "absent", freshness: "absent" } as Fact<string>);
   const github = toFact(input.github_state);
+  const projectArea = toFact(input.project_area);
+  const projectHorizon = toFact(input.project_horizon);
 
   const manualOnly = input.queue?.manual_only === true;
   const eligible = input.queue?.eligible === true && hardBlockers.length === 0;
@@ -318,6 +326,8 @@ export function projectWorkView(
     workflow_state: factFreshness(workflow),
     project: factFreshness(project),
     github_state: factFreshness(github),
+    project_area: factFreshness(projectArea),
+    project_horizon: factFreshness(projectHorizon),
   };
   const overall = Object.values(facetFreshness).reduce<FactFreshness>(
     (worst, f) => (FRESHNESS_RANK[f] > FRESHNESS_RANK[worst] ? f : worst),
@@ -338,6 +348,8 @@ export function projectWorkView(
       workflow_state: workflow,
       project,
       github_state: github,
+      project_area: projectArea,
+      project_horizon: projectHorizon,
       eligibility,
       claim,
       session,
