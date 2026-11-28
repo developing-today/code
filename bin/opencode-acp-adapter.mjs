@@ -563,6 +563,23 @@ async function runEventStream() {
         while (idx >= 0) {
           const block = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
+          // #16390: a single delimited block bypasses the #16226
+          // undelimited-prefix cap below, which only measures the
+          // leftover buffer — one giant `data:` payload would go
+          // straight into handleSseBlock's JSON.parse unbounded.
+          // Bound each block the same way; on overflow drop the
+          // stream and abort into the reconnect path below.
+          const blockBytes = Buffer.byteLength(block, 'utf8');
+          if (blockBytes > EVENT_BUFFER_MAX_BYTES) {
+            debug(
+              `event stream delimited event grew past ${EVENT_BUFFER_MAX_BYTES} bytes; dropping ${blockBytes} buffered bytes and reconnecting`,
+            );
+            buffer = '';
+            await reader.cancel().catch(() => {});
+            throw new Error(
+              `serve GET /api/event -> delimited SSE event exceeded ${EVENT_BUFFER_MAX_BYTES} bytes`,
+            );
+          }
           handleSseBlock(block);
           idx = buffer.indexOf('\n\n');
         }
