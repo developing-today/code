@@ -211,9 +211,10 @@ pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
 /// with no section fleet falls through to the tool's standard local
 /// endpoint. Resolution order for every tool is flag → this setting →
 /// env (`FLEET_<TOOL>_ENDPOINT`) → standard local endpoint (see
-/// [`resolve_tool_endpoint`]). The standard endpoints themselves are
-/// still TBD pending per-service confirmation — the next slice fills
-/// them in; this slice lands the mechanism plus its tests.
+/// [`resolve_tool_endpoint`]). The per-service standards live in
+/// [`Pass1Tool::standard_local_endpoint`] (confirmed values from the
+/// pass-1 design record; [`resolve_pass1_tool_endpoint`] runs the full
+/// chain for one tool).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolEndpointConfig {
@@ -231,6 +232,83 @@ pub const OPENCHAMBER_ENDPOINT_ENV: &str = "FLEET_OPENCHAMBER_ENDPOINT";
 pub const FLEET_ID_ENDPOINT_ENV: &str = "FLEET_ID_ENDPOINT";
 /// Env var holding an explicit mcpx endpoint.
 pub const MCPX_ENDPOINT_ENV: &str = "FLEET_MCPX_ENDPOINT";
+
+/// Confirmed standard-local OpenCode endpoint (design mill #10389,
+/// pass 1 #10390): the existing fleet session-probe fallback, adopted
+/// by the pass-1 design record
+/// (`doc/2026-11-24_design_id10390_fleet-subcommands-pass1.md` §4) as
+/// OpenCode's standard-local target. Evidence in code:
+/// `pkgs/fleet/crates/fleet/src/session_state.rs`
+/// (`resolve_opencode_base_url` falls back to this value).
+pub const OPENCODE_STANDARD_LOCAL_ENDPOINT: &str = "http://127.0.0.1:13420";
+
+/// Pass-1 tool identity for standard-local endpoint lookup (#10390).
+/// The standard-local target is adapter-owned, never guessed by the
+/// generic resolver: OpenCode has a confirmed HTTP standard above;
+/// OpenChamber, ID and mcpx have none — fleet delegates to the
+/// installed native CLI / the tool's own socket and endpoint
+/// resolution (design record §4 table; open question §8.1 for a
+/// future OpenChamber standalone base).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pass1Tool {
+    /// OpenCode: standard-local HTTP endpoint confirmed.
+    OpenCode,
+    /// OpenChamber: no fleet-owned standard; use the installed CLI.
+    OpenChamber,
+    /// ID tool: no single global HTTP endpoint; explicit node/world
+    /// addressing through the installed CLI.
+    Id,
+    /// mcpx: no fleet-guessed endpoint; the daemon client owns local
+    /// socket and remote `ssh://` resolution.
+    Mcpx,
+}
+
+impl Pass1Tool {
+    /// Env var holding an explicit endpoint for this tool (between the
+    /// `[tool]` setting and the standard local endpoint).
+    pub fn endpoint_env(self) -> &'static str {
+        match self {
+            Pass1Tool::OpenCode => OPENCODE_ENDPOINT_ENV,
+            Pass1Tool::OpenChamber => OPENCHAMBER_ENDPOINT_ENV,
+            Pass1Tool::Id => FLEET_ID_ENDPOINT_ENV,
+            Pass1Tool::Mcpx => MCPX_ENDPOINT_ENV,
+        }
+    }
+
+    /// Confirmed standard-local target for this tool, or `None` where
+    /// the design record establishes no fleet-owned standard. `None`
+    /// is a deliberate delegation marker, not a gap: callers must not
+    /// substitute a guessed port or another service's endpoint.
+    pub fn standard_local_endpoint(self) -> Option<&'static str> {
+        match self {
+            Pass1Tool::OpenCode => Some(OPENCODE_STANDARD_LOCAL_ENDPOINT),
+            Pass1Tool::OpenChamber | Pass1Tool::Id | Pass1Tool::Mcpx => None,
+        }
+    }
+}
+
+/// Resolve one pass-1 tool endpoint end to end through the #10390
+/// chain: flag → `[tool]` setting → `FLEET_<TOOL>_ENDPOINT` env →
+/// the tool's confirmed standard-local target. Blank levels count as
+/// unset (see [`resolve_tool_endpoint`]). Returns `None` where the
+/// tool has no fleet-owned standard and nothing explicit was given —
+/// the caller then delegates to the native CLI instead of dialling a
+/// guessed endpoint.
+pub fn resolve_pass1_tool_endpoint(
+    tool: Pass1Tool,
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+) -> Option<String> {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    tool.standard_local_endpoint().map(str::to_string)
+}
 
 /// Resolve one pass-1 tool endpoint in flag → setting → env → standard
 /// order (#10390). Blank levels (empty or whitespace-only) count as
@@ -2173,6 +2251,64 @@ mod tests {
             Some("http://127.0.0.1:4096")
         );
         assert!(cfg.mcpx.endpoint.is_none());
+    }
+
+    #[test]
+    fn standard_endpoints_match_pass1_design_record() {
+        // Oracle: doc/2026-11-24_design_id10390_fleet-subcommands-pass1.md
+        // §4 table. OpenCode's standard is the existing session-probe
+        // fallback (pkgs/fleet/crates/fleet/src/session_state.rs); the
+        // other three tools have no fleet-owned standard URL — they
+        // delegate to the native CLI / the tool's own resolution, so a
+        // guessed port or a reused credential must never appear here.
+        assert_eq!(
+            Pass1Tool::OpenCode.standard_local_endpoint(),
+            Some(OPENCODE_STANDARD_LOCAL_ENDPOINT)
+        );
+        assert_eq!(OPENCODE_STANDARD_LOCAL_ENDPOINT, "http://127.0.0.1:13420");
+        assert_eq!(Pass1Tool::OpenChamber.standard_local_endpoint(), None);
+        assert_eq!(Pass1Tool::Id.standard_local_endpoint(), None);
+        assert_eq!(Pass1Tool::Mcpx.standard_local_endpoint(), None);
+    }
+
+    #[test]
+    fn standard_endpoints_resolve_through_precedence() {
+        // The confirmed standards resolve through the same flag →
+        // setting → env → standard chain: nothing set falls through to
+        // the standard, and every explicit level still wins in order.
+        let cfg = Config::default();
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::OpenCode, None, None, None),
+            Some(OPENCODE_STANDARD_LOCAL_ENDPOINT.to_string())
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(
+                Pass1Tool::OpenCode,
+                None,
+                cfg.opencode.endpoint.as_deref(),
+                Some("http://env:13420"),
+            ),
+            Some("http://env:13420".to_string())
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(
+                Pass1Tool::OpenCode,
+                Some("http://flag:13420"),
+                Some("http://file:13420"),
+                Some("http://env:13420"),
+            ),
+            Some("http://flag:13420".to_string())
+        );
+        // No fleet-owned standard and nothing explicit: no guessed
+        // endpoint — the caller delegates to the native CLI.
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::Mcpx, None, None, None),
+            None
+        );
+        assert_eq!(
+            resolve_pass1_tool_endpoint(Pass1Tool::Id, None, None, Some("http://env:1"),),
+            Some("http://env:1".to_string())
+        );
     }
 
     #[test]
