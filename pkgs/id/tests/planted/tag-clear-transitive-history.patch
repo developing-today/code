@@ -1,0 +1,12 @@
+diff --git a/pkgs/id/src/tag_claims.rs b/pkgs/id/src/tag_claims.rs
+--- a/pkgs/id/src/tag_claims.rs
++++ b/pkgs/id/src/tag_claims.rs
+@@ -453,7 +453,7 @@ pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+             let mut past: HashSet<Hash> = HashSet::new();
+             for parent in named {
+                 if let Some(claims) = live_past.get(parent) {
+-                    past.extend(claims.iter().filter(|claim| !removed.contains(*claim)));
++                    past.extend(claims.iter().filter(|claim| !removed.contains(*claim) && **claim == *parent));
+                 }
+             }
+             match by_id.get(&id).map(|event| &event.op) {
