@@ -13,7 +13,7 @@ adds its section (or extends it) without rewording settled sections.
 | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------- | ---------------------------- |
 | 1. Turso queue / PM-stack                                                                    | item 1: fleet-queue data, PM-stack aggregator state / boards / reconcile | S1 (this slice, task 22929) | LANDED here                  |
 | 2. GitHub — all orgs/repos                                                                   | item 2                                                                   | S2                          | LANDED here                  |
-| 3. Muse conversations + data                                                                 | item 3                                                                   | S3                          | PLACEHOLDER — not this slice |
+| 3. Muse conversations + data                                                                 | item 3                                                                   | S3 (this slice, task 22931) | LANDED here                  |
 | 4. OpenCode sessions + data (incl. thinking-traces decision)                                 | item 4                                                                   | S4                          | PLACEHOLDER — not this slice |
 | 5. ID objects                                                                                | item 5                                                                   | S5                          | PLACEHOLDER — not this slice |
 | 6. Inventory-pass extras (notes/zettel, Reports Space, ask-ledger, quota/burn, laptop state) | item 6                                                                   | S6                          | PLACEHOLDER — not this slice |
@@ -277,9 +277,95 @@ orgs/developing-today` reports `public_repos` 31 and
 
 ### Group 3 — Claude conversations + data (S3)
 
-Owner: S3. Scope per #9097 item 3: main + side chats, memory tree, artifacts.
-No export/API mechanism on record (2026-11-23 research: UNVERIFIED) — S3
-decides the mechanism in this section.
+Verified 2026-11-28 against `origin/main` in developing-today/code
+(S3 slice, task 22931). Three sub-sources, one group. No slice edits
+outside this section.
+
+#### 3a. Main + side chats (conversation transcripts)
+
+- **Store:** the Claude platform side. There is no repo-side store
+  and no platform export/API path on record (2026-11-23
+  sources/consumers research §2.3: "[unverified mechanism]" — no
+  export/API path recorded on any issue found). Code check this
+  slice: `pkgs/atlas-search/crates/atlas-core/src/` carries no
+  Claude-session reader — `memory.rs` stages memory *files* (§3b),
+  `github_comments.rs` + `bin/atlas-github-comments.rs` cover
+  GitHub only. Session material reaches Atlas today only insofar
+  as transcripts land in stores other connectors already read.
+- **Fresh volume:** **UNVERIFIED in this slice** — no transcript
+  count pulled (no export surface to count against). Recount: once
+  an export surface exists, record drop-dir file count + bytes with
+  `measured_at`; until then this line stays UNVERIFIED by rule, not
+  by omission.
+- **Current mechanism:** none.
+- **Decided mechanism (S3 decides here):** export-drop sweep. The
+  platform offers no hook, so event hooks are impossible until it
+  does; the connector is a scheduled sweep over a laptop drop dir
+  of transcript exports: intern content-addressed via the #3125
+  phase-2 CAS path (working precedent: ChatGPT export, 12,092 files
+  / ~2.6 GB interned with `ATLAS-EXTRACTS VERIFY OK`), stage via
+  `atlas_stage` v1 with per-file export-date/mtime as `updated_at`,
+  idempotent restage on content comparison (the same discipline
+  `stage_memory_files` already implements for §3b). Delta key: file
+  identity + content hash; full re-ingest is the exception per
+  #6028. Internal tier by default; secret-tier transcripts are
+  `secret-tier-held` until the local embedder route (#6059) exists.
+- **Owner issue:** #9097 (this inventory is its acceptance item 1).
+  **No connector issue exists yet for chats** — filing it is S7's
+  connector-filings index (acceptance item 2); the issue must cite
+  this section's store + recount steps.
+
+#### 3b. Memory tree (MEMORY.md, topic files, daily logs)
+
+- **Store:** the laptop memory tree (design
+  `pkgs/atlas-search/docs/memory-integration-design-8567.md` §1:
+  "The Claude memory tree (`MEMORY.md`, topic files, daily logs)";
+  research §2.3: `~/MEMORY.md`, `~/memory/**`; §2.7:
+  `~/memory/topics/**`). The connector scans a tree root for every
+  `*.md` file in sorted tree-relative order.
+- **Connector: BUILT.** PR #14521 (merged) — "stage fleet memory
+  files into fleet-memory unit (#8626)": `scan_memory_files` +
+  `stage_memory_files`
+  (`pkgs/atlas-search/crates/atlas-core/src/memory.rs`), one
+  `items` row plus its `chunks_raw` per markdown file, the file's
+  mtime as `updated_at`, replay-safe re-staging on text/mtime
+  comparison. Registry corpus `fleet-memory`, owner recorded as
+  `muse`, Tier::Internal (design §1 corpus table +
+  `MEMORY_CORPORA`). Sibling #8622 slice-1a connector (agent
+  memory, `agent-memory` unit, owner `openclaw`): PR #13319, plus
+  replay-safe #14024 and native LanceDB reader #15767.
+- **Fresh volume:** **UNVERIFIED in this slice** — no laptop read
+  run (this lane's seat does not hold Drew's laptop home).
+  Recount on the laptop:
+  `find ~/memory -name '*.md' | wc -l; du -sh ~/memory; ls -la ~/MEMORY.md`
+  with `measured_at`.
+- **Current mechanism:** manual connector runs (Atlas-wide current
+  state per #9097: manual/script-driven; the only schedule is the
+  daily backup timer).
+- **Target mechanism:** scheduled sweep over the tree root on file
+  mtime (mtime is already the connector's `updated_at`, so each
+  poll is incremental by construction) + the #7969 runner once it
+  lands; internal tier.
+- **Owner issue:** #8626 (CLOSED 2026-11-25; fleet-memory half
+  landed via #14521; sibling corpus connectors zettelkasten #14594,
+  repo-docs #14652, research-reports #14872 — all merged). #8622
+  (CLOSED 2026-11-24) owns the agent-memory connector. #9097 owns
+  the inventory acceptance.
+
+#### 3c. Artifacts / documents produced for Drew
+
+- **Store:** UNVERIFIED as a separate store — no platform-side
+  artifact location identified in this slice. Artifacts that land
+  as files in the memory tree or repo doc trees are swept with
+  those corpora (§3b / #8626 repo-docs); anything platform-side
+  only rides the §3a export-drop path once it exists.
+- **Fresh volume / mechanism:** UNVERIFIED / none standalone.
+  Recount: inventory platform-side artifact locations on the
+  laptop; if a location holds Drew's documents outside the two
+  paths above, it gets its own store entry and connector issue
+  via S7.
+- **Owner issue:** #9097; connector filing (if a standalone store
+  is found) via S7's index.
 
 ### Group 4 — OpenCode sessions + data (S4)
 
