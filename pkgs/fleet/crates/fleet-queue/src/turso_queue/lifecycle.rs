@@ -697,6 +697,40 @@ pub(crate) fn parse_batch_count(req: &Value) -> Result<i64, String> {
     }
 }
 
+/// #9178 §3: the named task ids of a by-ids batch claim. The list
+/// is explicit (never a pick), so it is validated strictly: an
+/// array of 1..=BATCH_CLAIM_MAX positive ids. Duplicates are kept
+/// — a repeated id resolves against the state the first claim in
+/// the same batch left behind (claimed, then
+/// already-owned-by-this-session), which is the composition the
+/// section specifies.
+pub(crate) fn parse_task_ids(raw: &Value) -> Result<Vec<i64>, String> {
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| "task_ids must be an array of task ids (#9178 §3)".to_string())?;
+    if arr.is_empty() {
+        return Err("task_ids must name at least one task (#9178 §3)".to_string());
+    }
+    if arr.len() as i64 > BATCH_CLAIM_MAX {
+        return Err(format!(
+            "task_ids names {} tasks: a by-ids batch claim takes 1..={BATCH_CLAIM_MAX} items (#9178 §3)",
+            arr.len()
+        ));
+    }
+    let mut ids = Vec::with_capacity(arr.len());
+    for v in arr {
+        match v.as_i64() {
+            Some(id) if id > 0 => ids.push(id),
+            _ => {
+                return Err(format!(
+                    "task_ids entry {v} is not a positive task id (#9178 §3)"
+                ));
+            }
+        }
+    }
+    Ok(ids)
+}
+
 /// The bundle cap's counting query (#11333): how many ordinary
 /// claims one launch — a (lane, session) pair — has already
 /// made. The oracle is the events table: the pick path writes
@@ -862,6 +896,260 @@ pub(crate) fn verb_claim_batch(
     }
 }
 
+/// The session a live claim is recorded under, for a §3 take-over:
+/// the latest claimed event's session mark, else the lane ledger's
+/// session, else the session bound in the row's progress. This is
+/// the same holder evidence claim_transfer checks the named
+/// from-session against; a batch take-over names it from the
+/// record instead of asking the caller to know it.
+pub(crate) fn recorded_holder_session(
+    t: &TursoBackend,
+    task_id: i64,
+    row: &Value,
+) -> Option<String> {
+    if let Ok(ev_rows) = t.query_objs(
+        "SELECT detail FROM events WHERE task_id = ? AND kind = 'claimed' \
+         ORDER BY id DESC LIMIT 1",
+        &[Arg::Int(task_id)],
+        &[],
+    ) {
+        let detail = ev_rows.first().and_then(|e| e.get("detail")).and_then(|d| {
+            match d {
+                Value::String(s) => serde_json::from_str(s).ok(),
+                Value::Object(_) => Some(d.clone()),
+                _ => None,
+            }
+        });
+        if let Some(s) = detail
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(s.to_string());
+        }
+    }
+    if let Ok(Some(ledger)) = get_ledger(t, task_id) {
+        if let Some(s) = ledger.get("session_id").and_then(|v| v.as_str()) {
+            return Some(s.to_string());
+        }
+    }
+    row.get("progress")
+        .and_then(|p| p.get("session_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// One named task of a by-ids batch claim (#9178 §3). Always
+/// resolves to a per-task result — never an error envelope — so
+/// one task's refusal cannot strand the rest of the batch:
+/// {task_id, outcome, reason?, row?} with outcome one of
+/// claimed / already-owned-by-this-session / skipped-claimed /
+/// not-found / failed. A skipped task is not passed to the by-id
+/// path at all: its claim (and its record) stays exactly as it
+/// was, per the section's "existing claims are unchanged".
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn claim_one_named(
+    t: &TursoBackend,
+    task_id: i64,
+    queue: Option<&str>,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<&str>,
+    claim_session: &Option<String>,
+    model: &Option<ClaimModel>,
+    pool: &Option<String>,
+    take_over: bool,
+) -> Value {
+    let row = match get_task(t, task_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => return json!({"task_id": task_id, "outcome": "not-found"}),
+        Err(e) => {
+            return json!({"task_id": task_id, "outcome": "failed", "reason": e});
+        }
+    };
+    if let Some(q) = queue {
+        if row.get("queue").and_then(|v| v.as_str()) != Some(q) {
+            return json!({
+                "task_id": task_id, "outcome": "not-found",
+                "reason": format!("task is not in queue {q}"),
+            });
+        }
+    }
+    let now = iso(now_unix());
+    if let Some((holder_worker, holder_lane, holder_lease_until)) = live_claim_holder(&row, &now) {
+        let bound_session = row
+            .get("progress")
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str());
+        let same_owner = holder_worker == worker
+            && holder_lane == *lane
+            && bound_session == claim_session.as_deref();
+        if same_owner {
+            return json!({
+                "task_id": task_id,
+                "outcome": "already-owned-by-this-session",
+                "row": row,
+            });
+        }
+        if !take_over {
+            return json!({
+                "task_id": task_id,
+                "outcome": "skipped-claimed",
+                "reason": format!(
+                    "live claim held by worker {holder_worker} until {holder_lease_until}"
+                ),
+                "holder_worker_id": holder_worker,
+                "holder_lane_id": holder_lane,
+                "holder_lease_until": holder_lease_until,
+            });
+        }
+        // --take-over (#9178 §3): transfer directly from the
+        // recorded holder session through the #8210 machinery,
+        // whose claimed event records both sides of the transfer
+        // (previous worker/session, new worker/session, actor,
+        // time) — the audit the section requires.
+        let Some(from_session) = recorded_holder_session(t, task_id, &row) else {
+            return json!({
+                "task_id": task_id,
+                "outcome": "failed",
+                "reason": "take-over: the live claim records no holder session to transfer from",
+            });
+        };
+        return match claim_transfer(
+            t,
+            task_id,
+            queue,
+            worker,
+            lane,
+            lease_seconds,
+            family,
+            model,
+            &from_session,
+            claim_session.as_deref(),
+            pool,
+        ) {
+            Ok(Some(new_row)) => json!({
+                "task_id": task_id, "outcome": "claimed",
+                "take_over": true, "from_session": from_session, "row": new_row,
+            }),
+            Ok(None) => json!({
+                "task_id": task_id, "outcome": "failed",
+                "reason": "take-over: the claim changed under the transfer",
+            }),
+            Err(e) => json!({"task_id": task_id, "outcome": "failed", "reason": e}),
+        };
+    }
+    // Not live-claimed: the ordinary by-id path, with its guard
+    // quarantine, requirements, and platform-limit semantics
+    // unchanged. Manual-only rows compose per §4: claim_by_id is
+    // the explicit path that may take them.
+    match claim_by_id(
+        t,
+        task_id,
+        queue,
+        worker,
+        lane,
+        lease_seconds,
+        family,
+        model,
+        claim_session.as_deref(),
+        None,
+        pool,
+        None,
+    ) {
+        Ok(Some(new_row)) => json!({
+            "task_id": task_id, "outcome": "claimed", "row": new_row,
+        }),
+        Ok(None) => {
+            let status = get_task(t, task_id)
+                .ok()
+                .flatten()
+                .and_then(|r| {
+                    r.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "missing".to_string());
+            let reason = match status.as_str() {
+                "parked" => "parked: a by-ids claim takes a parked row only with the \
+                     single-task --manual-override claim (#9178 §2)"
+                    .to_string(),
+                "claimed" => "already claimed".to_string(),
+                other => format!("not claimable by id: status {other}"),
+            };
+            json!({"task_id": task_id, "outcome": "failed", "reason": reason})
+        }
+        Err(e) => json!({"task_id": task_id, "outcome": "failed", "reason": e}),
+    }
+}
+
+/// By-ids batch claim (#9178 §3): one operation claims several
+/// NAMED tasks for one session — the claim preamble once, then
+/// claim_one_named per id, in the caller's order. Unlike the
+/// #8217 count batch (the broker picks), every id is explicit and
+/// every id gets its own result, so a mixed batch (unclaimed,
+/// already owned by the requester, owned by another worker,
+/// missing, parked) resolves per task without disturbing the
+/// skipped rows. The envelope carries the per-task results, the
+/// rows this session now holds (claimed + already-owned), and
+/// the claimed/requested counts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verb_claim_by_ids(
+    t: &TursoBackend,
+    queue: Option<&str>,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<&str>,
+    claim_session: &Option<String>,
+    model: &Option<ClaimModel>,
+    pool: &Option<String>,
+    take_over: bool,
+    task_ids: &[i64],
+) -> Value {
+    let work = (|| -> Result<Vec<Value>, TErr> {
+        claim_preamble(t, queue, worker, lane)?;
+        let mut results = Vec::with_capacity(task_ids.len());
+        for &task_id in task_ids {
+            results.push(claim_one_named(
+                t,
+                task_id,
+                queue,
+                worker,
+                lane,
+                lease_seconds,
+                family,
+                claim_session,
+                model,
+                pool,
+                take_over,
+            ));
+        }
+        Ok(results)
+    })();
+    match work {
+        Ok(results) => {
+            let claimed = results
+                .iter()
+                .filter(|r| r.get("outcome").and_then(|v| v.as_str()) == Some("claimed"))
+                .count();
+            let rows: Vec<Value> = results
+                .iter()
+                .filter_map(|r| r.get("row").cloned())
+                .collect();
+            ok(json!({
+                "results": results,
+                "rows": rows,
+                "claimed": claimed,
+                "requested": task_ids.len(),
+            }))
+        }
+        Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
+        Err(e) => terr(e),
+    }
+}
+
 pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // Reject malformed manual-override intent before the claim preamble
     // can expire leases, touch lanes, or otherwise mutate the test/store.
@@ -989,6 +1277,50 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         Ok(c) => c,
         Err(e) => return fail(2, format!("claim_repo_task: {e}")),
     };
+    // #9178 §3: by-ids batch claim. `task_ids` names the exact
+    // rows (the #8217 count batch picks; this one never does), so
+    // it combines with nothing that names or picks a task any
+    // other way: no task_id, no transfer, no handoff pick, no
+    // count, and no manual_override (the §2 override stays a
+    // single-task, single-reason audit). --take-over is the one
+    // modifier: it lets a named live-claimed row transfer through
+    // the #8210 path instead of skipping.
+    if let Some(raw_ids) = req.get("task_ids") {
+        let task_ids = match parse_task_ids(raw_ids) {
+            Ok(ids) => ids,
+            Err(e) => return fail(2, format!("claim_repo_task: {e}")),
+        };
+        if req_i64(req, "task_id").is_some()
+            || req_str(req, "from_session").is_some()
+            || handoff_pick
+            || count > 1
+            || req_str(req, "manual_override").is_some()
+        {
+            return fail(
+                2,
+                "claim_repo_task: task_ids cannot combine with task_id, \
+                 from_session, pick, count, or manual_override (#9178 §3)"
+                    .to_string(),
+            );
+        }
+        let take_over = req
+            .get("take_over")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        return verb_claim_by_ids(
+            t,
+            queue.as_deref(),
+            &worker,
+            &lane,
+            lease_seconds,
+            family.as_deref(),
+            &claim_session,
+            &model,
+            &pool,
+            take_over,
+            &task_ids,
+        );
+    }
     if count > 1 {
         if req_i64(req, "task_id").is_some() {
             return fail(
@@ -5625,5 +5957,261 @@ mod holder_guard_tests {
             HOLDER_GUARD.matches('?').count(),
             holder_guard_args("w", &json!({})).len()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod claim_by_ids_tests {
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("batch claim oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "batch claim test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn enqueue(t: &TursoBackend, number: i64) -> i64 {
+        let out = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet(number)}));
+        assert_eq!(out["ok"], true, "{out}");
+        out["row"]["id"].as_i64().expect("task id")
+    }
+
+    fn outcomes(out: &Value) -> Vec<(i64, String)> {
+        out["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| {
+                (
+                    r["task_id"].as_i64().expect("result task_id"),
+                    r["outcome"].as_str().expect("result outcome").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batch_claim_claims_two_unclaimed_for_one_session_9178() {
+        // §3 acceptance 1 (oracle: the claim verb itself): one
+        // operation claims two named unclaimed tasks for the same
+        // session and returns a per-task result for each.
+        let (t, _) = fake_backend();
+        let a = enqueue(&t, 917831);
+        let b = enqueue(&t, 917832);
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch", "task_ids": [a, b]
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            outcomes(&out),
+            vec![(a, "claimed".to_string()), (b, "claimed".to_string())]
+        );
+        assert_eq!(out["claimed"], 2, "{out}");
+        assert_eq!(out["requested"], 2, "{out}");
+        assert_eq!(out["rows"].as_array().expect("rows").len(), 2, "{out}");
+        for id in [a, b] {
+            let row = get_task(&t, id).unwrap().expect("claimed row");
+            assert_eq!(row["status"], "claimed", "{row}");
+            assert_eq!(row["worker_id"], "batch-worker", "{row}");
+            let events = events_for(&t, id, "claimed");
+            assert_eq!(events.len(), 1, "{events:?}");
+            let detail: Value =
+                serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
+            assert_eq!(detail["by_id"], true, "{detail}");
+            assert_eq!(detail["session_id"], "ses_batch", "{detail}");
+        }
+    }
+
+    #[test]
+    fn batch_claim_mixed_batch_outcomes_9178() {
+        // §3 acceptance 2 + 4 (oracle: per-task outcomes and the
+        // untouched rows): a mixed batch — unclaimed, already
+        // owned by the requester, owned by another worker,
+        // missing, parked — resolves per task, and the skipped
+        // rows' claims are byte-identical afterwards.
+        let (t, _) = fake_backend();
+        let unclaimed = enqueue(&t, 917833);
+        let mine = enqueue(&t, 917834);
+        let theirs = enqueue(&t, 917835);
+        let parked = enqueue(&t, 917836);
+        let first = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch", "task_id": mine
+            }),
+        );
+        assert_eq!(first["ok"], true, "{first}");
+        let other = verb_claim(
+            &t,
+            &json!({
+                "worker": "other-worker", "queue": QUEUE, "lane": "other-lane",
+                "session_id": "ses_other", "task_id": theirs
+            }),
+        );
+        assert_eq!(other["ok"], true, "{other}");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', not_before = '2027-01-01T00:00:00Z', \
+             park_kind = 'backoff', wait_kind = 'dependency' WHERE id = ?",
+            &[Arg::Int(parked)],
+        )
+        .unwrap();
+        let theirs_before = get_task(&t, theirs).unwrap().expect("their row");
+        let parked_before = get_task(&t, parked).unwrap().expect("parked row");
+
+        let missing = 999_999_999;
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch",
+                "task_ids": [unclaimed, mine, theirs, missing, parked]
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            outcomes(&out),
+            vec![
+                (unclaimed, "claimed".to_string()),
+                (mine, "already-owned-by-this-session".to_string()),
+                (theirs, "skipped-claimed".to_string()),
+                (missing, "not-found".to_string()),
+                (parked, "failed".to_string()),
+            ],
+            "{out}"
+        );
+        let results = out["results"].as_array().expect("results");
+        assert!(
+            results[2]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("other-worker"),
+            "{out}"
+        );
+        assert!(
+            results[4]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("parked"),
+            "{out}"
+        );
+        assert_eq!(out["claimed"], 1, "{out}");
+        // Skipped tasks are undisturbed: same row, no new events.
+        assert_eq!(
+            get_task(&t, theirs).unwrap().expect("their row after"),
+            theirs_before
+        );
+        assert_eq!(
+            get_task(&t, parked).unwrap().expect("parked row after"),
+            parked_before
+        );
+        assert_eq!(events_for(&t, theirs, "claimed").len(), 1);
+        assert!(events_for(&t, parked, "claimed").is_empty());
+    }
+
+    #[test]
+    fn batch_claim_take_over_transfers_with_audit_9178() {
+        // §3 acceptance 3 (oracle: the transfer's claimed event):
+        // with take_over, a task claimed by another session
+        // transfers to the requesting session, and the event
+        // records both sides (previous worker/session, new
+        // worker/session). Without take_over the same batch skips.
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917837);
+        let other = verb_claim(
+            &t,
+            &json!({
+                "worker": "other-worker", "queue": QUEUE, "lane": "other-lane",
+                "session_id": "ses_other", "task_id": id
+            }),
+        );
+        assert_eq!(other["ok"], true, "{other}");
+
+        let skipped = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch", "task_ids": [id]
+            }),
+        );
+        assert_eq!(
+            outcomes(&skipped),
+            vec![(id, "skipped-claimed".to_string())],
+            "{skipped}"
+        );
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch", "task_ids": [id], "take_over": true
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(outcomes(&out), vec![(id, "claimed".to_string())], "{out}");
+        assert_eq!(out["results"][0]["take_over"], true, "{out}");
+        assert_eq!(out["results"][0]["from_session"], "ses_other", "{out}");
+        let row = get_task(&t, id).unwrap().expect("transferred row");
+        assert_eq!(row["status"], "claimed", "{row}");
+        assert_eq!(row["worker_id"], "batch-worker", "{row}");
+        let events = events_for(&t, id, "claimed");
+        assert_eq!(events.len(), 2, "{events:?}");
+        let detail: Value =
+            serde_json::from_str(events[1]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["transfer"], true, "{detail}");
+        assert_eq!(detail["previous_worker"], "other-worker", "{detail}");
+        assert_eq!(detail["previous_session_id"], "ses_other", "{detail}");
+        assert_eq!(detail["session_id"], "ses_batch", "{detail}");
+    }
+
+    #[test]
+    fn batch_claim_rejects_combinations_and_bad_ids_9178() {
+        // §3 guard (oracle: the fail envelope, and no row moves):
+        // task_ids combines with no other naming/picking shape,
+        // and malformed id lists are caller errors.
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917838);
+        for req in [
+            json!({"worker": "w", "queue": QUEUE, "task_ids": [id], "task_id": id}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": [id], "count": 2}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": [id], "from_session": "ses_x"}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": []}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": [0]}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": [-3]}),
+            json!({"worker": "w", "queue": QUEUE, "task_ids": ["x"]}),
+        ] {
+            let out = verb_claim(&t, &req);
+            assert_eq!(out["ok"], false, "{req}: {out}");
+        }
+        let row = get_task(&t, id).unwrap().expect("untouched row");
+        assert_eq!(row["status"], "queued", "{row}");
+        assert!(events_for(&t, id, "claimed").is_empty());
     }
 }
