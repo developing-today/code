@@ -323,6 +323,7 @@
         "pkgs/id/hosted-worker/test/sync-coord.test.ts",
         "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
         "pkgs/id/hosted-worker/test/tenant-ops.test.ts",
+        "pkgs/id/hosted-worker/test/tenancy-entry.test.ts",
         "pkgs/id/hosted-worker/test/identity-link.test.ts",
         "pkgs/id/hosted-worker/test/credentials.test.ts",
         "pkgs/id/hosted-worker/test/export.test.ts",
@@ -339,7 +340,7 @@
         "pkgs/id/hosted-worker/test/publication.test.ts",
         "pkgs/id/hosted-worker/test/gc-revocation-conformance.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/request-cap.test.ts test/storage-contract.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/d1-bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/sync-peer-auth.test.ts test/sync-coord.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-fence.test.ts test/migration-snapshot.test.ts test/migration-coordinator.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts test/gc-sweep.test.ts test/publication.test.ts test/gc-revocation-conformance.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/request-cap.test.ts test/storage-contract.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/d1-bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/sync-peer-auth.test.ts test/sync-coord.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/tenancy-entry.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-fence.test.ts test/migration-snapshot.test.ts test/migration-coordinator.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts test/gc-sweep.test.ts test/publication.test.ts test/gc-revocation-conformance.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",

@@ -11,8 +11,10 @@ name = "USERS"
 class_name = "UserDO"
 
 # The tenancy provisioning state machine (E2 of #9083, #12797):
-# one object per tenant, named by binding_id, driven by the tenancy
-# Worker — never routed by this front door.
+# one object per tenant, named by binding_id. The front door routes
+# only owner-scoped tenancy calls to it (#15481), behind the
+# authenticated registry edge; operator/platform roles are not
+# minted there (their auth story is #13710).
 [[durable_objects.bindings]]
 name = "TENANT_OPS"
 class_name = "TenantOpsDO"

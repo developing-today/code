@@ -1,4 +1,5 @@
-// Hosted data-plane front door (#5199).
+// Hosted data-plane front door (#5199) with owner-scoped tenancy
+// routes (#15481).
 //
 // Resolves an already-authenticated account/binding to its per-user
 // Durable Object. Authentication and the binding ceremony live upstream
@@ -10,11 +11,19 @@
 // supplied internal header, validates the resolved context, and routes
 // only through the jurisdiction-restricted namespace (routing.ts).
 // No Iroh QUIC runs inside the Worker (issue excludes).
+//
+// Tenancy routes (/v1/tenant/*) ride the same authenticated edge: the
+// central registry check above gates them, and the entry point mints
+// the TenantOpsDO owner actor from the authenticated binding —
+// operator and platform roles are not minted here (their auth story
+// is #13710), so control-plane writes beyond owner scope fail closed
+// inside the DO's own role check.
 
 import {
   FailClosed,
   parseBindingId,
   parseJurisdiction,
+  tenantOpsStub,
   userStub,
   type BlobsEnv,
   type ObjectNamespaceLike,
@@ -33,16 +42,21 @@ import {
   requestBodyLimit,
 } from "./user-do.ts";
 import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
+import { HDR_ACTOR_ID, HDR_ACTOR_ROLE, HDR_TRIGGER } from "./tenant-ops.ts";
 
 export { UserDO } from "./user-do.ts";
 // The tenancy control plane's per-tenant operations object (E2 of
 // #9083, #12797). Exported and bound so the platform knows the
-// class; the front door does not route to it — the tenancy Worker
-// drives it over internal calls.
+// class; the front door routes only owner-scoped tenancy calls to
+// it (below), behind the same authenticated edge as the data plane.
 export { TenantOpsDO } from "./tenant-ops.ts";
 
 interface Env extends BlobsEnv {
   USERS: ObjectNamespaceLike;
+  /** Per-tenant operations objects, one per binding. Only the
+   * owner-scoped routes below address them; a missing binding
+   * fails closed like every other unconfigured seam. */
+  TENANT_OPS: ObjectNamespaceLike;
   /** Dedicated operator credential; unset keeps migration control disabled. */
   MIGRATION_OPERATOR_TOKEN?: string;
   /** The central account/binding registry. Missing configuration fails closed. */
@@ -57,6 +71,41 @@ function json(body: unknown, status = 200, extra: Record<string, string> = {}): 
     status,
     headers: { "content-type": "application/json", ...extra },
   });
+}
+
+/** Route an owner-scoped tenancy call to the caller's own
+ * TenantOpsDO (#15481). The stub comes from the routing module's
+ * jurisdiction-restricted helper — this front door never derives
+ * IDs or stubs itself (#3400) — named by the authenticated
+ * binding, and the owner actor is minted from that same context:
+ * the DO's own role check (owner id === object name) then confines
+ * every effect to the caller's own tenant. Client-supplied actor
+ * headers are stripped — like every other internal header on this
+ * door, they are never trusted from a client. Unknown tenancy
+ * paths are answered by the DO itself with an explicit 404. */
+async function tenantOpsFetch(
+  ns: ObjectNamespaceLike,
+  bindingId: string,
+  jurisdiction: Parameters<typeof tenantOpsStub>[2],
+  req: Request,
+  hasBody: boolean,
+): Promise<Response> {
+  const stub = tenantOpsStub(ns, bindingId, jurisdiction);
+  const headers = new Headers(req.headers);
+  headers.delete("x-binding-id");
+  headers.delete("x-jurisdiction");
+  headers.delete(HDR_ACTOR_ROLE);
+  headers.delete(HDR_ACTOR_ID);
+  headers.delete(HDR_TRIGGER);
+  headers.set(HDR_ACTOR_ROLE, "owner");
+  headers.set(HDR_ACTOR_ID, bindingId);
+  const forwarded = new Request(req.url, {
+    method: req.method,
+    headers,
+    body: hasBody ? (req.body ?? undefined) : undefined,
+    duplex: "half",
+  } as RequestInit);
+  return await stub.fetch(forwarded);
 }
 
 export default {
@@ -139,6 +188,21 @@ export default {
         const limit = requestBodyLimit(env.USER_CEILING_BYTES);
         const declared = req.headers.get("content-length");
         if (declared !== null && Number(declared) > limit) throw bodyTooLarge(limit);
+      }
+      // Owner-scoped tenancy routes ride the same authenticated
+      // edge: the registry check above already gated them, and the
+      // actor is minted from the authenticated binding below. This
+      // branches before userStub so tenancy calls never touch the
+      // data-plane namespace.
+      if (url.pathname === "/v1/tenant" || url.pathname.startsWith("/v1/tenant/")) {
+        if (!env.TENANT_OPS || typeof env.TENANT_OPS.get !== "function") {
+          throw new FailClosed(
+            503,
+            "tenant_ops_unavailable",
+            "tenancy operations namespace is not configured; failing closed",
+          );
+        }
+        return await tenantOpsFetch(env.TENANT_OPS, bindingId, jurisdiction, req, hasBody);
       }
       const stub = userStub(env.USERS, bindingId, jurisdiction);
       const headers = new Headers(req.headers);

@@ -122,3 +122,34 @@ export function userStub(
   const id = restricted.idFromName(bindingId);
   return restricted.get(id);
 }
+
+// Obtain the per-tenant operations stub for (bindingId, jurisdiction)
+// from the restricted namespace only (#15481). Same boundary as
+// userStub(): the TENANT_OPS namespace is jurisdiction-restricted,
+// and only this routing module may derive IDs or stubs from a raw
+// namespace binding — the front door calls this helper.
+export function tenantOpsStub(
+  ns: ObjectNamespaceLike,
+  bindingId: string,
+  jurisdiction: Jurisdiction,
+): { fetch(req: Request): Promise<Response> } {
+  let restricted: ObjectNamespaceLike;
+  try {
+    restricted = ns.jurisdiction(jurisdiction);
+  } catch {
+    throw new FailClosed(
+      503,
+      "jurisdiction_unavailable",
+      "jurisdiction-restricted tenancy namespace unavailable; failing closed",
+    );
+  }
+  if (!restricted || typeof restricted.idFromName !== "function" || typeof restricted.get !== "function") {
+    throw new FailClosed(
+      503,
+      "jurisdiction_unavailable",
+      "jurisdiction-restricted tenancy namespace unavailable; failing closed",
+    );
+  }
+  const id = restricted.idFromName(bindingId);
+  return restricted.get(id);
+}
