@@ -147,7 +147,9 @@ describe("derivePoolExhaustionRecords — subjects", () => {
   });
 
   test("supersedes links to the previous record for the subject", () => {
-    const previous = new Map([[poolExhaustionSubjectKey("opencode", "weekly"), "c4:pool_exhaustion:opencode:weekly:1"]]);
+    const previous = new Map([
+      [poolExhaustionSubjectKey("opencode", "weekly"), "c4:pool_exhaustion:opencode:weekly:1"],
+    ]);
     const [r] = derivePoolExhaustionRecords(forecastWithWindow({}), calibrationWith(WINDOW_BAND), previous);
     expect(r.supersedes).toBe("c4:pool_exhaustion:opencode:weekly:1");
   });

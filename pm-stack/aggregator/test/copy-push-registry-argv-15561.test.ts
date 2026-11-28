@@ -12,10 +12,7 @@ async function runScript(args: string[]): Promise<{ code: number; stderr: string
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [code, stderr] = await Promise.all([
-    proc.exited,
-    new Response(proc.stderr).text(),
-  ]);
+  const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   return { code, stderr };
 }
 

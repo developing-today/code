@@ -782,9 +782,7 @@ mod tests {
         // a batch. Oracle: every occurrence is kept (repeated and
         // comma-joined forms read alike), while any other repeated
         // flag stays a usage error.
-        let argv = |words: &[&str]| {
-            words.iter().map(|s| s.to_string()).collect::<Vec<_>>()
-        };
+        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let args = parse_args_inner_multi(
             &argv(&["--task", "11", "--task", "22"]),
             &["task"],
@@ -802,13 +800,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(args.get_list("task"), vec!["11", "22", "33"]);
-        let single = parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"])
-            .unwrap();
+        let single =
+            parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"]).unwrap();
         assert_eq!(single.get_i64("task"), Some(11));
         // A repeated non-repeatable flag is still rejected.
         assert!(
-            parse_args_inner_multi(&argv(&["--worker", "a", "--worker", "b"]), &["worker"], &[], &[])
-                .is_err()
+            parse_args_inner_multi(
+                &argv(&["--worker", "a", "--worker", "b"]),
+                &["worker"],
+                &[],
+                &[]
+            )
+            .is_err()
         );
         // A repeatable boolean is still a duplicate-flag error.
         assert!(

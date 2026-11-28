@@ -12,7 +12,7 @@ Two token families, both resolved **by name** through fleet-secrets; values are 
 
 | Family                      | Secret name                                                               | Opens                                                                                                                  | URL shape                                    |
 | --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `offer`, `offers`, `agents`, `log`                                                                                                | `/api/<owner-token>/fleet/…`                 |
+| Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `offer`, `offers`, `agents`, `log`                                                                             | `/api/<owner-token>/fleet/…`                 |
 | Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack`, `work` — agent routes only; it cannot send commands                                   | `/fleet/<fleet-token>/…`                     |
 | Per-agent credential        | `bridge.<agent>-fleet-token` (the name the agent profile records)         | The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token | `/fleet/<credential>/…`                      |
 | Notes token (notes family)  | `bridge.<agent>-token` (renamable via `[bridge] notes_token_name`)        | `notes send`, `notes inbox`, `notes ack`, `notes watch` for the token's class/name identity                            | `Authorization: Bearer` header on `/notes/…` |
@@ -32,14 +32,14 @@ fleet bridge send --to <targets> [--command] [--sender NAME] [--limit N] <text |
 fleet bridge send --broaden <batch> [--limit N]
 ```
 
-| Flag                       | Argument    | Default             | Meaning                                                                                           |
-| -------------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------- |
+| Flag                       | Argument    | Default             | Meaning                                                                                                                               |
+| -------------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `--to`                     | `<targets>` | required            | Targets: `agent:<name>` (or a bare name; the name may be a glob, `agent:f*`), `group:<name>`, `all`. Repeat `--to` or comma-separate. |
-| `--command`                | —           | off (plain message) | Mark the send as a command.                                                                       |
-| `--sender`                 | `NAME`      | —                   | Sender name recorded on the message.                                                              |
-| `--limit`                  | `N`         | —                   | Deliver to only the first N matches, in name order.                                               |
-| `--broaden`                | `<batch>`   | —                   | Broaden form (no `--to`, no text): re-deliver that batch's original text to the matches its limit left over. |
-| `<text \| ->` (positional) | text        | required            | Message text; `-` reads it from stdin.                                                            |
+| `--command`                | —           | off (plain message) | Mark the send as a command.                                                                                                           |
+| `--sender`                 | `NAME`      | —                   | Sender name recorded on the message.                                                                                                  |
+| `--limit`                  | `N`         | —                   | Deliver to only the first N matches, in name order.                                                                                   |
+| `--broaden`                | `<batch>`   | —                   | Broaden form (no `--to`, no text): re-deliver that batch's original text to the matches its limit left over.                          |
+| `<text \| ->` (positional) | text        | required            | Message text; `-` reads it from stdin.                                                                                                |
 
 ### Behaviour
 
@@ -73,14 +73,14 @@ Resolves the glob in name order, delivers to the first two matches, and answers 
 fleet bridge offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text | ->
 ```
 
-| Flag                       | Argument    | Default             | Meaning                                                                                           |
-| -------------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------- |
+| Flag                       | Argument    | Default             | Meaning                                                                                                                                         |
+| -------------------------- | ----------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--to`                     | `<targets>` | required            | Eligibility address: the send grammar — `agent:<name>` (or a bare name; globs allowed), `group:<name>`, `all`. Repeat `--to` or comma-separate. |
-| `--slots`                  | `N`         | required            | How many claims land.                                                                             |
-| `--command`                | —           | off (plain message) | Mark the offer as a command; a command offer is projected sender-free to eligible agents and claimants. |
-| `--sender`                 | `NAME`      | —                   | Sender name recorded on the offer.                                                                |
-| `--ttl`                    | `SECS`      | —                   | How long the offer stands open, in seconds.                                                       |
-| `<text \| ->` (positional) | text        | required            | Offer text; `-` reads it from stdin.                                                              |
+| `--slots`                  | `N`         | required            | How many claims land.                                                                                                                           |
+| `--command`                | —           | off (plain message) | Mark the offer as a command; a command offer is projected sender-free to eligible agents and claimants.                                         |
+| `--sender`                 | `NAME`      | —                   | Sender name recorded on the offer.                                                                                                              |
+| `--ttl`                    | `SECS`      | —                   | How long the offer stands open, in seconds.                                                                                                     |
+| `<text \| ->` (positional) | text        | required            | Offer text; `-` reads it from stdin.                                                                                                            |
 
 ### Behaviour
 

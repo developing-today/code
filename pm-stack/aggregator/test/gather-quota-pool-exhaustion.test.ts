@@ -45,7 +45,11 @@ describe("gatherer tick — pool_exhaustion production + suppression (#13261)", 
         )
         .join("\n");
       await mkdir(snapshotsDir, { recursive: true });
-      await writeFile(join(snapshotsDir, `usage-${new Date(now).toISOString().slice(0, 7)}.jsonl`), `${seed}\n`, "utf8");
+      await writeFile(
+        join(snapshotsDir, `usage-${new Date(now).toISOString().slice(0, 7)}.jsonl`),
+        `${seed}\n`,
+        "utf8",
+      );
 
       // Calibration: the S2 ledger's window cell for opencode:weekly
       // has ≥20 scored forecasts → its band calibrates the range.
@@ -98,7 +102,10 @@ describe("gatherer tick — pool_exhaustion production + suppression (#13261)", 
       expect(first.stdout).toContain("pool-exhaustion predictions predicted");
 
       const log1 = await readFile(predictionsPath, "utf8");
-      const records1 = log1.trim().split("\n").map((l) => JSON.parse(l));
+      const records1 = log1
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
       const poolRecords = records1.filter((r: { kind: string }) => r.kind === "pool_exhaustion");
       expect(poolRecords).toHaveLength(1);
       const pr = poolRecords[0];
@@ -133,7 +140,10 @@ describe("gatherer tick — pool_exhaustion production + suppression (#13261)", 
       expect(second.stdout).toContain("pool-exhaustion predictions predicted");
 
       const log2 = await readFile(predictionsPath, "utf8");
-      const records2 = log2.trim().split("\n").map((l) => JSON.parse(l));
+      const records2 = log2
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
       const poolRecords2 = records2.filter((r: { kind: string }) => r.kind === "pool_exhaustion");
       // One line per tick: each tick re-issues from its own forecast
       // product (new issued_at → new id), chained by supersedes.

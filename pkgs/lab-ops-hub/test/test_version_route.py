@@ -34,7 +34,9 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parent.parent
 SRC = (PKG / "src" / "index.ts").read_text()
 DEPLOY = (PKG / "deploy.mjs").read_text()
-WORKFLOW = (PKG.parent.parent / ".github" / "workflows" / "cf-worker-versions-release.yml").read_text()
+WORKFLOW = (
+    PKG.parent.parent / ".github" / "workflows" / "cf-worker-versions-release.yml"
+).read_text()
 
 
 class VersionRouteWiring(unittest.TestCase):
@@ -51,7 +53,9 @@ class VersionRouteWiring(unittest.TestCase):
             SRC,
             re.DOTALL,
         )
-        self.assertIsNotNone(m, "no /version branch answering versionAnswer(env.VERSION) found")
+        self.assertIsNotNone(
+            m, "no /version branch answering versionAnswer(env.VERSION) found"
+        )
 
     def test_non_get_is_405(self):
         m = re.search(

@@ -51,14 +51,14 @@ an entry is never edited, reordered, or removed after publication
 (corrections are new entries that reference the entry they correct,
 §4 step 5).
 
-| # | Field | Shape | Rules |
-|---|-------|-------|-------|
-| L1 | `world_key` | public key of the delisted world | The subject of the delist — the key, never a display name (names are hints, v4 §4 rule 1). |
-| L2 | `reason` | the tombstone-notice reason string, verbatim | The same reason carried by the tombstone-notice the delist issued under the curator's key (v3 §3 rule 3). The log quotes the notice; it does not paraphrase it. |
-| L3 | `timestamp` | seconds, UTC | The instant the delist took effect in the hosted registry's served views (the notice's issuance time). |
-| L4 | `curator_key` | the hosted registry's signing (curator) key | The key that signed the tombstone-notice. Every entry is attributable to this key (v4 §7 attribution rule). |
-| L5 | `notice_ref` | reference to the tombstone-notice object (its `registry_seq` under L4) | Lets any reader holding the notice verify the log entry against the signed object itself — the log is an index over signed notices, not a replacement for them. |
-| L6 | `appeal_channel` | the published appeal channel identifier (§3) | Recorded per entry, so an entry stays self-contained even if the channel later changes: the channel named is the one in force for that delist. |
+| #   | Field            | Shape                                                                  | Rules                                                                                                                                                           |
+| --- | ---------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L1  | `world_key`      | public key of the delisted world                                       | The subject of the delist — the key, never a display name (names are hints, v4 §4 rule 1).                                                                      |
+| L2  | `reason`         | the tombstone-notice reason string, verbatim                           | The same reason carried by the tombstone-notice the delist issued under the curator's key (v3 §3 rule 3). The log quotes the notice; it does not paraphrase it. |
+| L3  | `timestamp`      | seconds, UTC                                                           | The instant the delist took effect in the hosted registry's served views (the notice's issuance time).                                                          |
+| L4  | `curator_key`    | the hosted registry's signing (curator) key                            | The key that signed the tombstone-notice. Every entry is attributable to this key (v4 §7 attribution rule).                                                     |
+| L5  | `notice_ref`     | reference to the tombstone-notice object (its `registry_seq` under L4) | Lets any reader holding the notice verify the log entry against the signed object itself — the log is an index over signed notices, not a replacement for them. |
+| L6  | `appeal_channel` | the published appeal channel identifier (§3)                           | Recorded per entry, so an entry stays self-contained even if the channel later changes: the channel named is the one in force for that delist.                  |
 
 One entry per delist action. A world delisted, re-listed, and
 delisted again produces two delist entries and one re-list entry

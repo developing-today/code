@@ -558,7 +558,7 @@ export class UnifiedSendStore {
          entry.outcome,
        )}, ${entry.pushStatus ? sqlStr(entry.pushStatus) : "null"}, ${sqlStr(sentAt)}, null, ${
          entry.groupRef ? sqlStr(entry.groupRef) : "null"
-        }) returning *`,
+       }) returning *`,
     );
     if (!rows[0]) throw new Error("unified send log did not return the row");
     return rows[0];

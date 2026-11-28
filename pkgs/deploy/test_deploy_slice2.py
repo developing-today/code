@@ -135,9 +135,7 @@ class RenderTests(unittest.TestCase):
         # relay must be able to carry the kit unit's KillSignal.
         # Issue #14719, slice 2: KillSignal=SIGINT is a [Service]
         # directive, alongside RestartSec.
-        unit = deploy.render_unit(
-            "svc", dict(DEFN, killSignal="SIGINT"), base=BASE
-        )
+        unit = deploy.render_unit("svc", dict(DEFN, killSignal="SIGINT"), base=BASE)
         _, _, service_section = unit.partition("[Service]")
         self.assertIn("KillSignal=SIGINT", service_section)
         self.assertIn("Restart=on-failure", service_section)

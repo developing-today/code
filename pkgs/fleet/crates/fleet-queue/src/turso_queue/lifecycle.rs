@@ -733,13 +733,14 @@ pub(crate) fn recorded_holder_session(
         &[Arg::Int(task_id)],
         &[],
     ) {
-        let detail = ev_rows.first().and_then(|e| e.get("detail")).and_then(|d| {
-            match d {
+        let detail = ev_rows
+            .first()
+            .and_then(|e| e.get("detail"))
+            .and_then(|d| match d {
                 Value::String(s) => serde_json::from_str(s).ok(),
                 Value::Object(_) => Some(d.clone()),
                 _ => None,
-            }
-        });
+            });
         if let Some(s) = detail
             .as_ref()
             .and_then(|d| d.get("session_id"))
@@ -885,11 +886,7 @@ pub(crate) fn claim_one_named(
             let status = get_task(t, task_id)
                 .ok()
                 .flatten()
-                .and_then(|r| {
-                    r.get("status")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                })
+                .and_then(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string))
                 .unwrap_or_else(|| "missing".to_string());
             let reason = match status.as_str() {
                 "parked" => "parked: a by-ids claim takes a parked row only with the \
@@ -6114,8 +6111,7 @@ mod claim_by_ids_tests {
         assert_eq!(row["worker_id"], "batch-worker", "{row}");
         let events = events_for(&t, id, "claimed");
         assert_eq!(events.len(), 2, "{events:?}");
-        let detail: Value =
-            serde_json::from_str(events[1]["detail"].as_str().unwrap()).unwrap();
+        let detail: Value = serde_json::from_str(events[1]["detail"].as_str().unwrap()).unwrap();
         assert_eq!(detail["transfer"], true, "{detail}");
         assert_eq!(detail["previous_worker"], "other-worker", "{detail}");
         assert_eq!(detail["previous_session_id"], "ses_other", "{detail}");
@@ -6145,11 +6141,7 @@ mod claim_by_ids_tests {
             }),
         );
         assert_eq!(out["ok"], true, "{out}");
-        assert_eq!(
-            outcomes(&out),
-            vec![(id, "claimed".to_string())],
-            "{out}"
-        );
+        assert_eq!(outcomes(&out), vec![(id, "claimed".to_string())], "{out}");
         let row = get_task(&t, id).unwrap().expect("claimed row");
         assert_eq!(row["status"], "claimed", "{row}");
         assert_eq!(row["worker_id"], "batch-worker", "{row}");

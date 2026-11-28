@@ -20,7 +20,7 @@ same PR that lands its implementation.
 | `selector`                  | `selector/`                  | PRI-01 (#9478)          |
 | `authority.managed_section` | `authority/managed_section/` | AUTH-04 (#9431)         |
 | `receipt`                   | gated on REL-03 (#9513)      |                         |
-| `cursor`                    | `cursor/`                     | HYD-06 (#9508)          |
+| `cursor`                    | `cursor/`                    | HYD-06 (#9508)          |
 | `authority.field_ownership` | gated on AUTH-01 (#9429)     |                         |
 
 The fixtures are synthetic: no credentials, tokens, real comment

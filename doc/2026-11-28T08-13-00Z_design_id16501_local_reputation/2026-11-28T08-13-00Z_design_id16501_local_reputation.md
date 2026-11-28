@@ -39,21 +39,21 @@ at `b3918c1ffe20139a20346fcaa0421425cc355a7f`).**
 ## 1. Governing rules (from v4 §5, restated as constraints)
 
 R1. **Curator-local.** A reputation score is always a triple
-    (scoring curator, subject, method version). There is no
-    curator-free score, and no view may render a score without naming
-    its scoring curator.
+(scoring curator, subject, method version). There is no
+curator-free score, and no view may render a score without naming
+its scoring curator.
 R2. **Subscribed lists only.** The inputs for curator C's score are
-    computed exclusively over lists C subscribes to. A list C does not
-    subscribe to contributes nothing — not even a denominator.
+computed exclusively over lists C subscribes to. A list C does not
+subscribe to contributes nothing — not even a denominator.
 R3. **Never mirrored, never merged.** Scores are policy-class data:
-    they are never embedded in mirrored announcements, never propagated
-    across a mirror boundary, and never merged across registries.
+they are never embedded in mirrored announcements, never propagated
+across a mirror boundary, and never merged across registries.
 R4. **Combination is client-side and user-weighted.** A client may
-    combine several curators' scores locally, only under explicit
-    user-chosen weighting (§4). No combined score is ever published,
-    served, or mirrored by our hosted instance.
+combine several curators' scores locally, only under explicit
+user-chosen weighting (§4). No combined score is ever published,
+served, or mirrored by our hosted instance.
 R5. **Traffic exclusion.** No traffic-derived signal appears anywhere
-    in our hosted pipeline's scores (§5, stated as a testable rule).
+in our hosted pipeline's scores (§5, stated as a testable rule).
 
 ## 2. Named inputs
 
@@ -63,13 +63,13 @@ the last 90 days of fetches (default; see §6). All inputs are derived
 from public list data — the lists themselves are the evidence, and any
 third party holding the same lists can recompute the same vector.
 
-| # | Input | Definition | Range |
-|---|-------|------------|-------|
-| I1 | `age` | Time since W first appeared in any list in L(C), measured from the earliest first-seen timestamp across L(C) to the scoring instant. Saturating: full credit at 180 days. | [0, 1] after saturation curve §3 |
-| I2 | `persistence` | Fraction of completed fetches of lists in L(C), within the window, in which W was present in at least one fetched list. Denominator is fetches actually performed, never scheduled fetches. | [0, 1] |
-| I3 | `breadth` | Number of independent lists in L(C) that currently list W. Independent = distinct listing-curator signing keys; two lists signed by the same key count once. Saturating: full credit at 5 independent listings. | [0, 1] after saturation curve §3 |
-| I4 | `tombstones_against` | Count of live tombstone-notices against W issued by curators whose lists are in L(C), weighted per §3. A tombstone withdrawn by its issuer stops counting at the next fetch. | [0, ∞), mapped per §3 |
-| I5 | `tombstones_for` | Count of live tombstone-notices by curators in L(C) against entries that impersonated or spoofed W (a tombstoned listing whose subject was a false W). Same withdrawal rule as I4. | [0, ∞), mapped per §3 |
+| #   | Input                | Definition                                                                                                                                                                                                      | Range                            |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| I1  | `age`                | Time since W first appeared in any list in L(C), measured from the earliest first-seen timestamp across L(C) to the scoring instant. Saturating: full credit at 180 days.                                       | [0, 1] after saturation curve §3 |
+| I2  | `persistence`        | Fraction of completed fetches of lists in L(C), within the window, in which W was present in at least one fetched list. Denominator is fetches actually performed, never scheduled fetches.                     | [0, 1]                           |
+| I3  | `breadth`            | Number of independent lists in L(C) that currently list W. Independent = distinct listing-curator signing keys; two lists signed by the same key count once. Saturating: full credit at 5 independent listings. | [0, 1] after saturation curve §3 |
+| I4  | `tombstones_against` | Count of live tombstone-notices against W issued by curators whose lists are in L(C), weighted per §3. A tombstone withdrawn by its issuer stops counting at the next fetch.                                    | [0, ∞), mapped per §3            |
+| I5  | `tombstones_for`     | Count of live tombstone-notices by curators in L(C) against entries that impersonated or spoofed W (a tombstoned listing whose subject was a false W). Same withdrawal rule as I4.                              | [0, ∞), mapped per §3            |
 
 The input list is **closed**: an implementation may not add an input
 without a new design record amending this one. In particular, no input
@@ -101,25 +101,25 @@ where the saturation/normalization curves are:
 Method rules:
 
 M1. **Versioned.** The method is identified as `hosted-reputation/1`.
-    Every score the hosted instance serves is stamped with the method
-    id and the input vector it was computed from — a served score is
-    always explainable down to I1–I5. A change to any weight, curve,
-    or input definition is a new method version (`/2`, …), announced
-    in this record's successor note before it serves; scores are
-    recomputed at fetch time under the current version only (no
-    retroactive restatement of previously served views).
+Every score the hosted instance serves is stamped with the method
+id and the input vector it was computed from — a served score is
+always explainable down to I1–I5. A change to any weight, curve,
+or input definition is a new method version (`/2`, …), announced
+in this record's successor note before it serves; scores are
+recomputed at fetch time under the current version only (no
+retroactive restatement of previously served views).
 M2. **Deterministic.** The same list snapshot + same scoring instant +
-    same method version yields the same score. Fetch-time computation
-    only; no hidden state, no randomness, no machine-learned component.
+same method version yields the same score. Fetch-time computation
+only; no hidden state, no randomness, no machine-learned component.
 M3. **Served shape.** The hosted instance serves, inside its own views
-    only (R1/R3): subject, scoring curator (itself), method id, score,
-    the five input values, and the window end. It serves no ranking
-    across curators, no combined score (R4), and no global ordering of
-    worlds by score as a discovery surface — ordering a curator's own
-    view by its own score is the curator's view choice, not a feed.
+only (R1/R3): subject, scoring curator (itself), method id, score,
+the five input values, and the window end. It serves no ranking
+across curators, no combined score (R4), and no global ordering of
+worlds by score as a discovery surface — ordering a curator's own
+view by its own score is the curator's view choice, not a feed.
 M4. **Absence is not a score.** A world absent from L(C) has no score
-    (not zero). A world present but never tombstoned simply has
-    I4 = I5 = 0.
+(not zero). A world present but never tombstoned simply has
+I4 = I5 = 0.
 
 ## 4. Client-side combination — the weighting-setting shape
 
@@ -142,23 +142,23 @@ mirrored, never published).
 Semantics:
 
 W1. `weights` maps a scoring curator's key to a non-negative weight.
-    A curator absent from the map has weight 1.0 (equal by default);
-    weight 0 excludes that curator's scores from combination. Negative
-    weights are invalid and the setting fails validation whole (no
-    partial application).
+A curator absent from the map has weight 1.0 (equal by default);
+weight 0 excludes that curator's scores from combination. Negative
+weights are invalid and the setting fails validation whole (no
+partial application).
 W2. The combined value is the weighted mean over curators that (a)
-    have weight > 0 and (b) actually serve a score for W. A curator
-    with no score for W is excluded from numerator and denominator —
-    absence is never averaged in as zero (M4 applied client-side).
+have weight > 0 and (b) actually serve a score for W. A curator
+with no score for W is excluded from numerator and denominator —
+absence is never averaged in as zero (M4 applied client-side).
 W3. If fewer than `min_curators` curators qualify, the client shows
-    the individual attributed scores and no combined value.
+the individual attributed scores and no combined value.
 W4. A combined value is always displayed with its contributing
-    curators and their weights — an unattributed combined number is a
-    spec violation, because it would be indistinguishable from a
-    global score (forbidden by R3/R4 and the v4 out-of-scope list).
+curators and their weights — an unattributed combined number is a
+spec violation, because it would be indistinguishable from a
+global score (forbidden by R3/R4 and the v4 out-of-scope list).
 W5. Our hosted instance ships no privileged default: in a fresh
-    client, the hosted curator appears in `weights` only if the user
-    subscribes to it, at the same default 1.0 as every other curator.
+client, the hosted curator appears in `weights` only if the user
+subscribes to it, at the same default 1.0 as every other curator.
 
 ## 5. The traffic-signal exclusion, as a testable rule
 

@@ -131,7 +131,11 @@ function sameWindowFields(
   entry: { windowKind: RollupWindowKind; windowStart: string; windowEnd: string },
   spend: SpendRollup,
 ): boolean {
-  return entry.windowKind === spend.windowKind && entry.windowStart === spend.windowStart && entry.windowEnd === spend.windowEnd;
+  return (
+    entry.windowKind === spend.windowKind &&
+    entry.windowStart === spend.windowStart &&
+    entry.windowEnd === spend.windowEnd
+  );
 }
 
 /**

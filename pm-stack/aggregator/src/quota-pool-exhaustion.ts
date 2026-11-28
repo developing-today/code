@@ -47,11 +47,7 @@
 // quota-predictions.jsonl and mirrored into the ledger under
 // source "quota-prediction") lives in scripts/gather-quota.ts.
 
-import {
-  C4_METHODOLOGY_VERSION,
-  PREDICTION_LEDGER_SOURCE,
-  renderPredictionRange,
-} from "./quota-downtime.ts";
+import { C4_METHODOLOGY_VERSION, PREDICTION_LEDGER_SOURCE, renderPredictionRange } from "./quota-downtime.ts";
 import { forecastSeriesKey, type ForecastLedgerRow, type QuotaForecastFile } from "./quota-forecast.ts";
 
 export interface PoolExhaustionRecord {
@@ -141,8 +137,7 @@ export function derivePoolExhaustionRecords(
           w.state === "walled"
             ? "the window is already walled at issuance, so the likely wall is the observed wall"
             : `the S1 projected wall is ${new Date(likelyMs).toISOString()} at ${w.ratePtsPerHour ?? "?"} pts/h over ${w.samples} same-period samples`;
-        const basisDetail =
-          `Stage-3 pace projection ${series}:${w.name} (quota-forecast.json, #12695): ${wallContext}`;
+        const basisDetail = `Stage-3 pace projection ${series}:${w.name} (quota-forecast.json, #12695): ${wallContext}`;
 
         const record = (
           over: Partial<PoolExhaustionRecord> & Pick<PoolExhaustionRecord, "id" | "state">,
@@ -166,12 +161,14 @@ export function derivePoolExhaustionRecords(
         });
 
         const cell = calibration.get(key);
-        const windowBand = cell?.window?.count !== undefined && (cell?.window?.count ?? 0) >= POOL_EXHAUSTION_MIN_BAND_COUNT
-          ? cell?.window ?? null
-          : null;
-        const poolBand = cell?.pool?.count !== undefined && (cell?.pool?.count ?? 0) >= POOL_EXHAUSTION_MIN_BAND_COUNT
-          ? cell?.pool ?? null
-          : null;
+        const windowBand =
+          cell?.window?.count !== undefined && (cell?.window?.count ?? 0) >= POOL_EXHAUSTION_MIN_BAND_COUNT
+            ? (cell?.window ?? null)
+            : null;
+        const poolBand =
+          cell?.pool?.count !== undefined && (cell?.pool?.count ?? 0) >= POOL_EXHAUSTION_MIN_BAND_COUNT
+            ? (cell?.pool ?? null)
+            : null;
         const band = windowBand ?? poolBand;
 
         if (band === null) {

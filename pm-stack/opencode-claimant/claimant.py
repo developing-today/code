@@ -2070,14 +2070,18 @@ def launch_step(
                         )
 
                     session = _unwrap_envelope(create_payload)
-                    session_id = session.get("id") if isinstance(session, dict) else None
+                    session_id = (
+                        session.get("id") if isinstance(session, dict) else None
+                    )
                     if not session_id:
                         raise RuntimeError(
                             f"Session creation returned no id: {str(create_payload)[:200]}"
                         )
 
                     # Verify location before proceeding
-                    if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
+                    if session.get("location", {}).get("directory") != str(
+                        PRIMARY_CLONE
+                    ):
                         # Wrong location - delete and skip
                         _delete_session(session_id)
                         skips.append(

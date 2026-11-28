@@ -147,7 +147,7 @@ gate are unchanged and run first:
 2. **Existing per-entry gates, existing order.** Expired,
    `delisted_here`, `kept_own`, and `accept`-declined entries are
    classified exactly as today. None of them counts against either
-   budget limit: the budget bounds *new inclusions*, and a
+   budget limit: the budget bounds _new inclusions_, and a
    `kept_own` re-announcement is not new.
 3. **List-size cap.** Count inclusions from this fetched list in
    list order. Once `max_list_entries` inclusions are reached,
@@ -169,7 +169,7 @@ gate are unchanged and run first:
    as today (`include`, own `included_at`, own `registry_seq`).
 
 **Over-budget silence semantics (v3 §3 rule 2, v4 §3 item 1).** An
-over-budget entry is *absent*, never a tombstone: import creates no
+over-budget entry is _absent_, never a tombstone: import creates no
 tombstone for it, the published list contains neither the entry nor
 any mark against the world, and no other registry can observe that
 a budget was applied. Over-budget is also not a verdict: the same
@@ -179,18 +179,18 @@ raised — nothing about the world, the source registry, or this
 registry's policy has been decided by the earlier refusal.
 
 **Interaction with the whole-list `verify_from` drop rule:**
-unchanged, stated once — the drop rule is about *trust in the
-list*; budgets are about *attention budget for a trusted list*.
+unchanged, stated once — the drop rule is about _trust in the
+list_; budgets are about _attention budget for a trusted list_.
 The two compose in exactly one order (verify, then budget) and
 neither weakens the other.
 
 ## 4. The two defaults
 
-|                     | Fresh self-host (`fresh_self_host()`) | Hosted (`hosted_with_curated(curated)`) |
-| ------------------- | ------------------------------------- | --------------------------------------- |
-| Subscriptions       | none (unchanged)                      | the curated registry only (unchanged)   |
-| Budget for a registry the operator adds | `SubscriptionBudget::UNLIMITED` — no budget entry | n/a |
-| Budget for the curated registry | n/a | `hosted_curated_default()`: velocity **100 new entries per 86 400 s (24 h) window**, list cap **10 000 entries** |
+|                                         | Fresh self-host (`fresh_self_host()`)             | Hosted (`hosted_with_curated(curated)`)                                                                          |
+| --------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Subscriptions                           | none (unchanged)                                  | the curated registry only (unchanged)                                                                            |
+| Budget for a registry the operator adds | `SubscriptionBudget::UNLIMITED` — no budget entry | n/a                                                                                                              |
+| Budget for the curated registry         | n/a                                               | `hosted_curated_default()`: velocity **100 new entries per 86 400 s (24 h) window**, list cap **10 000 entries** |
 
 Why unlimited for a fresh self-host: a self-host inherits nothing
 from our hosted instance (v4 §1) — a finite default silently

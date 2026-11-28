@@ -79,9 +79,7 @@ class FetchFailureTest(unittest.TestCase):
     def test_successful_fetch_still_writes_out(self):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "OUT")
-            with patch.object(
-                la, "_fetch_chunk", return_value=(b"hello", 5)
-            ):
+            with patch.object(la, "_fetch_chunk", return_value=(b"hello", 5)):
                 code, stderr = _run_fetch(["fetch", "/remote/path", out])
             self.assertEqual(code, 0)
             self.assertEqual(Path(out).read_bytes(), b"hello")

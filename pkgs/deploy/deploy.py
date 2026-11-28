@@ -361,9 +361,7 @@ def validate(registry):
             # strict: exactly a systemd signal name, nothing that can
             # smuggle in a second directive.
             ks = defn["killSignal"]
-            if not (
-                isinstance(ks, str) and KILL_SIGNAL_RE.fullmatch(ks)
-            ):
+            if not (isinstance(ks, str) and KILL_SIGNAL_RE.fullmatch(ks)):
                 errors.append(
                     f"{where}: killSignal must be a systemd signal name "
                     "like SIGTERM or SIGINT"

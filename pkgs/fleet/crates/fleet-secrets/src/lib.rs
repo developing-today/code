@@ -2883,7 +2883,16 @@ mod tests {
                     self.entries.borrow_mut().retain(|(i, _, _)| i != id);
                     Ok("{}".to_string())
                 }
-                ["secret", "create", "-o", "json", "--", name, value, _project] => {
+                [
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    _project,
+                ] => {
                     if self.fail_create {
                         return Err("exit status 1".to_string());
                     }

@@ -35,7 +35,8 @@ OK_LINE = (
 def stub_throttle_file(testcase):
     """A placeholder throttle path so stubbed-runner tests pass is_file."""
     stub = tempfile.NamedTemporaryFile(
-        prefix="content_throttle_stub_", suffix=".py", delete=False)
+        prefix="content_throttle_stub_", suffix=".py", delete=False
+    )
     stub.close()
     testcase.addCleanup(Path(stub.name).unlink)
     return stub.name
@@ -43,6 +44,7 @@ def stub_throttle_file(testcase):
 
 def stub_runner(returncode, stdout):
     """A subprocess.run stand-in returning fixed (returncode, stdout)."""
+
     def run(command, **kwargs):
         result = type("Result", (), {})()
         result.returncode = returncode
@@ -63,8 +65,7 @@ class MonitorRecordTests(unittest.TestCase):
         self.assertEqual(record["status"], "alert")
         self.assertEqual(
             record["queued"],
-            {"stuck_reservations": 2, "waiting_slots": 1,
-             "outbox_prepared": 0},
+            {"stuck_reservations": 2, "waiting_slots": 1, "outbox_prepared": 0},
         )
         self.assertEqual(record["gap_seconds"], 312.4)
         self.assertEqual(record["threshold_seconds"], 300)
@@ -76,8 +77,7 @@ class MonitorRecordTests(unittest.TestCase):
         self.assertEqual(record["status"], "clear")
         self.assertEqual(
             record["queued"],
-            {"stuck_reservations": 0, "waiting_slots": 0,
-             "outbox_prepared": 0},
+            {"stuck_reservations": 0, "waiting_slots": 0, "outbox_prepared": 0},
         )
         self.assertEqual(record["last_creation"], "2026-11-28T05:40:00Z")
         self.assertIsNone(record["gap_seconds"])
@@ -99,16 +99,14 @@ class RunGapCheckTests(unittest.TestCase):
     def test_missing_throttle_script_fails_before_any_subprocess(self):
         runner = stub_runner(0, OK_LINE)
         with self.assertRaises(RuntimeError):
-            gap.run_gap_check("/nonexistent/content_throttle.py",
-                              runner=runner)
+            gap.run_gap_check("/nonexistent/content_throttle.py", runner=runner)
         self.assertEqual(runner.seen, [])
 
     def test_outbox_flag_is_passed_through(self):
         throttle_py = stub_throttle_file(self)
         runner = stub_runner(0, OK_LINE + "\n")
 
-        rc, out = gap.run_gap_check(
-            throttle_py, outbox="/tmp/outbox.md", runner=runner)
+        rc, out = gap.run_gap_check(throttle_py, outbox="/tmp/outbox.md", runner=runner)
 
         self.assertEqual(rc, 0)
         self.assertIn("gap-check", runner.seen[0])

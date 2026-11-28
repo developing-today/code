@@ -30,7 +30,9 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parent.parent
 SRC = (PKG / "src" / "index.ts").read_text()
 DEPLOY = (PKG / "deploy.mjs").read_text()
-WORKFLOW = (PKG.parent.parent / ".github" / "workflows" / "cf-worker-versions-release.yml").read_text()
+WORKFLOW = (
+    PKG.parent.parent / ".github" / "workflows" / "cf-worker-versions-release.yml"
+).read_text()
 
 
 class VersionRouteAnswersCommit(unittest.TestCase):
@@ -74,7 +76,9 @@ class DeployPathsStampVersion(unittest.TestCase):
             r'upload_args\+=\(--var "VERSION:\$\{GITHUB_SHA\}"\)',
             WORKFLOW,
         )
-        self.assertIsNotNone(m, "the versions-release stamp does not cover cf-container-hello")
+        self.assertIsNotNone(
+            m, "the versions-release stamp does not cover cf-container-hello"
+        )
 
 
 if __name__ == "__main__":

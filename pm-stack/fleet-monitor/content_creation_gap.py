@@ -32,17 +32,14 @@ from pathlib import Path
 CHECK_NAME = "content_creation_gap"
 THROTTLE_ENV_VAR = "CONTENT_THROTTLE_PY"
 DEFAULT_THROTTLE_PY = (
-    Path.home() / "hatch" / "tools" / "content-throttle"
-    / "content_throttle.py"
+    Path.home() / "hatch" / "tools" / "content-throttle" / "content_throttle.py"
 )
 
 ALERT_RE = re.compile(
     r"ALERT gap: queued filing work (\{.*\}) and no creation for "
     r"([0-9.]+)s \(threshold ([0-9.]+)s; last creation ([^)]*)\)"
 )
-OK_RE = re.compile(
-    r"ok: no filing gap \(queued (\{.*\}), last creation ([^)]*)\)"
-)
+OK_RE = re.compile(r"ok: no filing gap \(queued (\{.*\}), last creation ([^)]*)\)")
 
 
 def parse_args(argv):
@@ -89,8 +86,7 @@ def monitor_record(returncode, stdout):
     """
     if returncode not in (0, 2):
         raise ValueError(
-            f"gap check exited {returncode}: the detector failed, "
-            "not a clear monitor"
+            f"gap check exited {returncode}: the detector failed, not a clear monitor"
         )
     lines = (stdout or "").strip().splitlines()
     detail = lines[-1].strip() if lines else ""
@@ -102,8 +98,7 @@ def monitor_record(returncode, stdout):
         "gap_seconds": None,
         "threshold_seconds": None,
     }
-    match = (ALERT_RE.search(detail) if returncode == 2
-             else OK_RE.search(detail))
+    match = ALERT_RE.search(detail) if returncode == 2 else OK_RE.search(detail)
     if match is None:
         record["detail_raw"] = detail
         return record
@@ -142,9 +137,9 @@ def main(argv=None, runner=subprocess.run):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         returncode, stdout = run_gap_check(
-            args.throttle_py, outbox=args.outbox, runner=runner)
-        print(json.dumps(monitor_record(returncode, stdout),
-                         sort_keys=True))
+            args.throttle_py, outbox=args.outbox, runner=runner
+        )
+        print(json.dumps(monitor_record(returncode, stdout), sort_keys=True))
     except Exception as exc:  # runner/detector failures, never a fake clear
         print(f"content_creation_gap: {exc}", file=sys.stderr)
         return 1

@@ -52,9 +52,7 @@ describe("the unified sends ledger", () => {
     expect(stamped.sent_at).toBe("2026-11-26T10:00:00.000Z");
     // The schema requires the stamp: no default, no undated row.
     await expect(
-      c.query(
-        `insert into push_sends (class, object_ref, outcome) values ('incident', 'o/r#3', 'sent')`,
-      ),
+      c.query(`insert into push_sends (class, object_ref, outcome) values ('incident', 'o/r#3', 'sent')`),
     ).rejects.toThrow();
   });
 
@@ -144,18 +142,16 @@ describe("the dead-push sentinel", () => {
 
   test("quiet when delivery is live; each trip fires on its own condition", () => {
     expect(evaluatePushSentinel(snap)).toEqual([]);
-    expect(
-      evaluatePushSentinel({ ...snap, liveEndpoints: 0, openUndelivered: 2 }).map((f) => f.trip),
-    ).toEqual(["zero-endpoints"]);
+    expect(evaluatePushSentinel({ ...snap, liveEndpoints: 0, openUndelivered: 2 }).map((f) => f.trip)).toEqual([
+      "zero-endpoints",
+    ]);
     // Zero endpoints with nothing undelivered is not an alarm.
     expect(evaluatePushSentinel({ ...snap, liveEndpoints: 0, openUndelivered: 0 })).toEqual([]);
-    expect(
-      evaluatePushSentinel({ ...snap, lastSuccessAt: "2026-11-20T12:00:00.000Z" }).map((f) => f.trip),
-    ).toEqual(["no-successful-send"]);
-    // No success ever, with incidents open, trips the stale key.
-    expect(evaluatePushSentinel({ ...snap, lastSuccessAt: null }).map((f) => f.trip)).toEqual([
+    expect(evaluatePushSentinel({ ...snap, lastSuccessAt: "2026-11-20T12:00:00.000Z" }).map((f) => f.trip)).toEqual([
       "no-successful-send",
     ]);
+    // No success ever, with incidents open, trips the stale key.
+    expect(evaluatePushSentinel({ ...snap, lastSuccessAt: null }).map((f) => f.trip)).toEqual(["no-successful-send"]);
     // A fresh success with nothing else wrong stays quiet.
     expect(evaluatePushSentinel({ ...snap, incidentsOpen: 0, lastSuccessAt: null })).toEqual([]);
     expect(evaluatePushSentinel({ ...snap, undated: 2 }).map((f) => f.trip)).toEqual(["undated-rows"]);

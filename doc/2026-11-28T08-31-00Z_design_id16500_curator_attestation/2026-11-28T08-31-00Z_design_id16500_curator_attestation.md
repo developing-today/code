@@ -45,29 +45,29 @@ record and the issue).**
 ## 1. Governing rules (from v4 §4, restated as constraints)
 
 A1. **Key identity only.** The attestation asserts a curator's
-    opinion about a (name, key) pairing. It never creates, reserves,
-    or transfers a name, and it is never protocol truth: the protocol
-    layer neither issues, verifies-for-display, nor adjudicates
-    attestations.
+opinion about a (name, key) pairing. It never creates, reserves,
+or transfers a name, and it is never protocol truth: the protocol
+layer neither issues, verifies-for-display, nor adjudicates
+attestations.
 A2. **Curator-signed, curator-local.** An attestation is signed under
-    exactly one curator's list-signing key, stored and served only by
-    that curator, in the never-crosses class with policy and `seq`
-    (v4 §4 rule 3).
+exactly one curator's list-signing key, stored and served only by
+that curator, in the never-crosses class with policy and `seq`
+(v4 §4 rule 3).
 A3. **Never crosses mirrors as trust.** An attestation is never
-    embedded in a mirrored announcement, never propagated across a
-    mirror boundary, and never re-served by a mirror as its own. A
-    reader that does not subscribe to the signing curator never sees
-    the badge (§4, stated testably in §6).
+embedded in a mirrored announcement, never propagated across a
+mirror boundary, and never re-served by a mirror as its own. A
+reader that does not subscribe to the signing curator never sees
+the badge (§4, stated testably in §6).
 A4. **Attributed display.** Wherever a badge derived from an
-    attestation is shown, it is attributed to the signing curator,
-    and the key-derived identifier for the subject key is shown
-    beside the name regardless of any badge (v4 §4 rule 1).
+attestation is shown, it is attributed to the signing curator,
+and the key-derived identifier for the subject key is shown
+beside the name regardless of any badge (v4 §4 rule 1).
 A5. **No adjudication.** Conflicting attestations from different
-    curators (two curators attesting different keys as canonical for
-    the same name) are both shown, each under its own curator's
-    attribution. Nothing ranks, merges, or resolves them (v4 §4
-    rule 4: confusables are curator/client UI policy, never protocol
-    adjudication).
+curators (two curators attesting different keys as canonical for
+the same name) are both shown, each under its own curator's
+attribution. Nothing ranks, merges, or resolves them (v4 §4
+rule 4: confusables are curator/client UI policy, never protocol
+adjudication).
 
 ## 2. The attestation object — field table
 
@@ -76,18 +76,18 @@ The attestation is a single signed annotation object, format id
 serialization of every field except `signature` itself; any change
 to a signed field invalidates the signature.
 
-| # | Field | Type / shape | Rules |
-|---|-------|--------------|-------|
-| F1 | `format` | string, exactly `curator-attestation/1` | Versioned as a whole: any field, encoding, or rule change is `/2`, never a silent reinterpretation of `/1` objects. |
-| F2 | `curator_key` | the signing curator's public key (same encoding as list-signing keys) | Must equal the key the signature verifies under (§3 S1). A mismatch is a verification failure, not a second signer. |
-| F3 | `subject_key` | public key of the world being attested (K) | The key the badge will sit beside. Attestations about a name without a subject key do not exist in this format. |
-| F4 | `name` | UTF-8 string, exactly as attested (N) | Stored and compared byte-for-byte as issued. Normalization, folding, and confusable handling are display-side client policy (v4 §4 rule 4), never applied to the signed bytes. |
-| F5 | `statement` | string, exactly `canonical-key-for-name` | The only statement type in `/1`. It asserts: "in this curator's judgement, key K is the canonical key presenting under name N." Other statement types are future format versions, not extensions of this field. |
-| F6 | `issued_at` | timestamp (seconds, UTC) | Issuance instant claimed by the curator; sanity-checked against the reader's clock under §3 E2. |
-| F7 | `expires_at` | timestamp (seconds, UTC) | Hard expiry (§3 E1). Required — an attestation without expiry is invalid, not perpetual. |
-| F8 | `supersedes` | optional: signature digest of a prior attestation by the same curator over the same (subject_key, name) | Renewal and correction chain (§3 E3/R2). Absent on a curator's first attestation for the pair. |
-| F9 | `note` | optional UTF-8 string, max 280 chars | Curator's human-readable basis (e.g. "operated by the team since 2026"). Displayable, never machine-acted-upon; not part of the statement's meaning. |
-| F10 | `signature` | signature over the canonical serialization of F1–F9 | Under `curator_key`, in the list substrate's signature scheme (§3 S1). |
+| #   | Field         | Type / shape                                                                                            | Rules                                                                                                                                                                                                           |
+| --- | ------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | `format`      | string, exactly `curator-attestation/1`                                                                 | Versioned as a whole: any field, encoding, or rule change is `/2`, never a silent reinterpretation of `/1` objects.                                                                                             |
+| F2  | `curator_key` | the signing curator's public key (same encoding as list-signing keys)                                   | Must equal the key the signature verifies under (§3 S1). A mismatch is a verification failure, not a second signer.                                                                                             |
+| F3  | `subject_key` | public key of the world being attested (K)                                                              | The key the badge will sit beside. Attestations about a name without a subject key do not exist in this format.                                                                                                 |
+| F4  | `name`        | UTF-8 string, exactly as attested (N)                                                                   | Stored and compared byte-for-byte as issued. Normalization, folding, and confusable handling are display-side client policy (v4 §4 rule 4), never applied to the signed bytes.                                  |
+| F5  | `statement`   | string, exactly `canonical-key-for-name`                                                                | The only statement type in `/1`. It asserts: "in this curator's judgement, key K is the canonical key presenting under name N." Other statement types are future format versions, not extensions of this field. |
+| F6  | `issued_at`   | timestamp (seconds, UTC)                                                                                | Issuance instant claimed by the curator; sanity-checked against the reader's clock under §3 E2.                                                                                                                 |
+| F7  | `expires_at`  | timestamp (seconds, UTC)                                                                                | Hard expiry (§3 E1). Required — an attestation without expiry is invalid, not perpetual.                                                                                                                        |
+| F8  | `supersedes`  | optional: signature digest of a prior attestation by the same curator over the same (subject_key, name) | Renewal and correction chain (§3 E3/R2). Absent on a curator's first attestation for the pair.                                                                                                                  |
+| F9  | `note`        | optional UTF-8 string, max 280 chars                                                                    | Curator's human-readable basis (e.g. "operated by the team since 2026"). Displayable, never machine-acted-upon; not part of the statement's meaning.                                                            |
+| F10 | `signature`   | signature over the canonical serialization of F1–F9                                                     | Under `curator_key`, in the list substrate's signature scheme (§3 S1).                                                                                                                                          |
 
 The field list is **closed**: an implementation may not add a field
 to the signed payload without a new format version and a design
@@ -101,52 +101,52 @@ an attestation is a curator's signed statement, not a data feed
 Signing:
 
 S1. **One key, the list key.** The signature is produced with the
-    curator's existing list-signing key — the same key its signed
-    lists verify under (`verify_from`). Verification is: recompute
-    the canonical serialization of F1–F9, verify `signature` under
-    `curator_key`, and require F2 to equal that key. No countersignatures,
-    no delegated attestation keys, no third-party witnesses in `/1`.
+curator's existing list-signing key — the same key its signed
+lists verify under (`verify_from`). Verification is: recompute
+the canonical serialization of F1–F9, verify `signature` under
+`curator_key`, and require F2 to equal that key. No countersignatures,
+no delegated attestation keys, no third-party witnesses in `/1`.
 S2. **Failure is absence.** An attestation that fails verification
-    for any reason (bad signature, F2 mismatch, malformed encoding,
-    unknown `format` version) is treated as not existing. It is never
-    displayed with a warning state — an unverifiable badge is worse
-    than no badge, because the badge's whole content is "this
-    verifies".
+for any reason (bad signature, F2 mismatch, malformed encoding,
+unknown `format` version) is treated as not existing. It is never
+displayed with a warning state — an unverifiable badge is worse
+than no badge, because the badge's whole content is "this
+verifies".
 S3. **Self-asserted names stay self-asserted.** Signing an
-    attestation does not elevate the name N to protocol data. N
-    remains the subject's self-asserted display name; the signed
-    claim is only the curator's (K, N) pairing opinion (A1).
+attestation does not elevate the name N to protocol data. N
+remains the subject's self-asserted display name; the signed
+claim is only the curator's (K, N) pairing opinion (A1).
 
 Expiry:
 
 E1. **Hard expiry.** At and after `expires_at` the attestation is
-    void: clients must not render its badge, and curators must not
-    serve it as live. There is no grace period and no stale-while-
-    revalidate display.
+void: clients must not render its badge, and curators must not
+serve it as live. There is no grace period and no stale-while-
+revalidate display.
 E2. **Bounded lifetime.** `expires_at − issued_at` must be ≤ 180
-    days; the default issuance lifetime is 90 days. Objects claiming
-    a longer span are invalid whole (not clamped). A reader whose
-    clock places `issued_at` more than 24 h in the future treats the
-    object as not yet live.
+days; the default issuance lifetime is 90 days. Objects claiming
+a longer span are invalid whole (not clamped). A reader whose
+clock places `issued_at` more than 24 h in the future treats the
+object as not yet live.
 E3. **Renewal is re-issuance.** A renewed attestation is a new object
-    with fresh `issued_at`/`expires_at`, linked to its predecessor
-    via `supersedes` (F8). At most one live attestation per curator
-    per (subject_key, name) pair: when a successor verifies, the
-    predecessor stops being served even before its own expiry.
+with fresh `issued_at`/`expires_at`, linked to its predecessor
+via `supersedes` (F8). At most one live attestation per curator
+per (subject_key, name) pair: when a successor verifies, the
+predecessor stops being served even before its own expiry.
 
 Revocation:
 
 R1. **Revocation is a tombstone, not an edit.** A curator revokes by
-    publishing, in its own annotation set, a tombstone-notice against
-    the attestation's signature digest (the v3 §3 notice shape:
-    issuer key, subject digest, reason, timestamp). The attestation
-    object itself is never mutated or silently deleted from the
-    curator's served history view.
+publishing, in its own annotation set, a tombstone-notice against
+the attestation's signature digest (the v3 §3 notice shape:
+issuer key, subject digest, reason, timestamp). The attestation
+object itself is never mutated or silently deleted from the
+curator's served history view.
 R2. **Effect at next fetch.** A client drops the badge at the first
-    fetch that carries the tombstone — the same withdrawal semantics
-    reputation inputs already assume for tombstones (v4 §5).
-    Revocation by any other curator has no effect on this curator's
-    attestation (A5).
+fetch that carries the tombstone — the same withdrawal semantics
+reputation inputs already assume for tombstones (v4 §5).
+Revocation by any other curator has no effect on this curator's
+attestation (A5).
 
 ## 4. Storage and serving — curator-local data
 
@@ -171,30 +171,30 @@ R2. **Effect at next fetch.** A client drops the badge at the first
 ## 5. Display rules (the display-rule statement)
 
 D1. **Key first, always.** Wherever a client shows name N for a
-    world, it shows the key-derived identifier for K beside it —
-    badge or no badge (v4 §4 rule 1). A name without a key beside it
-    is a rendering bug, attested or not.
+world, it shows the key-derived identifier for K beside it —
+badge or no badge (v4 §4 rule 1). A name without a key beside it
+is a rendering bug, attested or not.
 D2. **The badge is the curator's, not the name's.** A live, verified,
-    unexpired attestation renders as a badge attached to the
-    (name, key) pairing and visually/textually attributed to the
-    signing curator — the shape is "N ✓ per <curator>", never a bare
-    checkmark on N. An unattributed badge is a spec violation,
-    because it would read as protocol truth (A1/A4).
+unexpired attestation renders as a badge attached to the
+(name, key) pairing and visually/textually attributed to the
+signing curator — the shape is "N ✓ per <curator>", never a bare
+checkmark on N. An unattributed badge is a spec violation,
+because it would read as protocol truth (A1/A4).
 D3. **Non-subscribers see nothing.** A reader without a subscription
-    to the signing curator sees the name and the key-derived
-    identifier exactly as if no attestation existed — no badge, no
-    hint, no "verification available" teaser (A3).
+to the signing curator sees the name and the key-derived
+identifier exactly as if no attestation existed — no badge, no
+hint, no "verification available" teaser (A3).
 D4. **Conflicts are shown, not settled.** If two subscribed curators
-    attest different keys as canonical for the same name, the client
-    shows each pairing with its own curator's badge. The client does
-    not pick a winner, does not order by badge, and does not warn in
-    protocol voice; confusable warnings remain client UI policy
-    (v4 §4 rule 4).
+attest different keys as canonical for the same name, the client
+shows each pairing with its own curator's badge. The client does
+not pick a winner, does not order by badge, and does not warn in
+protocol voice; confusable warnings remain client UI policy
+(v4 §4 rule 4).
 D5. **Expiry and revocation are silent.** When an attestation
-    expires or is revoked, the badge simply disappears at the next
-    fetch. No "formerly verified" state is rendered — a lingering
-    badge-ghost would keep asserting trust the curator no longer
-    asserts.
+expires or is revoked, the badge simply disappears at the next
+fetch. No "formerly verified" state is rendered — a lingering
+badge-ghost would keep asserting trust the curator no longer
+asserts.
 
 ## 6. The mirror rule, as testable checks
 

@@ -787,7 +787,9 @@ class TestProviderWallGate(unittest.TestCase):
         self.assertEqual(launched[0]["session_id"], "ses_resume")
         self.assertTrue(launched[0]["prompt_failed"])
         self.assertEqual(len(binds), 1)
-        self.assertEqual(deletes, [], "a provider wall must not destroy a reused session")
+        self.assertEqual(
+            deletes, [], "a provider wall must not destroy a reused session"
+        )
 
     def test_main_records_provider_wall_in_fires_entry(self):
         # #8166 item 2: a walled fire's log line carries the

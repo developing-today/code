@@ -154,8 +154,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // A repeated (or comma-joined) --task names a by-ids batch
     // instead (derived below); only a single --task is a by-id
     // claim of exactly one row.
-    let repeated_task_batch =
-        args.get("tasks").is_none() && args.get_list("task").len() > 1;
+    let repeated_task_batch = args.get("tasks").is_none() && args.get_list("task").len() > 1;
     if !repeated_task_batch {
         if let Some(task) = args.get_i64("task") {
             body["task_id"] = json!(task);
@@ -498,9 +497,9 @@ pub(super) fn parse_task_ids_flag(raw: Option<String>) -> Result<Vec<i64>, Strin
     let mut ids = Vec::new();
     for part in raw.split(',') {
         let part = part.trim();
-        let id: i64 = part.parse().map_err(|_| {
-            format!("claim --tasks: {part:?} is not a task id (#9178 §3)")
-        })?;
+        let id: i64 = part
+            .parse()
+            .map_err(|_| format!("claim --tasks: {part:?} is not a task id (#9178 §3)"))?;
         if id <= 0 {
             return Err(format!(
                 "claim --tasks: task ids must be positive (got {id}) (#9178 §3)"
@@ -606,13 +605,15 @@ pub(super) fn claim_by_ids_output(resp: &Value, worker: &str, requested: i64) ->
         .iter()
         .filter(|r| r.get("outcome").and_then(|v| v.as_str()) == Some("claimed"))
         .count();
-    let held_by_session = results.iter().filter(|r| {
-        matches!(
-            r.get("outcome").and_then(|v| v.as_str()),
-            Some("claimed") | Some("already-owned-by-this-session")
-        )
-    })
-    .count();
+    let held_by_session = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.get("outcome").and_then(|v| v.as_str()),
+                Some("claimed") | Some("already-owned-by-this-session")
+            )
+        })
+        .count();
     let mut out = json!({
         "results": results,
         "tasks": tasks,

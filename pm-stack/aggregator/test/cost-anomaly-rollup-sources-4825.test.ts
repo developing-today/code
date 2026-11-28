@@ -145,7 +145,9 @@ test("busiestRoot seam: one partially covered root leaves the maximum uncertifie
 });
 
 test("sourceTotal seam: returns the population value for the rollup's window, unit, and pool", () => {
-  const record = certifiedSourceTotal([population({ value: 4000 })])(spend({ scopeKind: "unattributed", scopeId: "unattributed" }));
+  const record = certifiedSourceTotal([population({ value: 4000 })])(
+    spend({ scopeKind: "unattributed", scopeId: "unattributed" }),
+  );
   expect(record?.value).toBe(4000);
   expect(record?.coverage).toBe("complete");
   expect(record?.unit).toBe("tokens");

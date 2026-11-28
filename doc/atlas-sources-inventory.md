@@ -288,7 +288,7 @@ outside this section.
   sources/consumers research §2.3: "[unverified mechanism]" — no
   export/API path recorded on any issue found). Code check this
   slice: `pkgs/atlas-search/crates/atlas-core/src/` carries no
-  Claude-session reader — `memory.rs` stages memory *files* (§3b),
+  Claude-session reader — `memory.rs` stages memory _files_ (§3b),
   `github_comments.rs` + `bin/atlas-github-comments.rs` cover
   GitHub only. Session material reaches Atlas today only insofar
   as transcripts land in stores other connectors already read.

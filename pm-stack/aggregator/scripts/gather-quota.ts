@@ -1570,7 +1570,10 @@ export async function main(): Promise<number> {
       try {
         const parsed = JSON.parse(calibrationRaw) as Record<
           string,
-          { window?: { count: number; lowerMin: number; upperMin: number; cell: string } | null; pool?: { count: number; lowerMin: number; upperMin: number; cell: string } | null }
+          {
+            window?: { count: number; lowerMin: number; upperMin: number; cell: string } | null;
+            pool?: { count: number; lowerMin: number; upperMin: number; cell: string } | null;
+          }
         >;
         calibration = new Map(
           Object.entries(parsed).map(([k, v]) => [k, { window: v.window ?? null, pool: v.pool ?? null }]),

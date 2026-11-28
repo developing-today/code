@@ -455,7 +455,11 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
             // full apply, otherwise a delta apply. Read before the
             // refresh advances the watermark.
             let full = state.last_refresh.read().unwrap().is_none();
-            let leg = if full { "upstream-full" } else { "upstream-delta" };
+            let leg = if full {
+                "upstream-full"
+            } else {
+                "upstream-delta"
+            };
             (Some(leg), do_refresh(state))
         }
         Err(e) => (None, Err(e)),

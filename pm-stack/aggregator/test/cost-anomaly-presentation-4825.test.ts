@@ -130,11 +130,38 @@ async function certifiedDeps(
   const rootCensus: RootSessionCensusEntry[] = epicWeeks.flatMap((r) =>
     r.windowStart === W2
       ? [
-          { scopeId: r.scopeId, windowKind: r.windowKind, windowStart: r.windowStart, windowEnd: r.windowEnd, pool: "eco", rootSessionId: "root-a", tokens: 51, coverage: FULL },
-          { scopeId: r.scopeId, windowKind: r.windowKind, windowStart: r.windowStart, windowEnd: r.windowEnd, pool: "eco", rootSessionId: "root-b", tokens: 20, coverage: FULL },
+          {
+            scopeId: r.scopeId,
+            windowKind: r.windowKind,
+            windowStart: r.windowStart,
+            windowEnd: r.windowEnd,
+            pool: "eco",
+            rootSessionId: "root-a",
+            tokens: 51,
+            coverage: FULL,
+          },
+          {
+            scopeId: r.scopeId,
+            windowKind: r.windowKind,
+            windowStart: r.windowStart,
+            windowEnd: r.windowEnd,
+            pool: "eco",
+            rootSessionId: "root-b",
+            tokens: 20,
+            coverage: FULL,
+          },
         ]
       : [
-          { scopeId: r.scopeId, windowKind: r.windowKind, windowStart: r.windowStart, windowEnd: r.windowEnd, pool: "eco", rootSessionId: "root-a", tokens: 10, coverage: FULL },
+          {
+            scopeId: r.scopeId,
+            windowKind: r.windowKind,
+            windowStart: r.windowStart,
+            windowEnd: r.windowEnd,
+            pool: "eco",
+            rootSessionId: "root-a",
+            tokens: 10,
+            coverage: FULL,
+          },
         ],
   );
   const populationCensus: SourcePopulationCensusEntry[] = rollups
@@ -246,7 +273,12 @@ test("reconciliation suppression: certified real activity and closures silence e
     // dominance and growth are untouched and still fire.
     const deps = await certifiedDeps(store, { week2Closures: 3, octoberSessions: 2 });
     expect(
-      await postCostAnomalyTick({ enabled: true, now, loadEvidence: () => loadCostAnomalyEvidence(deps), store: alerts }),
+      await postCostAnomalyTick({
+        enabled: true,
+        now,
+        loadEvidence: () => loadCostAnomalyEvidence(deps),
+        store: alerts,
+      }),
     ).toBe(3);
     const titles = (await alerts.listIncidents()).map((i) => i.title.split(":")[0]).sort();
     expect(titles).toEqual(["burn without progress", "single session dominance", "unattributed growth"]);

@@ -95,7 +95,9 @@ describe("push registry copy + verify (#15561 slice 2)", () => {
     const destDb = new Database(":memory:");
     try {
       await copyPushRegistry(client(sourceDb), client(destDb), PUSH_REGISTRY_DDL);
-      destDb.exec("insert into push_item_stages (item_ref, stage, blocked_by_count, entered_stage_at, updated_at) values ('item-2', 'needs-review', 0, '2026-11-03T00:00:00.000Z', '2026-11-03T00:00:00.000Z')");
+      destDb.exec(
+        "insert into push_item_stages (item_ref, stage, blocked_by_count, entered_stage_at, updated_at) values ('item-2', 'needs-review', 0, '2026-11-03T00:00:00.000Z', '2026-11-03T00:00:00.000Z')",
+      );
       const report = await verifyPushRegistryCopy(client(sourceDb), client(destDb));
       expect(report.match).toBe(false);
       const drifted = report.tables.filter((t) => !t.match).map((t) => t.table);
