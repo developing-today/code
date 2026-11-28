@@ -13,9 +13,9 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.9.2",
-    "@cloudflare/workers-types": "^5.20261124.1",
+    "@cloudflare/workers-types": "^5.20261125.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.1.1",
+    "vitest": "^5.1.2",
     "wrangler": "4.168.0"
   },
   "overrides": {

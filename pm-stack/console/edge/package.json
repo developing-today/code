@@ -10,7 +10,7 @@
     "dev": "node build.mjs && wrangler dev --port 8799"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261124.1",
+    "@cloudflare/workers-types": "^5.20261125.1",
     "@types/bun": "^1.4.5",
     "typescript": "^7.0.2",
     "wrangler": "4.168.0"
