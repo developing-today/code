@@ -6,6 +6,8 @@
 //   GET  /               push-to-talk client page
 //   GET  /ws?session=<id>  WebSocket upgrade -> VoiceSession DO
 //   GET  /health         { ok, latestQueueSnapshotAt }
+//   GET  /version        { ok, service, version } — the deployed
+//                        commit from the VERSION var (#15793)
 //   POST /ingest-status  Bearer STATUS_INGEST_TOKEN; body is a
 //                        queue-state snapshot {queued, claimed, parked,
 //                        blocked} stored for the queue_state intent.
@@ -13,6 +15,7 @@
 //                        action: the voice line itself stays read-only.
 
 import { TursoClient } from "./ledger";
+import { versionAnswer } from "./version";
 import type { Env } from "./session";
 import { parseIngestStatus } from "./ingest";
 
@@ -85,6 +88,11 @@ export default {
 
     if (url.pathname === "/") {
       return new Response(PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+
+    if (url.pathname === "/version") {
+      if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return Response.json(versionAnswer(env));
     }
 
     if (url.pathname === "/ws") {
