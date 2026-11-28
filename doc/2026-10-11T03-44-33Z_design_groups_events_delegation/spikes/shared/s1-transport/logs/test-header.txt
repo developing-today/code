@@ -1,0 +1,17 @@
+   Compiling s1-transport v0.0.0 (/home/user/work/spikes/s1-transport)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.20s
+     Running tests/header.rs (target/debug/deps/header-0a86febda76dae31)
+
+running 9 tests
+test typed_verify_accepts_a_forged_signature_in_a_non_test_build ... ok
+test two_siblings_at_the_same_seq_both_validate ... ok
+test identity_key_with_zero_signature_is_rejected_by_verify_strict ... ok
+test typed_verify_ignores_a_tampered_field_and_hash_is_cached ... ok
+test unknown_extension_key_is_ignored_by_p2panda_and_rejected_by_us ... ok
+test after_over_max_is_decoded_by_p2panda_and_rejected_by_us ... ok
+test sequence_base_one_needs_a_backlink_for_the_first_event ... ok
+test sequence_base_zero_chains_from_the_first_event ... ok
+test round_trip_for_every_shape ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+

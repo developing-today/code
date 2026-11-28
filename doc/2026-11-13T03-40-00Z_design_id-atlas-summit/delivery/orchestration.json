@@ -1,0 +1,10 @@
+{
+  "id": "meta-9112-sequencing",
+  "parent": 9112,
+  "title": "Refine ID/Atlas sequencing as component designs land",
+  "goal": "Maintain a complete, evidence-backed sequence across component designs and slice issues; distinguish hard prerequisites from soft target order and preserve explicit triggers for deferred work.",
+  "design_source": "crosscut/sequencing-draft.md",
+  "design_section": "Readiness waves",
+  "owner": "ses_e5e2d06f0ccffefg2Z4FGyW3mW",
+  "dependencies": "Design PR merge SHA (publication gate, not an issue blocker)."
+}

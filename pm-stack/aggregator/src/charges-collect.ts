@@ -1,0 +1,189 @@
+// charges-collect (#1057): the collector-side glue around the pure
+// matcher in charges-match.ts. The Muse-side producer
+// (scripts/produce-charge-candidates.ts) writes the period's Plaid +
+// Gmail charge candidates to a state file; the daily collector reads
+// that file here, runs matchCharges, merges the auto-matched rows
+// with the hand-fed registry/quota-view rows (auto wins on a
+// duplicate — it is the fresher, structured read), and surfaces
+// unmatched SaaS/AI-looking charges in the hub attention strip
+// exactly once via a persisted surfaced-keys state file.
+//
+// Everything here is pure except the state the collector itself
+// passes in/out; file IO lives in collect-fleet-feed.ts, following
+// the same split as charges-match.ts (decisions here, state there).
+//
+// The charges contract (#3161) as it applies here: identity is the
+// shared rule stated in charges-match.ts — sameCharge below is its
+// hand-fed-vs-auto form — and delivery means surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, so an unmatched charge counts as shown only once it
+// was actually delivered.
+
+import {
+  DEDUPE_WINDOW_DAYS,
+  isRealCalendarDate,
+  normalizeMerchantName,
+  type ChargeCandidate,
+  type UnmatchedCharge,
+} from "./charges-match.ts";
+import type { ChargeRow } from "./model.ts";
+import { PROVIDER_ALIASES } from "./charges-catalog.ts";
+
+/**
+ * Structural validation of the producer's candidates file. Accepts
+ * the canonical `{ candidates: [...] }` object or a bare array.
+ * Malformed entries are dropped, never guessed at: a candidate needs
+ * a known source, an ISO date, a merchant string, and a finite
+ * amount. Returns [] for anything unusable (the collector logs and
+ * falls back to hand-fed rows only).
+ */
+export function parseChargeCandidates(raw: unknown): ChargeCandidate[] {
+  const list: unknown = Array.isArray(raw)
+    ? raw
+    : typeof raw === "object" && raw !== null && Array.isArray((raw as { candidates?: unknown }).candidates)
+      ? (raw as { candidates: unknown[] }).candidates
+      : null;
+  if (!Array.isArray(list)) return [];
+  const out: ChargeCandidate[] = [];
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const c = entry as Partial<ChargeCandidate>;
+    if (c.source !== "plaid" && c.source !== "gmail") continue;
+    if (typeof c.at !== "string") continue;
+    const at = c.at.slice(0, 10);
+    if (!isRealCalendarDate(at)) continue;
+    if (typeof c.merchant !== "string" || !c.merchant.trim()) continue;
+    if (typeof c.amountUsd !== "number" || !Number.isFinite(c.amountUsd)) continue;
+    out.push({
+      source: c.source,
+      at,
+      merchant: c.merchant,
+      amountUsd: c.amountUsd,
+      ...(typeof c.method === "string" && c.method ? { method: c.method } : {}),
+    });
+  }
+  return out;
+}
+
+function daysBetween(a: string, b: string): number {
+  const ms = Math.abs(Date.parse(a) - Date.parse(b));
+  return Math.floor(ms / 86_400_000);
+}
+
+/**
+ * Extract a card mask (e.g. "7535" from "Visa •7535", "•7535", or
+ * "Visa ending 7535") when present on a payment-method string.
+ * Returns undefined when no card mask is present (e.g. "card",
+ * "Link", empty/missing).
+ */
+export function extractCardMask(method: string | undefined | null): string | undefined {
+  if (typeof method !== "string" || !method.trim()) return undefined;
+  const m = /(?:[•*×xX#]|ending\s*)?\s*(\d{3,4})\b/i.exec(method);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Does a hand-fed row describe the same charge as an auto-matched
+ * row? Same amount, dates within the matcher's dedupe window, and
+ * merchant/label token sequences that contain one another at whole-
+ * token boundaries ("Meta PAYG spill" still matches the "Meta" alias
+ * of a METAPAY charge). Conservative: a hand-fed row is only dropped
+ * when an auto row plausibly IS that charge.
+ *
+ * When both rows carry known, conflicting card masks (e.g. Visa
+ * •7535 vs Visa •9545), they describe charges on different cards
+ * and are preserved as distinct evidence (#3123).
+ */
+/**
+ * Every token spelling a label answers to: its own, plus the
+ * canonical provider name and merchant aliases of its alias group
+ * when the label names one of them. Canonicalizing a matched label
+ * (the charge catalog's "Meta Model API" for a METAPAY charge) must
+ * not break deduplication against hand-fed rows written under one of
+ * its merchant aliases ("Meta PAYG spill" contains the whole-token
+ * alias "Meta") -- without group expansion the same charge lands in
+ * the feed twice (Codex review, PR #3168).
+ */
+function labelTokenSequences(label: string): string[][] {
+  const normalized = normalizeMerchantName(label);
+  if (!normalized) return [];
+  const base = normalized.split(" ");
+  const out = new Map<string, string[]>([[normalized, base]]);
+  for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
+    const group = [canonical, ...aliases].map((name) => normalizeMerchantName(name)).filter(Boolean);
+    if (group.includes(normalized)) {
+      for (const name of group) out.set(name, name.split(" "));
+    }
+  }
+  return [...out.values()];
+}
+
+function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
+  if (!sequence.length || sequence.length > tokens.length) return false;
+  for (let start = 0; start <= tokens.length - sequence.length; start++) {
+    if (sequence.every((token, offset) => tokens[start + offset] === token)) return true;
+  }
+  return false;
+}
+
+/**
+ * The shared identity rule (#3161), hand-fed-vs-auto form: the two
+ * rows are the same charge only when amounts are equal, dates fall
+ * inside the dedupe window, and the merchant identity holds at
+ * token boundaries — token-sequence containment in either
+ * direction over the alias-expanded label token sequences (which
+ * preserves the documented METAPAY / "Meta PAYG spill" merge while
+ * excluding substring lookalikes). An empty normalized label never
+ * matches, and conflicting known card masks veto the merge;
+ * agreement or absence of a payment method does not block it.
+ */
+function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
+  if (handFed.amountUsd !== auto.amountUsd) return false;
+  if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
+  const maskA = extractCardMask(handFed.method);
+  const maskB = extractCardMask(auto.method);
+  if (maskA && maskB && maskA !== maskB) return false;
+  const aSet = labelTokenSequences(handFed.label);
+  const bSet = labelTokenSequences(auto.label);
+  if (!aSet.length || !bSet.length) return false;
+  return aSet.some((a) => bSet.some((b) => containsTokenSequence(a, b) || containsTokenSequence(b, a)));
+}
+
+/**
+ * The feed's charges section: auto-matched rows first (source of
+ * record), plus any hand-fed rows the auto read did not already
+ * cover, date-ordered like matchCharges output. With no auto rows
+ * this is exactly the hand-fed list, sorted — the pre-#1057 feed.
+ */
+export function mergeChargeRows(autoRows: ChargeRow[], handFedRows: ChargeRow[]): ChargeRow[] {
+  const kept = handFedRows.filter((row) => !autoRows.some((auto) => sameCharge(row, auto)));
+  return [...autoRows, ...kept].sort((x, y) => x.at.localeCompare(y.at) || x.label.localeCompare(y.label));
+}
+
+/** Stable identity of one unmatched charge for the surfaced-once state. */
+export function unmatchedKey(u: Pick<UnmatchedCharge, "normalized" | "amountUsd" | "at">): string {
+  return `${u.normalized}|${u.amountUsd.toFixed(2)}|${u.at}`;
+}
+
+/**
+ * Split unmatched charges into those never surfaced before (they go
+ * to the attention strip this run) and the full key set to persist.
+ * A charge surfaces exactly once: once its key is in the persisted
+ * set it never surfaces again, even though it stays in the charges
+ * rows as evidence.
+ */
+export function filterNewUnmatched(
+  unmatched: UnmatchedCharge[],
+  surfaced: ReadonlySet<string>,
+): { fresh: UnmatchedCharge[]; keys: string[] } {
+  const keys = new Set(surfaced);
+  const fresh: UnmatchedCharge[] = [];
+  for (const u of unmatched) {
+    const key = unmatchedKey(u);
+    if (!keys.has(key)) {
+      keys.add(key);
+      fresh.push(u);
+    }
+  }
+  return { fresh, keys: [...keys].sort() };
+}

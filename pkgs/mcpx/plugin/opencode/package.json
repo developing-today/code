@@ -1,0 +1,16 @@
+{
+  "name": "mcpx-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "biome lint mcpx/",
+    "typecheck": "tsc --noEmit",
+    "check": "biome lint mcpx/ && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@opencode-ai/plugin": "1.19.5",
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,15 @@
+== A: plain process, uid 1337, fusermount3 = /run/wrappers/bin/fusermount3
+  mount: pt /home/user/work/research-round2/crash-tests/fuse-probe/work/mnt-a fuse.pt rw,nosuid,nodev,relatime,user_id=1337,group_id=100 0 0
+  mount: pt /nix/persistent/home/user/work/research-round2/crash-tests/fuse-probe/work/mnt-a fuse.pt rw,nosuid,nodev,relatime,user_id=1337,group_id=100 0 0
+  write via mount: ok
+  read via mount: hello-a
+  underlying root-a: hello-a
+  fusermount3 -u: ok
+  daemon exit: 0
+== B: inside unshare -Urm (user+mount namespace)
+  uid inside: 0 (outside: 0)
+  mount: pt /home/user/work/research-round2/crash-tests/fuse-probe/work/mnt-b fuse.pt rw,nosuid,nodev,relatime,user_id=0,group_id=0 0 0
+  write via mount: ok
+  read via mount: hello-b
+  underlying root-b: hello-b
+  unshare exit: 8

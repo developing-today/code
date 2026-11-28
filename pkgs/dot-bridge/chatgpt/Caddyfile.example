@@ -1,0 +1,24 @@
+# Requires a separately configured OAuth-aware MCP verifier on loopback.
+# See README gateway contract. Do not expose the verifier's internal endpoint.
+mailbox.example.com {
+	@resource path /.well-known/oauth-protected-resource/mcp
+	handle @resource {
+		header Content-Type application/json
+		header Cache-Control no-store
+		respond `{"resource":"https://mailbox.example.com/mcp","authorization_servers":["https://id.example.com"],"scopes_supported":["mailbox:use"]}` 200
+	}
+
+	@mcp path /mcp
+	handle @mcp {
+		forward_auth 127.0.0.1:8100 {
+			uri /verify
+		}
+		reverse_proxy 127.0.0.1:8000 {
+			header_up Authorization "Bearer {$MAILBOX_PRODUCER_TOKEN}"
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

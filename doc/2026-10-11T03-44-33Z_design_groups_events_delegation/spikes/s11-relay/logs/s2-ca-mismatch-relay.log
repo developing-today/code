@@ -1,0 +1,12 @@
+[2m2026-10-11T12:29:33.701864Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19221
+[2m2026-10-11T12:29:33.701981Z[0m [32m INFO[0m [1mhttp-service[0m[1m{[0m[3maddr[0m[2m=[0m127.0.0.1:19122[1m}[0m[2m:[0m [2miroh_relay::server[0m[2m:[0m serving
+[2m2026-10-11T12:29:33.703537Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTPS/WSS] relay: serving on 127.0.0.1:19121
+[2m2026-10-11T12:29:33.933974Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:34050[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:29:34.033921Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:34060[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA
+[2m2026-10-11T12:29:34.133421Z[0m [31mERROR[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:34076[1m}[0m[2m:[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[manual] accept
+Caused by:
+    received fatal alert: UnknownCA

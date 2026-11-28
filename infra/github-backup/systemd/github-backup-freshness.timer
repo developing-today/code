@@ -1,0 +1,10 @@
+[Unit]
+Description=github-backup five-copy freshness probe (daily, after the copy jobs)
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+{
+  "apis": [
+    {
+      "description": "The caller's Dropbox, read through the Dropbox API v2 with the caller's own access token. The declaration carries no credential: the Authorization header is the ${DROPBOX_ACCESS_TOKEN} placeholder, expanded from the environment when the declaration is loaded, so the token itself is never written into a file. Dropbox API v2 is RPC over POST, so methods is set deliberately \u2014 every operation in the shipped document is a read (list, search, metadata, account); no upload, download or write endpoint is declared.",
+      "headers": {
+        "Authorization": "Bearer ${DROPBOX_ACCESS_TOKEN}"
+      },
+      "methods": ["POST"],
+      "name": "dropbox",
+      "spec": "./dropbox.openapi.json"
+    }
+  ]
+}

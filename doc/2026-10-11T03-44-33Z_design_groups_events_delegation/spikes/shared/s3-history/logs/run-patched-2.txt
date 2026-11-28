@@ -1,0 +1,31 @@
+# patched: path copy with add_from_join
+## (a) full history (plain add) and post-compromise security
+m1 read by Bob: [Plain("m1: sent before Dan joins")]
+m1 read by Carol: [Plain("m1: sent before Dan joins")]
+m1 read by Dan (not welcomed yet): []
+Dan processes the welcome and reads: [Plain("m1: sent before Dan joins")]
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=1
+  welcome direct message: 748 bytes
+Carol processes the remove: [Removed]
+m2 read by Bob: [Plain("m2: sent after Carol is removed")]
+m2 read by Dan: [Plain("m2: sent after Carol is removed")]
+Carol cannot read m2: UnknownGroupSecret("8eeb4a12e2cdd5a77a5bb1948f0bd4dd92d47abbfd842d2e449a81bcc6b9c77f")
+attacker with pre-removal state cannot read m2: UnknownGroupSecret("8eeb4a12e2cdd5a77a5bb1948f0bd4dd92d47abbfd842d2e449a81bcc6b9c77f")
+
+## (c) from_join: the welcome carries no earlier secret; one update rotates
+after the welcome:
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=0
+  Dan cannot read m1: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+  Dan cannot read a message sent between add and update: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+Dan processes the update: []
+after the update:
+  member 3: is_welcomed=true members=[0, 1, 2, 3] secrets=1
+  Dan holds Alice's pre-add secret: false
+m2 read by Bob: [Plain("m2: sent after the rotation")]
+m2 read by Dan: [Plain("m2: sent after the rotation")]
+  Dan still cannot read m1: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+
+## (c1) hazard: a pre-join application message reaches the joiner
+  welcome fails for Dan: UnknownGroupSecret("707aebcd0ff278b7122755cc2b9349f283bc2fd5479e08446e20334786072713")
+
+EXIT=0

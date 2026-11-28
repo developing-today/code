@@ -1,0 +1,21 @@
+[package]
+name = "s3-history"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+p2panda-core = { workspace = true }
+p2panda-encryption = { workspace = true }
+# The path copy with `add_from_join`. Renamed so both crates can be linked into one binary.
+p2panda-encryption-patched = { package = "p2panda-encryption", path = "patched/p2panda-encryption", features = [
+  "data_scheme",
+  "message_scheme",
+  "test_utils",
+] }
+anyhow = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+cbor-core = { workspace = true }

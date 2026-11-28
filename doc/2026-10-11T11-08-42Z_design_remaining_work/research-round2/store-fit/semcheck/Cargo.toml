@@ -1,0 +1,13 @@
+[package]
+name = "semcheck"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+futures-util = "0.3"
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[workspace]

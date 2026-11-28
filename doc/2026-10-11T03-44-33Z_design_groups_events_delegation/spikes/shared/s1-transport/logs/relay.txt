@@ -1,0 +1,5 @@
+local relay: http://127.0.0.1:40825/ (HTTP, no TLS, no QUIC address discovery)
+both endpoints online through the local relay
+ticket: 103 chars, 0 direct address(es), relay = http://127.0.0.1:40825/
+reply = "echo: hello from the dialer" after 1.163108ms
+path: selected = true, is_relay = true, is_ip = false, remote = Relay(http://127.0.0.1:40825/)

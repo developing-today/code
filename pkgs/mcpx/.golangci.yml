@@ -1,0 +1,29 @@
+# golangci-lint configuration for mcpx (#1996).
+#
+# Deliberately not `default: all`: gosec and the other opinionated sets are
+# not blocking here, and turning them on without triaging their findings
+# would make the leg fail on day one for reasons nobody chose. The standard
+# set (errcheck, govet, ineffassign, staticcheck, unused) is blocking, and
+# staticcheck runs every check it has, including the style and quickfix
+# classes it leaves off by default.
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    rules:
+      # connListener.stop (internal/daemon/conns.go) ends with an empty
+      # acceptMu critical section on purpose: Accept holds acceptMu across
+      # an inner Accept and the tracking of what it accepted, so acquiring
+      # it in stop is a barrier guaranteeing no Accept is in flight when
+      # stop returns. There is no state to mutate inside the section; the
+      # lock acquisition itself is the operation (SA2001).
+      - path: internal/daemon/conns.go
+        linters:
+          - staticcheck
+        text: SA2001

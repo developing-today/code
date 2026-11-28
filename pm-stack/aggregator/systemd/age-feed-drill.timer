@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly age-the-feed chaos drill (#1283, epic #1184)
+
+[Timer]
+# Wednesday early morning — a different quiet window from the
+# kill-collector drill's Sunday 04:17 slot, so the two drills can never
+# contend for the stack in the same maintenance window.
+OnCalendar=Wed 03:43
+RandomizedDelaySec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

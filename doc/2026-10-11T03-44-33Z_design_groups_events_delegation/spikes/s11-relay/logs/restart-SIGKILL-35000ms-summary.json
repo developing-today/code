@@ -1,0 +1,39 @@
+{
+  "median": {
+    "conn_survived_runs": 0,
+    "first_echo_after_up_ms": 60771.1,
+    "home_a_back_ms": 60635.8,
+    "home_b_back_ms": 44725.6,
+    "inflight_at_kill": 1062.0,
+    "inflight_lost": 1058.0,
+    "redial_first_echo_ms": 60771.1,
+    "relay_exit_ms": 7.1,
+    "relay_up_ms": 35075.4,
+    "runs": 1
+  },
+  "runs": [
+    {
+      "b_addr_ips": 0,
+      "b_addr_relays": 1,
+      "close_reason": "timed out",
+      "conn_survived": false,
+      "down_ms": 35000,
+      "echoed_total": 2151,
+      "first_echo_after_up_ms": 60771.1,
+      "home_a_back_ms": 60635.8,
+      "home_b_back_ms": 44725.6,
+      "inflight_at_kill": 1062,
+      "inflight_lost": 1058,
+      "redial_attempts": 2,
+      "redial_error": "connect timed out: deadline has elapsed",
+      "redial_first_echo_ms": 60771.1,
+      "relay_exit": "killed by signal 9",
+      "relay_exit_ms": 7.1,
+      "relay_up_ms": 35075.4,
+      "run": 1,
+      "sent_total": 3362,
+      "signal": "SIGKILL",
+      "warm_echoes": 299
+    }
+  ]
+}

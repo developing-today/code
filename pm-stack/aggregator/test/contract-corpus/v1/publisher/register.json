@@ -1,0 +1,28 @@
+{
+  "domains": [
+    {
+      "domain": "alpha.example",
+      "registrar": "Example Registrar",
+      "dns_hosted_at": "Example DNS",
+      "next_renewal": "2027-02-09",
+      "auto_renew": true,
+      "renewal_price_usd": 4.07
+    },
+    {
+      "domain": "bravo.example",
+      "registrar": "Example Registrar",
+      "dns_hosted_at": "Example DNS",
+      "next_renewal": "2027-05-01",
+      "auto_renew": true,
+      "renewal_price_usd": 11.43
+    },
+    {
+      "domain": "charlie.example",
+      "registrar": "Example Registrar",
+      "dns_hosted_at": "Example DNS",
+      "next_renewal": "2028-01-01",
+      "auto_renew": null,
+      "renewal_price_usd": null
+    }
+  ]
+}

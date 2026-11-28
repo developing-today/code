@@ -1,0 +1,11 @@
+2026-10-11T17:26:44.005497Z  INFO harness: bound role="server" event="ready" mode=Refuse id=8a88e3dd74 port=46658 direct=["10.200.0.1:46658", "10.200.0.2:46658", "127.0.0.1:46658"]
+2026-10-11T17:26:44.096142Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:42504) alpns=["n30/allowlist/0"]
+2026-10-11T17:26:44.098690Z DEBUG noq_proto::connection: multipath negotiated initial_max_path_id=7
+2026-10-11T17:26:44.098747Z DEBUG noq_proto::connection: n0's nat traversal negotiated max_remote_addresses=32 max_local_addresses=32
+2026-10-11T17:26:44.166649Z DEBUG noq_proto::connection::paths: remote changed path status status=Available seq=2
+2026-10-11T17:26:44.168939Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:26:44.169266Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(129829143921792) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:46658, 10.200.0.2:46658, 127.0.0.1:46658}
+2026-10-11T17:26:44.169402Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(129829143921792) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:26:44.169644Z  INFO harness: hook runs role="server" event="after_handshake" peer=ed4928c628 allowed=false enforce=true
+2026-10-11T17:26:44.169969Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:26:44.170060Z  INFO harness: no Connection was handed to the application role="server" event="handshake_refused" peer=Some("ed4928c628") error=Connection was rejected locally dbg=Connection was rejected locally remote_info_after_refusal=["Ip(127.0.0.1:42504)/Active"]

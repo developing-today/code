@@ -1,0 +1,2 @@
+http_bind_addr = "127.0.0.1:19151"
+enable_quic_adr_discovery = true
