@@ -33,7 +33,7 @@ id-worlds = { path = "../id-worlds", default-features = false, features = [
   "sandbox",
 ] }
 iroh = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints.rust]
