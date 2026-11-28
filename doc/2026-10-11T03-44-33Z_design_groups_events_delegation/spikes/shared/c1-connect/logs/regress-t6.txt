@@ -1,0 +1,10 @@
+(b) ticket with no addresses, no lookup: failed after 301.515µs: No addressing information available: No address lookup configured
+(c) bare ID, no lookup, no ticket: failed after 71.905µs: No addressing information available: No address lookup configured
+(b, DHT on) address-less ticket: resolved after 1 attempt(s), 112.1105ms from the first
+(a) unknown ID on the testnet DHT, round 1: failed after 1.89974ms: No addressing information available: All address lookup services failed or produced no results
+(a) unknown ID on the testnet DHT, round 2: failed after 1.681732ms: No addressing information available: All address lookup services failed or produced no results
+(a) unknown ID on the testnet DHT, round 3: failed after 1.722568ms: No addressing information available: All address lookup services failed or produced no results
+2026-10-11T10:40:52.397491Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:40:52.397853Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:40:52.397969Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+RESULT t6: PASS

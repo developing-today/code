@@ -1,0 +1,20 @@
+[31m[1mERROR[0m[39m:
+  [31m×[0m I can't invoke your request handler, `app::stream_file`, because it
+  [31m│[0m needs an instance of `std::path::PathBuf` as input, but I can't find a
+  [31m│[0m constructor for that type.
+  [31m│[0m
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:11:1]
+  [31m│[0m  [2m11[0m │     let mut bp = Blueprint::new();
+  [31m│[0m  [2m12[0m │     bp.route(GET, "/home", f!(crate::stream_file));
+  [31m│[0m     · [35;1m                           ───────────┬──────────[0m
+  [31m│[0m     ·                                       [35;1m╰── [35;1mThe request handler was registered here[0m[0m
+  [31m│[0m  [2m13[0m │     bp
+  [31m│[0m     ╰────
+  [31m│[0m    ╭─[[36;1;4msrc/lib.rs[0m:5:1]
+  [31m│[0m  [2m5[0m │
+  [31m│[0m  [2m6[0m │ pub fn stream_file(_inner: PathBuf) -> pavex::response::Response {
+  [31m│[0m    · [35;1m                           ───┬───[0m
+  [31m│[0m    ·                               [35;1m╰── [35;1mI don't know how to construct an instance of this input parameter[0m[0m
+  [31m│[0m  [2m7[0m │     todo!()
+  [31m│[0m    ╰────
+  [31m│[0m [36m  help: [0mRegister a constructor for `std::path::PathBuf`

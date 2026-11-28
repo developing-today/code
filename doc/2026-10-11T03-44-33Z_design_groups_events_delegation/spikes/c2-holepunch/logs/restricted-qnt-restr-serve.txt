@@ -1,0 +1,16 @@
+   3012 ms online home_relays=["http://10.0.0.1:3340/"]
+   5014 ms own_ip_candidates=["10.0.0.2:4444", "192.168.1.2:4444"]
+ticket written: 100 chars
+2026-10-11T12:40:44.598550Z DEBUG iroh::_events::path::open: remote=a366d36a74 conn_id=123567216457888 path_id=0 network_path=Relay(http://10.0.0.1:3340/, a366d36a74)
+2026-10-11T12:40:44.598671Z DEBUG iroh::_events::path::set_status: remote=a366d36a74 conn_id=123567216457888 path_id=0 network_path=Relay(http://10.0.0.1:3340/, a366d36a74) status=Backup prev_status=Available
+2026-10-11T12:40:44.598719Z DEBUG iroh::_events::path::selected: remote=a366d36a74 network_path=Relay(http://10.0.0.1:3340/, a366d36a74) prev_network_path=None
+2026-10-11T12:40:44.598733Z DEBUG iroh::_events::path::set_status: remote=a366d36a74 conn_id=123567216457888 path_id=0 network_path=Relay(http://10.0.0.1:3340/, a366d36a74) status=Available prev_status=Backup
+2026-10-11T12:40:44.603096Z DEBUG iroh::_events::path::open: remote=a366d36a74 conn_id=123567216457888 path_id=1 network_path=Ip(192.168.1.2->10.0.0.3:4444)
+2026-10-11T12:40:44.603168Z DEBUG iroh::_events::path::set_status: remote=a366d36a74 conn_id=123567216457888 path_id=1 network_path=Ip(192.168.1.2->10.0.0.3:4444) status=Backup prev_status=Available
+   8134 ms serve path opened: direct 10.0.0.3:4444
+2026-10-11T12:40:44.603222Z DEBUG iroh::_events::path::selected: remote=a366d36a74 network_path=Ip(192.168.1.2->10.0.0.3:4444) prev_network_path=Relay(http://10.0.0.1:3340/, a366d36a74)
+2026-10-11T12:40:44.603239Z DEBUG iroh::_events::path::set_status: remote=a366d36a74 conn_id=123567216457888 path_id=0 network_path=Relay(http://10.0.0.1:3340/, a366d36a74) status=Backup prev_status=Available
+2026-10-11T12:40:44.603257Z DEBUG iroh::_events::path::set_status: remote=a366d36a74 conn_id=123567216457888 path_id=1 network_path=Ip(192.168.1.2->10.0.0.3:4444) status=Available prev_status=Backup
+   8134 ms serve path selected: direct 10.0.0.3:4444
+  20251 ms serve path closed: relay http://10.0.0.1:3340/
+  20252 ms serve path closed: direct 10.0.0.3:4444

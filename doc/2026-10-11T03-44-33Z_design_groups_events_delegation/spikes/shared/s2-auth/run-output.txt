@@ -1,0 +1,58 @@
+(a) StrongRemove scenarios, every causal-delivery order (cap 5000)
+  [PASS] 1 week-late add: 2 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage; expected A:manage C:manage. X by removed Bob, concurrent with R: voided
+  [PASS] 2 causally prior add: 1 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage D:manage; expected A:manage C:manage D:manage. Y in R's past: survives
+  [PASS] 3 transitive void: 3 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage; expected A:manage C:manage. W by Dave, whose authority came from voided Z: voided
+  [PASS] 3b dependent add by independent author: 3 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage E:read; expected A:manage C:manage E:read. W by Claire after voided Z: stands under authority rule
+  [PASS] 4 mutual removal: 2 orders, 1 distinct outcome(s), errors 0; members C:manage; expected C:manage. both removed
+  [PASS] 4b three-cycle: 6 orders, 1 distinct outcome(s), errors 0; members (none); expected (none). every member of the cycle removed
+  [PASS] 5 concurrent re-add: 3 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage; expected A:manage C:manage. re-add concurrent with R: voided
+  [PASS] 5c re-add concurrent with another manager's removal: 3 orders, 1 distinct outcome(s), errors 0; members A:manage C:manage; expected A:manage C:manage. re-add concurrent with Claire's removal: voided
+  [PASS] 5b causal re-add (control): 1 orders, 1 distinct outcome(s), errors 0; members A:manage B:manage C:manage; expected A:manage B:manage C:manage. re-add after R: stands
+(b) the after mapping: X (Bob adds Dave) -> D (doc naming X) -> R (Alice removes Bob, naming D)
+  [PASS] frontier mapping: R names X: frontier(R) = [1]
+  [PASS] GroupCrdt::heads at the remover equals the auth frontier: heads [1] vs frontier [1]
+  [PASS] frontier mapping: X stands: members A:manage C:manage D:manage
+  naive literal (R deps []): Err("src/group/crdt/mod.rs:822: group already present in states map")
+  [PASS] naive literal: panics in validate (no auth dependency): Err("src/group/crdt/mod.rs:822: group already present in states map")
+  naive with root dependency: members A:manage C:manage
+  [PASS] naive with root dependency voids X (wrong): members A:manage C:manage
+  raw after as deps: Err("MissingDependencies(2, 3)")
+  [PASS] raw after as deps is refused (MissingDependencies): Err("MissingDependencies(2, 3)")
+  [PASS] frontier is minimal across non-auth hops: frontier(X2) = [1], frontier(R) = [3]
+  [PASS] incremental frontier (from after-heads) equals the full walk, every event: 0 mismatches
+  [PASS] frontier mapping is order-independent: 1 orders
+(c) unknown and missing dependencies
+  P1 process(dep 999 unknown): Ok(Err("MissingDependencies(999, 1)"))
+  [PASS] P1 unknown dependency is an error, not a panic: Ok(Err("MissingDependencies(999, 1)"))
+  P2 members_at(heads {999}): Ok(Ok(0))
+  P3 process(non-create, deps []): Err("src/group/crdt/mod.rs:822: group already present in states map")
+  [PASS] P3 empty dependencies panic in validate: Err("src/group/crdt/mod.rs:822: group already present in states map")
+  P4 process(group 2 unknown at deps [0]): Err("src/group/crdt/mod.rs:822: group already present in states map")
+  [PASS] P4 group absent at dependencies panics: Err("src/group/crdt/mod.rs:822: group already present in states map")
+  P5 process(non-create on empty state): Err("src/group/crdt/mod.rs:822: group already present in states map")
+  [PASS] P5 unknown group on empty state panics: Err("src/group/crdt/mod.rs:822: group already present in states map")
+  P6 guard: held=wait for [5]; empty-deps=reject (non-create op with no dependencies); group-absent=reject (group does not exist at the operation's dependencies)
+  [PASS] P6 guard waits, rejects, then admits: wait for [5]; reject (non-create op with no dependencies); reject (group does not exist at the operation's dependencies)
+  [PASS] P6 held op admitted and applied once its dependency arrives: members A:manage B:manage C:manage D:manage E:manage
+  P7 invalid op refused: Err("StateChangeError(11, InsufficientAccess(Individual('E')))"); its child: Err("MissingDependencies(11, 12)")
+  [PASS] P7 a refused op stalls its descendants (layer must admit a placeholder): refused Err("StateChangeError(11, InsufficientAccess(Individual('E')))"); child Err("MissingDependencies(11, 12)")
+(d) friendship: two-member cap and dissolve-on-removal (cap and dissolve are ours)
+  [PASS] F1 concurrent adds beyond cap, p2panda alone (control): 2 orders, errors 0; members A:manage B:manage C:manage D:manage; dissolved {false}; expected A:manage B:manage C:manage D:manage, dissolved false
+  [PASS] F2 concurrent adds beyond cap, with cap (every order): 2 orders, errors 0; members A:manage B:manage; dissolved {false}; expected A:manage B:manage, dissolved false
+  [PASS] F3 concurrent adds and removal of Bob: 6 orders, errors 0; members A:manage; dissolved {true}; expected A:manage, dissolved true
+  [PASS] F4 mutual removal dissolves: 2 orders, errors 0; members (none); dissolved {true}; expected (none), dissolved true
+  [PASS] F5 re-add after dissolve: members return, group stays dissolved: 1 orders, errors 0; members A:manage B:manage; dissolved {true}; expected A:manage B:manage, dissolved true
+(e) delegation cascade: Alice -> Joe -> Jim; Joe removed; alt chain Alice -> Dan -> Jim
+  [PASS] control: p2panda alone: 10 applied, 11 applied, 12 applied; members A:manage E:read K:write M:manage N:manage Q:manage Y:manage Z:manage
+  [PASS] cascade, only Joe's chain: 10 vetoed, 11 applied, 12 vetoed; members A:manage K:write M:manage N:manage Q:manage Y:manage
+  [PASS] cascade, alt chain via Dan: 10 applied, 11 applied, 12 vetoed; members A:manage K:write M:manage N:manage Q:manage Y:manage Z:manage
+  [PASS] keep_prior, only Joe's chain: 10 applied, 11 applied, 12 vetoed; members A:manage K:write M:manage N:manage Q:manage Y:manage Z:manage
+  [PASS] transfer to Dan at removal: 10 applied, 11 applied, 12 vetoed; members A:manage K:write M:manage N:manage Q:manage Y:manage Z:manage
+  [PASS] control: delegation 6 valid where made: issued(6)
+  [PASS] incremental frontier equals the full walk, every event: 0 mismatches
+  [PASS] delegation 8 void: concurrent with R: 8 ∥ 9
+  [PASS] delegation 6 not void: in R's past: 6 < 9
+  [PASS] attenuation: write cannot grant manage: 14 refused
+  [PASS] no grant after own removal: 15 refused
+
+checks failed: 0

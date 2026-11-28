@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#11161d" />
+    <title>PM</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/console/icon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/console/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <button id="back" class="icon" aria-label="Back" hidden>‹</button>
+      <h1 id="title">Now</h1>
+      <span class="grow"></span>
+      <span id="fresh" class="fresh" role="status"></span>
+      <button id="refresh" class="icon" aria-label="Refresh">↻</button>
+    </header>
+    <button id="kept" class="kept" hidden></button>
+    <main id="view" tabindex="-1"></main>
+    <nav id="tabs" class="tabs" aria-label="Primary"></nav>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="ask">
+      <form method="dialog">
+        <h2 id="ask-title"></h2>
+        <p id="ask-text"></p>
+        <label id="ask-label" for="ask-input"></label>
+        <textarea id="ask-input" rows="3"></textarea>
+        <div class="row end">
+          <button value="cancel" class="ghost" formnovalidate>Cancel</button>
+          <button id="ask-ok" value="ok">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="/console/outbox.js"></script>
+    <script type="module" src="/console/app.js"></script>
+  </body>
+</html>

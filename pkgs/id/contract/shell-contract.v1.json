@@ -1,0 +1,607 @@
+{
+  "contract": "id-shell",
+  "version": 1,
+  "revision": 16,
+  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
+  "max_frame_bytes": 1048576,
+  "routing_fields": ["world"],
+  "transports": {
+    "iroh": {
+      "alpn": "/id-world/1",
+      "envelope": "u32be-length-prefix",
+      "session": "one bidirectional QUIC stream"
+    },
+    "websocket": {
+      "path": "/ws/world",
+      "envelope": "text-message; binary-message for negotiated binary view patches (revision 12)",
+      "session": "one WebSocket connection"
+    },
+    "ssh-exec": {
+      "command": "id-world/1",
+      "envelope": "u32be-length-prefix",
+      "session": "one SSH session channel running the exec command"
+    }
+  },
+  "phases": {
+    "opening": "The session's first frame. It may carry the `world` routing field; absent means the host's default world.",
+    "query": "After an opening query frame: further query frames, or a join.",
+    "install": "After install_begin was answered with upload_ready: chunks, then install_end.",
+    "joined": "From the frame after a join. A shell may send joined-phase frames (such as its first resize) before the snapshot arrives; the host reads them once the join is answered. Every frame keeps the session joined."
+  },
+  "classes": {
+    "event": "Becomes one committed world event: journaled, replayed, and delivered to sessions through the client projection.",
+    "ephemeral": "Connection-local presentation context. Never journaled and never seen by other sessions.",
+    "query": "Read-only. Never journaled and never changes the world.",
+    "control": "Session lifecycle. The frame itself is never journaled.",
+    "admin": "Authority-bearing configuration. Needs the admin secret or a signed moderator request, and may write a journal entry.",
+    "delegation": "Mints a narrower capability from the session's own. It may write a journal entry; it never widens authority."
+  },
+  "client_frames": {
+    "join": {
+      "class": "control",
+      "phases": ["opening", "query"],
+      "opens": "joined",
+      "fields": {
+        "capability": { "type": "string", "max_bytes": 256 },
+        "after": "u64?",
+        "screen_patches": { "type": "bool", "optional": true, "nullable": false },
+        "screen_msgpack": { "type": "bool", "optional": true, "nullable": false },
+        "screen_compress": { "type": "bool", "optional": true, "nullable": false },
+        "device_input": { "type": "object", "optional": true, "nullable": true },
+        "agent_profile": { "type": "bool", "optional": true, "nullable": false },
+        "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
+      }
+    },
+    "info": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "metrics": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "records": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": {
+        "capability": "string",
+        "prefix": "string?",
+        "after": "string?"
+      }
+    },
+    "records_ticket": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "documents": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": {
+        "capability": "string",
+        "prefix": "string?",
+        "after": "string?"
+      }
+    },
+    "document": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string", "name": "string" }
+    },
+    "download_module": {
+      "class": "query",
+      "phases": ["opening", "query"],
+      "opens": "query",
+      "fields": { "capability": "string", "module_hash": "string" }
+    },
+    "download_module_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "module_hash": "string" }
+    },
+    "event_history_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "caps": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "capability": "string" }
+    },
+    "execution_profile_info": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
+    },
+    "invite": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "admin_token": "string",
+        "display_name": "string",
+        "expires_in_secs": "u64?",
+        "uses": "u32?",
+        "role": {
+          "type": "string",
+          "optional": true,
+          "enum": ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"]
+        }
+      }
+    },
+    "directory": {
+      "class": "query",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {}
+    },
+    "list_worlds": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "create_world": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "set_isolation": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "isolation": { "type": "string", "enum": ["isolated", "unisolated"] },
+        "admin_token": "string?",
+        "signed": "object?"
+      }
+    },
+    "set_cross_world_write": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "enabled": "bool", "admin_token": "string?", "signed": "object?" }
+    },
+    "force_cross_world_write": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "set_file_scope": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "scope": { "type": "string", "enum": ["confined", "unrestricted"] },
+        "write_override": "bool?",
+        "admin_token": "string?",
+        "signed": "object?"
+      }
+    },
+    "compile": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "admin_token": "string",
+        "files": "array",
+        "seed": "u64?",
+        "native": { "type": "bool", "optional": true, "nullable": false }
+      }
+    },
+    "update_caps": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "grant": "string[]", "revoke": "string[]" }
+    },
+    "set_caps_ceiling": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "ceiling": "string[]" }
+    },
+    "set_execution_profile": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "profile": "object" }
+    },
+    "set_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string", "at_ms": "u64" }
+    },
+    "cancel_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string" }
+    },
+    "world_state": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
+    },
+    "install_begin": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "install",
+      "fields": {
+        "admin_token": "string?",
+        "total_bytes": { "type": "u64", "min": 1, "max": 16777216 },
+        "module_hash": "string?",
+        "signature": "object?",
+        "seed": "u64"
+      }
+    },
+    "revoke": {
+      "class": "admin",
+      "phases": ["joined"],
+      "fields": { "participant_id": "u64" }
+    },
+    "install_chunk": {
+      "class": "control",
+      "phases": ["install"],
+      "fields": { "offset": "u64", "data_hex": { "type": "hex", "max_bytes": 12288 } }
+    },
+    "install_end": {
+      "class": "control",
+      "phases": ["install"],
+      "fields": {}
+    },
+    "chat": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "text": "string", "screen_revision": "u64?" }
+    },
+    "form_result": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": {
+        "form_id": { "type": "string", "max_bytes": 64 },
+        "presentation_token": { "type": "hex", "max_bytes": 32 },
+        "action": { "type": "string", "max_bytes": 64 },
+        "values": "object",
+        "screen_revision": "u64?"
+      }
+    },
+    "input": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "data_hex": "hex", "screen_revision": "u64?" }
+    },
+    "paste": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "text": { "type": "string", "max_bytes": 4096 }, "screen_revision": "u64?" }
+    },
+    "screen_subscribe": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "region": { "type": "object", "optional": true, "nullable": true },
+        "event_classes": { "type": "string[]", "optional": true, "nullable": true }
+      }
+    },
+    "pointer": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": {
+        "event": {
+          "type": "string",
+          "enum": ["press", "release", "cancel", "drag_move", "scroll", "long_press", "secondary_press"]
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "pointer_id": "u32",
+        "x": "u16",
+        "y": "u16",
+        "button": {
+          "type": "string",
+          "optional": true,
+          "enum": ["primary", "secondary"]
+        },
+        "held_duration_ms": "u64?",
+        "is_click": "bool?",
+        "dx": "i64?",
+        "dy": "i64?",
+        "screen_revision": "u64?"
+      }
+    },
+    "hover": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "event": {
+          "type": "string",
+          "enum": ["hover_enter", "hover_leave", "hover_move"]
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "pointer_id": "u32",
+        "x": "u16",
+        "y": "u16"
+      }
+    },
+    "resize": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "width": { "type": "u16", "min": 1, "max": 500 },
+        "height": { "type": "u16", "min": 1, "max": 200 }
+      }
+    },
+    "attenuate": {
+      "class": "delegation",
+      "phases": ["joined"],
+      "forbidden_keys": ["uses"],
+      "fields": { "name": "string", "scopes": "string[]", "expires_at": "u64?" }
+    },
+    "delegate_to_friend": {
+      "class": "delegation",
+      "phases": ["joined"],
+      "forbidden_keys": ["uses"],
+      "fields": {
+        "friend": "string",
+        "name": "string",
+        "scopes": "string[]",
+        "expires_at": "u64?"
+      }
+    },
+    "provider_offer": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": { "providers": "string[]" }
+    },
+    "provider_reply": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": { "nonce": "hex", "ok": "bool", "result_hex": "hex?", "error": "string?" }
+    }
+  },
+  "server_frames": {
+    "snapshot": {
+      "class": "durable",
+      "fields": { "snapshot": "object" }
+    },
+    "event": {
+      "class": "durable",
+      "fields": { "event": "object" }
+    },
+    "form_result_status": {
+      "class": "reply",
+      "fields": {
+        "form_id": "string",
+        "ok": "bool",
+        "presentation_token": "string?",
+        "error": "string?",
+        "reason": "string?"
+      }
+    },
+    "view": {
+      "class": "ephemeral",
+      "fields": {
+        "sequence": "u64",
+        "data": "string",
+        "surface": "object?",
+        "view_revision": "u64",
+        "base_view_revision": "u64?",
+        "patch": "object?",
+        "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
+      }
+    },
+    "semantic_diff": {
+      "class": "ephemeral",
+      "fields": {
+        "sequence": "u64",
+        "view_revision": "u64",
+        "base_view_revision": "u64?",
+        "changes": "array",
+        "region": { "type": "object", "optional": true, "nullable": true }
+      }
+    },
+    "screen_subscription": {
+      "class": "reply",
+      "fields": {
+        "region": { "type": "object", "optional": true, "nullable": true },
+        "event_classes": { "type": "string[]", "optional": true, "nullable": true },
+        "view_revision": "u64"
+      }
+    },
+    "program_changed": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64" }
+    },
+    "module_info": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "active_module_hash": "string?",
+        "active_module_provenance": "object?",
+        "current_sequence": "u64"
+      }
+    },
+    "metrics": {
+      "class": "reply",
+      "fields": { "metrics": "object" }
+    },
+    "records": {
+      "class": "reply",
+      "fields": { "sequence": "u64", "records": "object", "next_after": "string?" }
+    },
+    "event_history_begin": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "module_hash": "string?",
+        "current_sequence": "u64",
+        "complete": "bool",
+        "event_count": "u64"
+      }
+    },
+    "event_history_event": {
+      "class": "reply",
+      "fields": { "event": "object" }
+    },
+    "records_ticket": {
+      "class": "reply",
+      "fields": { "ticket": "string" }
+    },
+    "documents": {
+      "class": "reply",
+      "fields": { "names": "string[]", "next_after": "string?" }
+    },
+    "document": {
+      "class": "reply",
+      "fields": { "name": "string", "size": "u64", "text": "string" }
+    },
+    "module_begin": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "total_bytes": "u64" }
+    },
+    "module_chunk": {
+      "class": "reply",
+      "fields": { "offset": "u64", "data_hex": "hex" }
+    },
+    "module_end": {
+      "class": "reply",
+      "fields": { "module_hash": "string" }
+    },
+    "invite": {
+      "class": "reply",
+      "fields": { "capability": "string", "participant_id": "u64", "display_name": "string" }
+    },
+    "worlds": {
+      "class": "reply",
+      "fields": { "default": "string", "worlds": "array" }
+    },
+    "world_created": {
+      "class": "reply",
+      "fields": { "world": "string", "created": "bool" }
+    },
+    "isolation": {
+      "class": "reply",
+      "fields": { "world": "string", "isolation": "string" }
+    },
+    "policy": {
+      "class": "reply",
+      "fields": { "world": "string", "policy": "object" }
+    },
+    "caps": {
+      "class": "reply",
+      "fields": { "report": "object" }
+    },
+    "caps_ceiling": {
+      "class": "reply",
+      "fields": { "report": "object", "message": "string" }
+    },
+    "execution_profile": {
+      "class": "reply",
+      "fields": { "update": "object", "message": "string" }
+    },
+    "schedules": {
+      "class": "reply",
+      "fields": { "schedules": "object" }
+    },
+    "world_state": {
+      "class": "reply",
+      "fields": { "seed": "u64?", "schedules": "object" }
+    },
+    "compiled": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64", "diagnostics": "string" }
+    },
+    "upload_ready": {
+      "class": "reply",
+      "fields": { "chunk_bytes": "u64" }
+    },
+    "module_installed": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64" }
+    },
+    "revoked": {
+      "class": "reply",
+      "fields": { "participant_id": "u64", "revoked": "bool" }
+    },
+    "error": {
+      "class": "reply",
+      "fields": { "message": "string", "code": "string?" }
+    },
+    "provider_request": {
+      "class": "ephemeral",
+      "fields": {
+        "nonce": "hex",
+        "provider": { "type": "string", "max_bytes": 128 },
+        "args": "object",
+        "deadline_ms": "u64"
+      }
+    },
+    "input_refused": {
+      "class": "reply",
+      "fields": {
+        "event": "string",
+        "environment": {
+          "type": "string",
+          "optional": true,
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "no_timing_source",
+            "hover_unsupported",
+            "context_menu_not_claimed",
+            "reserved_by_browser",
+            "no_secondary_button",
+            "not_reported_by_terminal",
+            "button_identity_unavailable",
+            "no_tracking_mode",
+            "gesture_not_in_subset",
+            "multi_touch_deferred",
+            "not_declared_by_app",
+            "unknown_or_unsupported_event"
+          ]
+        }
+      }
+    }
+  },
+  "projection": {
+    "description": "Every server frame is built from the one client projection (F11.11). A program seed never reaches a session: any `seed` key in a server frame must be 0.",
+    "redacted_keys": ["seed"]
+  },
+  "features": {
+    "screen_msgpack": "Revision 12 (negotiated binary screen patches, F12.11 phase 3, issue #12242; design doc/2026-11-01_design_id805.md sections 3, 5, 6): the join frame's `screen_msgpack` field is the capability flag — a shell that sets it, together with `screen_patches`, on a byte-capable transport receives screen patch frames as binary frames instead of JSON `view` frames. A binary patch frame is one versioned MessagePack value (id-core `screen_codec`, codec version 1) carrying exactly the fields of the `view` frame it replaces — `sequence`, `view_revision`, `base_view_revision`, `resume_token`, and the `patch` — with the same world-event cursor and view-revision semantics; full views, resume-token issuance, and every other frame stay on the text path. On the length-prefixed transports (iroh, ssh-exec) a binary frame body is marked with a single leading NUL byte, which no JSON text frame can start with; on WebSocket it is a binary message. Negotiation is offer-and-observe: a host or transport without the revision simply keeps sending JSON patch frames, and a shell must accept both for a session that offered the flag. Client frames remain text JSON in both directions of the negotiation; a binary frame from a client is malformed input and fails the session safely, like a non-UTF-8 frame. A host never sends a binary frame to a session that did not offer the flag, and never guesses an encoding: an unsupported codec version or a malformed binary payload is a decode failure for the shell, which falls back to a full view by rejoining or presenting its retained full-view path.",
+    "screen_compress": "Revision 16 (compressed binary screen patches, F12.11 phase 4, issue #805; design doc/2026-11-01_design_id805.md sections 2.3, 3, 5, 6): the join frame's `screen_compress` field is the capability flag \u2014 a shell that sets it, together with `screen_patches` and `screen_msgpack`, on a byte-capable transport receives screen patch frames as version-2 compressed MessagePack frames whenever compression makes the complete frame smaller, and as version-1 frames otherwise. A version-2 frame is one MessagePack value `{version: 2, compression, payload}` (id-core `screen_codec`); `compression` 1 means the payload is the raw-DEFLATE (RFC 1951) of the version-1 frame, `compression` 0 means the payload is the version-1 frame as-is. The inner frame carries exactly the fields of the `view` frame it replaces, with the same world-event cursor, view-revision, and resume-token semantics. Decompression is bounded by the shared 1 MiB frame limit: a payload that inflates past it, an unknown compression id, or a truncated stream is a decode failure for the shell, which falls back to a full view by rejoining or presenting its retained full-view path. A host never sends a compressed frame to a session that did not offer the flag, and never guesses an encoding.",
+    "agent_profile": "Revision 11 (agent profile for #6300, design doc/2026-11-09_design_id6300_agents_in_worlds_v1.md sections 4.2, 4.3, 8, 9.1): the capability flag is the join frame's `agent_profile` field — a shell that sets it advertises it can consume semantic diffs. A joined agent-profile shell may send `screen_subscribe` naming a screen region (an object with u16 `x`, `y`, `width`, `height` in screen cells) and/or semantic event classes (`chat_posted`, `input_applied`, `object_changed`, `system_event`, `program_changed`; an empty list means all classes, an absent field means no event diffs). The host answers with a `screen_subscription` frame echoing the active subscription and the current screen revision, then sends `semantic_diff` frames scoped to the subscription: event diffs for subscribed classes as world events commit, and region diffs (changes of kind `region_changed`, one per changed row inside the region, carrying that row's new text) as views change. Each semantic_diff names the world `sequence` it follows, the `view_revision` it was computed at, and its `base_view_revision` when it diffs against a known earlier screen. Agent input frames (`input`, `chat`, `paste`, `form_result`, `pointer`) may carry `screen_revision`, the stale-decision token: the screen revision the input was decided against. The host applies such an input only while that revision is still the session's current screen revision; otherwise it rejects the input with an `error` frame whose code is `stale_decision`, commits nothing, and returns the current view. A host without this revision does not know the flag and serves the agent full view frames at reduced fidelity with identical authority; a shell that never sets the flag is unaffected.",
+    "surface": "A view frame may carry a typed `surface`: a versioned document of kind `screen`, `text`, `form`, `scene`, `audio` or `widget`. Every kind carries its own `version`, bounds and host-side validation (id-core `world_presentation::parse_surface`); a document that names a known kind but fails validation is refused, never rendered. Revision 13 (rich presentation surfaces, issue #12657 slice 1a) adds the `scene` kind: a `scene/1` document is a bounded flat list of named nodes from a closed shape set (`box`, `sphere`, `plane`, `point`), each with a position and a size in world units. Revision 14 (issue #12657 slice 1b) adds the `audio` kind: an `audio/1` document is a bounded list of descriptive audio cues — each a named sound reference with a format from a closed set (`wav`, `ogg`, `mp3`), a duration in milliseconds and a repeat flag. Cues carry no embedded bytes, URLs or scripts; a presenter resolves each cue id against the world's own assets. Revision 15 (issue #12657 slice 1c) adds the `widget` kind: a `widget/1` document is a bounded list of descriptive controls — each a named control from a closed kind set (`button`, `toggle`, `link`) with a safe label, a toggle's current state, and, where it acts, the id of a world action. Controls carry no URLs, scripts or embedded payloads; a presenter resolves each action id against the world's own actions. A shell that does not understand a surface renders `data`; a shell without a renderer for a kind it does understand uses that kind's deterministic text projection, and a host that does not know a kind at all drops the document to the legacy plain-text path.",
+    "input_events": "Pointer input per the input event model design (doc/2026-11-08T05-48-47Z_design_input_event_model, issue #1831 slice S2; landed in revision 10). Coordinates are cells in the target surface's grid: producers map device pixels to cells at the edge, so frames never carry pixels. `pointer` frames are class event — journaled and replayed like `input`; a drag is a press, a sequence of drag_move frames, and a release, and each drag_move is its own frame, so the frame limit bounds one move, never the whole path. `hover` frames are class ephemeral: connection-local presentation context, never journaled and never seen by other sessions. A pointer_id is unique only within its producing connection; the host namespaces it with the connection's identity when journaling, and press/release pairing is scoped to that (connection, pointer_id) pair. An event an environment cannot produce, or that the target app did not declare in its manifest `interfaces.input`, is refused explicitly: the host answers `input_refused` naming the event and a reason from that frame's enum — an input event is never silently dropped."
+  },
+  "reserved": {
+    "presentation_tiers": "In-band terminal tier detection and negotiation (F13.4). Needs a new frame kind, so it waits for F11.12.",
+    "focus": "A focus frame for typed input (F13.4/F13.5). Not in version 1.",
+    "kitty_keyboard": "Kitty keyboard protocol key events (F13.5).",
+    "client_providers": "Client-side capability requests and replies (F13.7). The offer/request/reply frames landed in revision 9 (F13.7 step 2); the broker that sends requests is F13.7 step 3."
+  }
+}

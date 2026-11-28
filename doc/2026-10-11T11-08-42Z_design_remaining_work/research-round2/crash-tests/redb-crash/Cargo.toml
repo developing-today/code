@@ -1,0 +1,12 @@
+[package]
+name = "redb-crash"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+redb = "=4.3.0"
+
+# Own workspace, so the crate is not pulled into any parent workspace.
+[workspace]

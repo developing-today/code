@@ -1,0 +1,18 @@
+# iroh-relay, Cloudflare Tunnel mode (setup A in the connectivity design). Its values are in
+# relay.kit.toml under [modes.tunnel].
+#
+# Plain HTTP on loopback. cloudflared terminates TLS at Cloudflare's edge and forwards to
+# this address, so the relay needs no certificate and no open inbound port.
+#
+# QUIC address discovery needs UDP, which Tunnel does not carry, so it stays off. Clients
+# using this relay must build its RelayConfig with no QUIC port (RelayConfig::new(url, None)).
+http_bind_addr = "127.0.0.1:3340"
+enable_quic_addr_discovery = false
+
+# The metrics endpoint defaults to [::]:9090, which is public. Keep it on loopback.
+metrics_bind_addr = "127.0.0.1:9090"
+
+# Optional abuse control. Clients must then send one of these tokens, as a Bearer header or
+# as ?token=. Check the key names against iroh-relay's access config before enabling it.
+# [access]
+# shared_token = ["replace-with-a-long-random-token"]

@@ -1,0 +1,5 @@
+publisher: 1 relay(s) (0 with QAD off), policy RelayAndIp, mainline(bootstrap=1, publish=true)
+publisher's own address: 1 relay, 2 direct
+record: 1 relay URL(s), 2 direct address(es) (values withheld)
+2026-10-11T10:40:56.431250Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+RESULT policy: PASS

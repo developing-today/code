@@ -1,0 +1,22 @@
+# Example Talos UserVolumeConfig (Talos >= v1.10) — a data volume bound to
+# one physical disk by a CEL selector over the disk's harvested identity.
+# Apply as a config document alongside the machine config (TALM renders it
+# from the node file / cluster template like any other config document).
+# `machine.disks[]` is deprecated since v1.10 — do not build on it.
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: rustfs-cold-0
+spec:
+  provisioning:
+    diskSelector:
+      # CEL over disk.{serial,wwid,model,size,transport,symlinks}.
+      # !system_disk is the load-bearing guard: even a loose selector can
+      # never land a data volume on the boot NVMe. Prefer an exact serial
+      # or wwid match (below); a transport/size match is acceptable only
+      # with !system_disk and a following `talm apply --dry-run` check.
+      match: |
+        disk.wwid == "naa.5000cca2b1c0ffee" && !system_disk
+    grow: false
+    maxSize: 100%
+  filesystem:
+    type: xfs

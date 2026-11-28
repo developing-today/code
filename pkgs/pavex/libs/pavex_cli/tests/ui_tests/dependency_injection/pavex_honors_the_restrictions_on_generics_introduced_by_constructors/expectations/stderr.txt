@@ -1,0 +1,20 @@
+[31m[1mERROR[0m[39m:
+  [31m×[0m I can't invoke your request handler, `app::handler`, because it needs an
+  [31m│[0m instance of `app::Tied<u8, char>` as input, but I can't find a constructor
+  [31m│[0m for that type.
+  [31m│[0m
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:19:1]
+  [31m│[0m  [2m19[0m │     bp.constructor(f!(crate::tied), Lifecycle::RequestScoped);
+  [31m│[0m  [2m20[0m │     bp.route(GET, "/home", f!(crate::handler));
+  [31m│[0m     · [35;1m                           ─────────┬────────[0m
+  [31m│[0m     ·                                     [35;1m╰── [35;1mThe request handler was registered here[0m[0m
+  [31m│[0m  [2m21[0m │     bp
+  [31m│[0m     ╰────
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:11:1]
+  [31m│[0m  [2m11[0m │     // This can't be built because `tied` can only give you Tied<u8, u8> or Tied<char, char>!
+  [31m│[0m  [2m12[0m │     tied: Tied<u8, char>,
+  [31m│[0m     · [35;1m          ───────┬──────[0m
+  [31m│[0m     ·                  [35;1m╰── [35;1mI don't know how to construct an instance of this input parameter[0m[0m
+  [31m│[0m  [2m13[0m │ ) -> pavex::response::Response {
+  [31m│[0m     ╰────
+  [31m│[0m [36m  help: [0mRegister a constructor for `app::Tied<u8, char>`

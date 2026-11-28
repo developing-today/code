@@ -1,0 +1,21 @@
+{
+  "description": "Decision-set event pipeline (#9335): authenticated webhook -> D1 store + Durable Object per set for fan-out.",
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261121.1",
+    "cf": "1.0.0-rc.2",
+    "typescript": "^5.6.0",
+    "wrangler": "4.163.0"
+  },
+  "name": "decision-events-worker",
+  "private": true,
+  "scripts": {
+    "check:build-output": "node scripts/check-build-output.mjs",
+    "deploy": "echo 'release through the decision-events GitHub Actions workflow instead of wrangler deploy' >&2; exit 1",
+    "dev": "wrangler dev",
+    "test": "bun test",
+    "test:release": "node scripts/test-version-resolver.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
