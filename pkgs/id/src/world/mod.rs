@@ -41,6 +41,7 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+mod upgrade;
 mod util;
 
 #[cfg(test)]
@@ -70,6 +71,10 @@ pub use replication::{
 pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
+};
+pub use upgrade::{
+    MAX_PROGRAM_STATE_BYTES, MigrateExport, ProgramSnapshot, RunningProgram,
+    SNAPSHOT_FORMAT_CURRENT, SNAPSHOT_FORMAT_V1, SNAPSHOT_MAGIC, UpgradeOutcome, upgrade_program,
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
@@ -184,6 +189,16 @@ impl WorldScopes {
     /// [`Self::from_bits`] accepts these so a journaled builder or moderator
     /// capability round-trips, without widening [`Self::ALL`].
     const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
+
+    /// Every recognized bit, including the admin authority bits. Used as
+    /// the seed for authority-aware effective-scope computation: unlike
+    /// [`Self::ALL`], this lets an admin-issued `BUILDER` / `MODERATOR`
+    /// bit survive the ancestor-chain intersection in
+    /// `WorldCore::authorize` (design #835 phase 2). It grants nothing on
+    /// its own — the chain intersection only ever removes bits.
+    pub(crate) const fn all_recognized() -> Self {
+        Self(Self::ALL_BITS)
+    }
 
     /// Whether this set includes the builder authority (install modules).
     #[must_use]

@@ -240,12 +240,28 @@ class CliTests(unittest.TestCase):
             self.assertIn("install generation 1 into the profile", proc.stdout)
             self.assertFalse(os.path.exists(os.path.join(state, "generations")))
 
-    def test_real_deploy_is_refused_in_this_slice(self):
+    def test_real_deploy_attempts_activation_and_records_failure(self):
+        # Slice 3 replaced the refusal with real activation: with no
+        # reachable systemctl (PATH emptied) the deploy must fail
+        # non-zero, flip back, and append a deploy_failed entry —
+        # never pretend success and never crash.
         with tempfile.TemporaryDirectory() as state:
-            proc = self.run_cli(state, "svc")
-            self.assertEqual(proc.returncode, 2)
-            self.assertIn("next slice of issue #5766", proc.stderr)
-            self.assertFalse(os.path.exists(os.path.join(state, "generations")))
+            registry = {"svc": DEFN}
+            reg_path = os.path.join(state, "registry.json")
+            with open(reg_path, "w", encoding="utf-8") as fh:
+                json.dump(registry, fh)
+            env = dict(os.environ, DEPLOY_STATE_DIR=state,
+                       DEPLOY_PROFILE_BASE=os.path.join(state, "profiles"),
+                       DEPLOY_UNIT_DIR=os.path.join(state, "units"),
+                       PATH=state)
+            proc = subprocess.run(
+                [sys.executable, DEPLOY_PATH, "--registry", reg_path, "svc"],
+                capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertIn("FAILED", proc.stderr)
+            entries = deploy.read_generations("svc", state)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["action"], "deploy_failed")
 
     def test_cli_rollback_dry_run_refused_with_one_generation(self):
         with tempfile.TemporaryDirectory() as state:

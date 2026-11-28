@@ -305,3 +305,81 @@ test('--dry-run still exits 0 writing nothing', () => {
   assert.equal(after, before);
   assert.equal(backupExists, false);
 });
+// --- #2832: shape validation at the parse boundary (design #3068 Phase 2) ---
+
+const { validateConfigShape } = new Function(
+  `${extractFunction('validateConfigShape')}\nreturn { validateConfigShape };`,
+)();
+
+const editorStart = source.indexOf('const lineIndent');
+assert.notEqual(editorStart, -1, 'JSONC tree editor block not found');
+const editorEnd = source.indexOf('// Removes the member at', editorStart);
+assert.notEqual(editorEnd, -1, 'JSONC tree editor block end not found');
+const { setJsoncPath } = new Function(
+  `${extractFunction('parseJsoncTree')}\n${source.slice(editorStart, editorEnd)}\nreturn { setJsoncPath };`,
+)();
+
+test('validateConfigShape names a scalar provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: 'oops' } }, 'cfg.jsonc'),
+    /invalid config shape in cfg\.jsonc: provider\.google: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names an array provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: [1, 2] } }, 'cfg.jsonc'),
+    /provider\.google: expected object, got array/,
+  );
+});
+
+test('validateConfigShape names a scalar models container (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: { models: 'oops' } } }, 'cfg.jsonc'),
+    /provider\.google\.models: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names a wrong-shaped provider container and root (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: 'oops' }, 'cfg.jsonc'),
+    /provider: expected object, got string/,
+  );
+  assert.throws(
+    () => validateConfigShape(['oops'], 'cfg.jsonc'),
+    /\(root\): expected object, got array/,
+  );
+});
+
+test('validateConfigShape treats a missing provider key as nothing to sync (#2832)', () => {
+  assert.doesNotThrow(() => validateConfigShape({}, 'cfg.jsonc'));
+  assert.doesNotThrow(() =>
+    validateConfigShape({ provider: { google: { models: { m1: {} } } } }, 'cfg.jsonc'));
+});
+
+test('setJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => setJsoncPath(text, ['provider', 'google', 'models', 'm1'], {}),
+    /cannot set provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+  const arrayText = '{\n  "provider": { "google": [1, 2] }\n}';
+  assert.throws(
+    () => setJsoncPath(arrayText, ['provider', 'google', 'models', 'm1'], {}),
+    /provider\/google is a array, expected object|provider\/google is an array, expected object/,
+  );
+});
+
+test('setJsoncPath well-formed control still inserts the key (#2832)', () => {
+  const text = '{\n  "provider": { "google": { "models": {} } }\n}';
+  const out = setJsoncPath(text, ['provider', 'google', 'models', 'm1'], { name: 'M1' });
+  assert.deepEqual(parseJsonc(out).provider.google.models.m1, { name: 'M1' });
+});
+
+test('removeJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => removeJsoncPath(text, ['provider', 'google', 'models', 'm1']),
+    /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+});

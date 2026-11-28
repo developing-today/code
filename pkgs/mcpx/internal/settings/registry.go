@@ -365,6 +365,22 @@ func scriptSettings() []Setting {
 				"flag and --typecheck flag remain accepted; the old value on means types.",
 		},
 		{
+			Path: "script.checkOnError", Commands: runCommands, Kind: KindEnum, Default: "fail",
+			Scope: ScopeClient,
+			Enum:  []string{"fail", "warn", "run"},
+			Name:  "Script check errors",
+			Short: "what to do when script checking finds an error",
+			Long:  "fail stops before running the script, warn reports the error and runs it, and run continues without reporting the check error.",
+		},
+		{
+			Path: "script.checkOnUnsupported", Commands: runCommands, Kind: KindEnum, Default: "warn",
+			Scope: ScopeClient,
+			Enum:  []string{"skip", "warn", "switch"},
+			Name:  "Unsupported script check runtime",
+			Short: "what to do when the selected runtime cannot check the script",
+			Long:  "skip omits the check, warn reports that it could not run, and switch uses Deno only for checking while the configured runtime still runs the script.",
+		},
+		{
 			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
 			Scope: ScopeClient,
 			Enum:  []string{"off", "report", "prepare"},

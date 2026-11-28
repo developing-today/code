@@ -111,12 +111,21 @@ query($login: String!, $after: String) {
 """
 
 
+# Hard page bound for inventory_owner (#6840): at 100 repos per page
+# this still admits 100,000 repos under one owner — far above any real
+# owner's page count — while guaranteeing the loop terminates even if
+# a server invents a fresh advancing cursor on every page forever.
+MAX_INVENTORY_PAGES = 1000
+
+
 def inventory_owner(owner):
     """All repos visible to the gh token under one owner, via GraphQL."""
     repos = []
     after = None
     seen_cursors = set()
+    pages = 0
     while True:
+        pages += 1
         variables = {"login": owner}
         if after:
             variables["after"] = after
@@ -155,12 +164,28 @@ def inventory_owner(owner):
                 f"gh api graphql for {owner}: malformed repositories "
                 f"connection (nodes/pageInfo missing)"
             )
-        for n in conn["nodes"]:
+        for i, n in enumerate(conn["nodes"]):
+            if not (
+                isinstance(n, dict)
+                and isinstance(n.get("nameWithOwner"), str)
+                and n["nameWithOwner"]
+            ):
+                # A malformed node is a poison entry (#6637 discipline,
+                # #6840): name it and skip it — a raw TypeError/KeyError
+                # from the subscript would fail the owner's whole
+                # inventory over one bad repo record.
+                print(
+                    f"github-backup: inventory for {owner}: page {pages} "
+                    f"node {i} is not an object with a non-empty string "
+                    f"'nameWithOwner' (got {_shape(n)}) \u2014 skipped",
+                    file=sys.stderr,
+                )
+                continue
             repos.append(
                 {
                     "repo": n["nameWithOwner"],
-                    "fork": bool(n["isFork"]),
-                    "archived": bool(n["isArchived"]),
+                    "fork": bool(n.get("isFork")),
+                    "archived": bool(n.get("isArchived")),
                     "size_kb": n.get("diskUsage") or 0,
                     "parent": (n.get("parent") or {}).get("nameWithOwner"),
                     "branch": (n.get("defaultBranchRef") or {}).get("name"),
@@ -172,6 +197,12 @@ def inventory_owner(owner):
                 }
             )
         if conn["pageInfo"]["hasNextPage"]:
+            if pages >= MAX_INVENTORY_PAGES:
+                raise RuntimeError(
+                    f"gh api graphql for {owner}: pagination exceeded "
+                    f"{MAX_INVENTORY_PAGES} pages with hasNextPage still "
+                    f"true; refusing to page unboundedly"
+                )
             next_after = conn["pageInfo"]["endCursor"]
             if (
                 not isinstance(next_after, str)

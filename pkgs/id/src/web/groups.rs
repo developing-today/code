@@ -62,9 +62,8 @@ pub fn read_projection(path: &Path) -> Result<Projection> {
             // truncating the file.
             break;
         }
-        let text = std::str::from_utf8(line).with_context(|| {
-            format!("{}: line {} is not an event", path.display(), number + 1)
-        })?;
+        let text = std::str::from_utf8(line)
+            .with_context(|| format!("{}: line {} is not an event", path.display(), number + 1))?;
         if text.trim().is_empty() {
             continue;
         }
@@ -137,7 +136,11 @@ pub fn render_groups(projection: &Projection) -> String {
             for grant in group_grants {
                 html.push_str(&format!(
                     "<tr><td>{}</td><td>{}</td><td>{:?}</td><td>{}</td><td>{}</td></tr>",
-                    grant.from.as_ref().map(key_hex).unwrap_or_else(|| "(group)".to_owned()),
+                    grant
+                        .from
+                        .as_ref()
+                        .map(key_hex)
+                        .unwrap_or_else(|| "(group)".to_owned()),
                     key_hex(&grant.to),
                     grant.scope,
                     if grant.redelegate { "yes" } else { "no" },

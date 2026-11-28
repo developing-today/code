@@ -398,6 +398,10 @@
           };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # Production module-size guard (#1411): fails when any
+          # production .rs file exceeds 2,500 production lines
+          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR

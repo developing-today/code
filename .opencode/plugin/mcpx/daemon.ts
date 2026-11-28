@@ -576,12 +576,19 @@ export class DaemonClient {
    *
    * @op exec
    */
-  async exec(source: string, session?: string): Promise<ExecResult | undefined> {
+  async exec(source: string, session?: string, signal?: AbortSignal): Promise<ExecResult | undefined> {
     try {
-      return (await this.ops.exec({
-        source,
-        options: { output: "structured", ...(session ? { session } : {}) },
-      })) as ExecResult;
+      return (await this.ops.exec(
+        {
+          source,
+          options: { output: "structured", ...(session ? { session } : {}) },
+        },
+        // PLG-38 (#1940): the host abort signal reaches the daemon request,
+        // so an aborted session cancels the in-flight exec instead of
+        // blocking to completion. The generated client already accepts a
+        // CallOptions.signal; this is the seam that finally passes one.
+        ...(signal ? [{ signal }] : []),
+      )) as ExecResult;
     } catch (err) {
       if (err instanceof OpError && err.status === 404) return undefined;
       throw err;
@@ -1042,6 +1049,12 @@ export const runBin = (
   opts: DiscoverOptions,
   argv: string[],
   timeoutMs = TUNING.cliTimeoutMs,
+  // PLG-38 (#1940): a host abort signal, when given, kills the child as
+  // soon as it fires -- the CLI fallback path honours the same abort the
+  // daemon path threads into its request. Aborted children resolve
+  // undefined (no answer arrived); callers that pass a signal check
+  // signal.aborted themselves to name what happened.
+  signal?: AbortSignal,
 ): Promise<string | undefined> => {
   const env = envOf(opts);
   const bin = opts.bin ?? env.MCPX_PLUGIN_BIN ?? TUNING.bin;
@@ -1052,7 +1065,13 @@ export const runBin = (
       execFile(
         bin,
         [...extra, ...argv],
-        { cwd: opts.directory, timeout: timeoutMs, encoding: "utf8", maxBuffer: TUNING.cliMaxOutput },
+        {
+          cwd: opts.directory,
+          timeout: timeoutMs,
+          encoding: "utf8",
+          maxBuffer: TUNING.cliMaxOutput,
+          ...(signal ? { signal } : {}),
+        },
         (err, stdout, stderr) => {
           const out = String(stdout ?? "").trim();
           const bad = String(stderr ?? "").trim();

@@ -173,6 +173,59 @@ class TestIsCandidate(unittest.TestCase):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
 
 
+class TestIsHandoffParked(unittest.TestCase):
+    """The handoff sink: a handed-off task parked by its claiming
+    lane must surface as a candidate, or it loops claim → handoff →
+    park → re-claim forever (#7907/#6533)."""
+
+    def row(self, **over):
+        r = {
+            "status": "parked",
+            "progress": {
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off"},
+                "session_id": None,
+            },
+            "lane_id": "code-j",
+        }
+        r.update(over)
+        return poll.normalize_row(r)
+
+    def test_parked_handoff_is_candidate(self):
+        self.assertTrue(poll.is_handoff_parked(self.row()))
+        cands = poll.get_parked_candidates([self.row()])
+        self.assertEqual(len(cands), 1)
+
+    def test_parked_launch_failed_yield_is_candidate(self):
+        r = self.row(progress={"lane": "opencode", "stage": "launch_failed"})
+        self.assertTrue(poll.is_handoff_parked(r))
+
+    def test_genuine_wait_park_is_not_candidate(self):
+        # A gated dependency park: stage is the park itself.
+        r = self.row(
+            progress={"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}
+        )
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_parked_bound_row_is_not_candidate(self):
+        r = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": "ses_1",
+            }
+        )
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_claimed_row_is_not_a_parked_candidate(self):
+        r = self.row(status="claimed")
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_parked_openchamber_lane_is_never_candidate(self):
+        r = self.row(lane_id="8d133595-c60c-4dcb-8e82-59b7d0ac9b5a")
+        self.assertFalse(poll.is_handoff_parked(r))
+
+
 class TestParseLeaseMs(unittest.TestCase):
     def test_zulu_lease_parses(self):
         self.assertEqual(

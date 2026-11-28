@@ -1716,8 +1716,22 @@ impl WorldCore {
     /// of each account in its chain. A delegation to a friend stops once the
     /// friendship ends.
     pub(crate) fn effective_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.effective_scopes_seeded(participant_id, WorldScopes::ALL)
+    }
+
+    /// [`Self::effective_scopes`] with a different starting set. Seeding
+    /// with [`WorldScopes::all_recognized`] keeps admin-issued authority
+    /// bits (`BUILDER` / `MODERATOR`) visible to the intersection; the
+    /// public [`Self::effective_scopes`] seeds with [`WorldScopes::ALL`],
+    /// which deliberately excludes them, so no ceiling, delegation, or
+    /// projection path can ever surface them.
+    fn effective_scopes_seeded(
+        &self,
+        participant_id: u64,
+        seed: WorldScopes,
+    ) -> Option<WorldScopes> {
         self.capabilities.get(&participant_id)?;
-        let mut scopes = WorldScopes::ALL;
+        let mut scopes = seed;
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
             scopes = scopes.intersect(record.scopes.implied());
@@ -2306,10 +2320,17 @@ impl WorldCore {
             constant_time_eq(&digest, &record.digest),
             "invalid, revoked, or insufficient world capability"
         );
+        // The authority check must not seed from `ALL`: that set excludes
+        // the admin bits by design, which would make `BUILDER` /
+        // `MODERATOR` unusable through this path. Seed with every
+        // recognized bit instead — the ancestor-chain intersection in
+        // `effective_scopes_seeded` only removes bits, so a required
+        // authority bit survives only when every record in the chain
+        // actually carries it.
         ensure!(
             !record.revoked
                 && self
-                    .effective_scopes(participant_id)
+                    .effective_scopes_seeded(participant_id, WorldScopes::all_recognized())
                     .is_some_and(|scopes| scopes.contains(required)),
             "invalid, revoked, or insufficient world capability"
         );

@@ -1307,13 +1307,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Build router — gossip ALPN is always registered (needed by iroh-docs),
     // but peer discovery gossip topic only joins when gossip is enabled
-    let meta = MetaProtocol::new(
-        &store_handle,
-        Some(peer_discovery.clone()),
-        Arc::clone(&tag_store),
-        access.clone(),
-        node_id,
-    );
     // iroh-blobs rejects pushes unless an event handler enables them; this one
     // allows them only from nodes the access policy lets write.
     let blobs = BlobsProtocol::new(
@@ -1444,6 +1437,29 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(not(feature = "world"))]
     ensure!(!world, "this build has no world support (feature `world`)");
 
+    // The world protocol instance is shared between its ALPN registration and
+    // the meta protocol, which exposes its abuse counters (#4918).
+    #[cfg(feature = "world")]
+    let world_protocol = world_hub
+        .as_ref()
+        .map(|hub| crate::world_net::WorldProtocol::with_local_node(hub.clone(), *node_id.as_bytes()));
+
+    #[cfg(feature = "world")]
+    let abuse_handle = world_protocol
+        .as_ref()
+        .map(crate::world_net::WorldProtocol::abuse_handle);
+    #[cfg(not(feature = "world"))]
+    let abuse_handle: Option<std::sync::Arc<std::sync::Mutex<crate::abuse::AbuseEvaluator>>> = None;
+
+    let meta = MetaProtocol::new(
+        &store_handle,
+        Some(peer_discovery.clone()),
+        Arc::clone(&tag_store),
+        access.clone(),
+        node_id,
+        abuse_handle,
+    );
+
     #[cfg(all(feature = "world", feature = "ssh"))]
     let (ssh_tunnel, ssh_tunnel_port) = crate::world_ssh::SshTunnelProtocol::deferred();
     let router_builder = Router::builder(endpoint)
@@ -1460,12 +1476,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         None => router_builder,
     };
     #[cfg(feature = "world")]
-    let router_builder = match &world_hub {
-        Some(hub) => router_builder
-            .accept(
-                crate::world_net::WORLD_ALPN,
-                crate::world_net::WorldProtocol::new(hub.clone()),
-            )
+    let router_builder = match (world_hub.as_ref(), world_protocol) {
+        (Some(hub), Some(world_protocol)) => router_builder
+            .accept(crate::world_net::WORLD_ALPN, world_protocol)
             .accept(
                 crate::world_replication_net::REPLICATION_ALPN,
                 crate::world_replication_net::WorldReplicationProtocol::new(
@@ -1485,7 +1498,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 crate::artifact::PULL_ALPN,
                 crate::artifact::ArtifactPullProtocol::new(hub.clone()),
             ),
-        None => router_builder,
+        _ => router_builder,
     };
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);

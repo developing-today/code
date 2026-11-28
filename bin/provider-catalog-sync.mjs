@@ -74,7 +74,7 @@ const defineValue = (obj, key, value) => {
 // Provider source table. `modelsDev` is the provider id in models.dev's
 // api.json used as cross-check (null = no meaningful cross-check).
 // ---------------------------------------------------------------------------
-const PROVIDER_SOURCES = {
+export const PROVIDER_SOURCES = {
   // No claude-code / commandcode / antigravity-agy / antigravity-ls
   // / openai-codex entries: their CLI proxies were removed in the
   // 2026-11-06 proxy-infra decommission (claude-code and

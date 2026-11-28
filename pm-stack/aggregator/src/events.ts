@@ -160,6 +160,17 @@ export const EVENT_CHAIN_GENESIS = "0".repeat(64);
 
 const FIELD = /^[\w ./#:@-]+$/;
 
+// Boundary guard (#7740): a writer that raw-sliced actor/summary at the
+// 200/500 caps can hand validateStreamEvent a value whose last code unit
+// is a lone high surrogate (the astral pair was split at the cap and the
+// low half is already gone). Never persist that: drop the dangling half
+// so the stored, hash-chained record round-trips through UTF-8 cleanly.
+function dropLoneTrailingSurrogate(t: string): string {
+  if (t.length === 0) return t;
+  const c = t.charCodeAt(t.length - 1);
+  return c >= 0xd800 && c <= 0xdbff ? t.slice(0, -1) : t;
+}
+
 export function validateStreamEvent(e: unknown): { ok: true; value: StreamEvent } | { ok: false; error: string } {
   if (typeof e !== "object" || e === null) return { ok: false, error: "event must be an object" };
   const v = e as Record<string, unknown>;
@@ -194,10 +205,10 @@ export function validateStreamEvent(e: unknown): { ok: true; value: StreamEvent 
     ok: true,
     value: {
       at: v.at,
-      actor: (v.actor as string).trim(),
+      actor: dropLoneTrailingSurrogate((v.actor as string).trim()),
       kind: (v.kind as string).trim(),
       ref: (v.ref as string).trim(),
-      summary: v.summary.trim(),
+      summary: dropLoneTrailingSurrogate(v.summary.trim()),
     },
   };
 }
@@ -350,7 +361,7 @@ function isAuditEvent(value: unknown): value is AuditEvent {
     typeof v.id === "string" &&
     v.id !== "" &&
     typeof v.ingestedAt === "string" &&
-    Number.isFinite(Date.parse(v.ingestedAt)) &&
+    isIsoDate(v.ingestedAt) &&
     typeof v.prevHash === "string" &&
     typeof v.hash === "string"
   );

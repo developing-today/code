@@ -39,6 +39,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { EventsStore } from "./events.ts";
 import type { TierItem } from "./model.ts";
+import { isIsoDate, isNonNegative } from "./validate.ts";
 
 export type ActivitySourceId = "watchdog" | "kaneo" | "github";
 
@@ -301,10 +302,11 @@ function isGapRecord(v: unknown): v is GapRecord {
   return (
     typeof g.id === "string" &&
     typeof g.source === "string" &&
-    typeof g.from === "string" &&
-    typeof g.to === "string" &&
+    isIsoDate(g.from) &&
+    isIsoDate(g.to) &&
     (g.status === "open" || g.status === "backfilled" || g.status === "unrecoverable") &&
-    typeof g.detectedAt === "string"
+    isIsoDate(g.detectedAt) &&
+    (g.resolvedAt === undefined || isIsoDate(g.resolvedAt))
   );
 }
 
@@ -314,10 +316,12 @@ function isCheckpoint(v: unknown): v is SourceCheckpoint {
   return (
     typeof c.source === "string" &&
     (c.lastSourceId === null || typeof c.lastSourceId === "string") &&
-    (c.lastEventAt === null || typeof c.lastEventAt === "string") &&
+    (c.lastEventAt === null || isIsoDate(c.lastEventAt)) &&
+    isNonNegative(c.deliveries) &&
     Number.isInteger(c.deliveries) &&
+    isNonNegative(c.duplicates) &&
     Number.isInteger(c.duplicates) &&
-    typeof c.updatedAt === "string"
+    isIsoDate(c.updatedAt)
   );
 }
 

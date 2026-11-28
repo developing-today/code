@@ -211,21 +211,69 @@ function pctWindows(entry: QuotaCurrentEntry): QuotaWindow[] {
     }));
 }
 
-function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState): boolean {
+/**
+ * The gatherer leg error for an entry's provider, from the tick's
+ * heartbeat (#6942): a retained entry is preserved verbatim with no
+ * error field (markRetained in quota-gather-map.ts), so when the leg
+ * that produced it errored, the heartbeat's perProvider record —
+ * keyed by run id, matched here on the entry's providerId with its
+ * serviceId as fallback — is the only place the error text survives.
+ */
+function legErrorFor(file: QuotaCurrentFile, entry: QuotaCurrentEntry): string | undefined {
+  const perProvider = file.heartbeat?.perProvider;
+  if (!perProvider) return undefined;
+  const leg = perProvider[entry.providerId] ?? perProvider[entry.serviceId];
+  return leg && leg.state === "error" && leg.error ? safeProviderReason(leg.error) : undefined;
+}
+
+/**
+ * #6942: a pool with no windows of its own (a shell pool — its dated
+ * windows exist only in the read entry) takes the entry's dated
+ * windows on the stale/error path, percentages identical to the
+ * read. A pool carrying its own dated windows is untouched: those
+ * win over the gatherer entry's, as pinned for spec pools. The
+ * shell pool's "no read" note is written against a read that never
+ * landed; when the entry does carry a dated read, the note
+ * contradicts the read and is suppressed.
+ */
+function adoptEntryWindows(pool: QuotaPool, entry: QuotaCurrentEntry): void {
+  if (pool.windows.length > 0) return;
+  const windows = pctWindows(entry);
+  if (windows.length === 0) return;
+  pool.windows = windows;
+  if (pool.note && /no (dated|current) read/i.test(pool.note)) delete pool.note;
+}
+
+function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
     measuredAt: entry.measuredAt,
     source: entry.source,
     state,
   };
-  if (state === "error") freshness.error = errorText(entry);
+  if (state === "error") freshness.error = !entry.error && legError ? legError : errorText(entry);
   pool.freshness = freshness;
   if (state === "error") {
     pool.state = "error";
+    adoptEntryWindows(pool, entry);
     return false;
   }
   if (state === "stale") {
+    // #6942: a retained entry whose gatherer leg errored is that
+    // read error surfacing, not mere staleness — but only a pool
+    // with no dated windows of its own changes rendering for it.
+    // Spec pools keep the #1268 stale classification and their
+    // base dated windows exactly as pinned.
+    if (legError && entry.retainedFromFailedTick && pool.windows.length === 0) {
+      freshness.state = "error";
+      freshness.error = legError;
+      pool.freshness = freshness;
+      pool.state = "error";
+      adoptEntryWindows(pool, entry);
+      return false;
+    }
     pool.state = "stale";
+    adoptEntryWindows(pool, entry);
     return false;
   }
   const windows = pctWindows(entry);
@@ -371,7 +419,7 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
       return pool;
     }
     const newest = [...entries].sort(newestFirst(nowMs))[0];
-    applyEntry(pool, newest, entryState(newest, nowMs));
+    applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest));
     return pool;
   });
 
@@ -405,7 +453,7 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
     } else {
-      applyEntry(pool, newest, entryState(newest, nowMs));
+      applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest));
     }
     synthesized.push(pool);
   }

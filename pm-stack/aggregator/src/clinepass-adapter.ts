@@ -56,11 +56,20 @@ const WINDOW_KINDS = new Map<string, { key: string; windowSeconds: number | null
 
 const clampPercent = (value: number): number => Math.min(100, Math.max(0, value));
 
+// Plain decimal spellings only (#3005 field form, closing audit
+// task 4350 / issue #3006). Number() also accepts "", whitespace-
+// padded, hex ("0x10" -> 16), and scientific ("1e2" -> 100) strings,
+// which would turn a drifted provider field into a real measurement;
+// reject every non-decimal spelling so drift reads as not-a-reading.
+// The sign stays: this gate's domain admits negatives (clamped by
+// clampPercent), like aa.ts's PLAIN_DECIMAL.
+const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+
 /** percentUsed as the provider reads it: a finite number, or a
- *  non-empty numeric string; anything else is not a reading. */
+ * plain-decimal string; anything else is not a reading. */
 function percentUsedOf(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string" && value.trim() !== "") {
+  if (typeof value === "string" && PLAIN_DECIMAL.test(value)) {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }

@@ -31,3 +31,12 @@ jobs:
       # laptop timer; CI must not pretend it can read the laptop's database.
       - name: Run opencode-go seating fixtures
         run: node --test bin/check-opencode-go-seating.test.mjs
+      - name: Run provider-catalog audit fixtures
+        run: node --test bin/provider-catalog-sync.test.mjs bin/provider-catalog-snapshot.test.mjs
+      # #1173: the offline snapshot handoff and the route-rule audit are
+      # validated on every PR, so implementation-only changes to either
+      # cannot land unexercised.
+      - name: Run route-rule guard fixtures
+        run: node --test bin/check-opencode-route-rules.test.mjs
+      - name: Check canonical route rules
+        run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc

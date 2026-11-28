@@ -3928,6 +3928,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "rust-embed",
+ "rustls",
  "rustyline",
  "scrypt",
  "serde",
@@ -3939,6 +3940,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tigerbeetle",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml",
  "tower",
@@ -3952,6 +3954,7 @@ dependencies = [
  "vt100",
  "wasmtime",
  "wat",
+ "webpki-roots",
  "zeroize",
 ]
 

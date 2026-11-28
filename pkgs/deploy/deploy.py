@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""deploy — the deployment-architecture CLI (issue #5766, slices 1-2).
+"""deploy — the deployment-architecture CLI (issue #5766, slices 1-3).
 
 Slice 1 ships the registry foundation:  enumerates the
  registry (name, class, targets) after validating every
 definition against the design §3 option shape
 (doc/2026-11-04_deployment-architecture-services-layer.md).
 
-Slice 2 adds the command logic that does not itself activate anything:
+Slice 2 added the command logic that does not itself activate anything:
 
 - systemd unit rendering (and a launchd plist stub) from a definition:
   the unit's ExecStart points at the service's per-service nix profile
@@ -21,10 +21,17 @@ Slice 2 adds the command logic that does not itself activate anything:
   timestamp, actor).  folds the log into
   current/previous generations and reports health;  selects
   the previous distinct generation — repointing, never rebuilding.
-- Real activation (nix-env profile install, systemctl restart,
-  health-check flip-back) is the next slice of issue #5766: the
-  non-dry-run deploy/rollback paths say so and exit non-zero rather
-  than pretending to have activated something.
+- Slice 3 adds real activation for the systemd class: installing a
+  generation into the per-service profile (a deploy-managed profile
+  link whose generation directories hold a `current` symlink at the
+  artifact; store-path artifacts are additionally registered with
+  `nix-env --set` on a parallel nix profile), writing the unit,
+  daemon-reload, restarting only that unit, running the health
+  check, and flipping the profile back to the previous generation
+  (and restarting on it) on any failure. Rollback is the same
+  machinery pointed at the previous distinct generation. The
+  launchd real path still refuses explicitly: it cannot be exercised
+  from the Linux fleet and stays a rendering/planning stub.
 
 The registry is JSON baked into the package at build time (the Nix
 expression renders the attrset definitions, replacing each 
@@ -33,7 +40,11 @@ points the CLI at another registry file, which is how the flake checks
 exercise the malformed-definition path. `--state-dir PATH` (or
 $DEPLOY_STATE_DIR) relocates the generation logs, `--profile-base PATH`
 (or $DEPLOY_PROFILE_BASE) the per-service profile root; both exist so
-tests and dry runs never touch the real profile tree.
+tests and dry runs never touch the real profile tree. Slice 3 adds
+`--unit-dir PATH` (or $DEPLOY_UNIT_DIR) for the rendered unit's home
+and `--scope system|user` (or $DEPLOY_SCOPE, default system) selecting
+the systemctl scope; user scope exists so the laptop E2E acceptance
+can deploy a harmless service without root.
 
 The validation below is the oracle for "well-formed definition": a
 definition is valid iff it carries exactly the §3 fields (plus ),
@@ -47,7 +58,9 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -560,12 +573,253 @@ def format_status(name, defn, entries, health=None):
     return "\n".join(lines)
 
 
+
+# --- Real activation (slice 3) -------------------------------------------
+#
+# Oracle: design §4.1 plan order, as printed by plan_deploy /
+# plan_rollback: install the generation into the profile, write the
+# unit, daemon-reload, restart only that unit, run the health check,
+# flip back on any failure. The profile is deploy-managed: the
+# profile link <base>/<name> points at a generation directory
+# <base>/.generations/<name>/<id>/ whose `current` symlink names the
+# artifact, so the rendered unit's <link>/current/<entryPoint> path
+# resolves and a flip is one atomic symlink repoint — the same shape
+# nix-env gives a profile, kept deploy-owned because the unit path
+# goes through `current`. Store-path artifacts are additionally
+# registered with nix-env --set on a parallel profile
+# (<base>/<name>.nix-env-profile) so the generation also exists in
+# nix's own profile bookkeeping. Every external effect goes through
+# run_cmd / write_text / probe_health, which the slice-3 tests
+# replace with fakes: the order asserted there is the plan order.
+
+
+class ActivationError(Exception):
+    """A step of the activation plan failed; the caller flips back."""
+
+
+def run_cmd(argv):
+    """Run one external command; return (returncode, stdout, stderr).
+    A missing binary is a failed step (127), never a crash."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, "", f"{argv[0]}: {exc}"
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def write_text(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def systemctl_argv(scope, *args):
+    if scope == "user":
+        return ["systemctl", "--user", *args]
+    return ["systemctl", *args]
+
+
+def unit_dir(explicit=None, scope="system"):
+    if explicit:
+        return explicit
+    env = os.environ.get("DEPLOY_UNIT_DIR")
+    if env:
+        return env
+    if scope == "user":
+        return os.path.expanduser("~/.config/systemd/user")
+    return "/etc/systemd/system"
+
+
+def _run_step(argv, what):
+    rc, _out, err = run_cmd(argv)
+    if rc != 0:
+        raise ActivationError(f"{what} failed (exit {rc}): {err.strip()}")
+
+
+def install_generation(name, artifact, generation, base=None):
+    """Point the profile link for `name` at a new generation dir
+    whose `current` symlink names `artifact`. Returns the link path."""
+    base_dir = profile_base(base)
+    gen_dir = os.path.join(base_dir, ".generations", name, str(generation))
+    os.makedirs(gen_dir, exist_ok=True)
+    current = os.path.join(gen_dir, "current")
+    if os.path.islink(current) or os.path.exists(current):
+        os.unlink(current)
+    os.symlink(artifact, current)
+    if artifact.startswith("/nix/store/") and _which("nix-env"):
+        _run_step(
+            ["nix-env", "--profile",
+             os.path.join(base_dir, f"{name}.nix-env-profile"),
+             "--set", artifact],
+            "nix-env profile install",
+        )
+    link = profile_link(name, base)
+    tmp = f"{link}.tmp-{os.getpid()}"
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.unlink(tmp)
+    os.symlink(gen_dir, tmp)
+    os.replace(tmp, link)
+    return link
+
+
+def _which(tool):
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if os.path.exists(os.path.join(entry, tool)):
+            return True
+    return False
+
+
+def repoint_profile(name, artifact, generation, base=None):
+    """Flip the profile link back/forward to an existing artifact
+    (rollback and flip-back share this: a repoint, never a rebuild)."""
+    return install_generation(name, artifact, generation, base)
+
+
+def wait_health(url, attempts=10, interval=0.5):
+    """Probe the health check until it passes or attempts run out."""
+    detail = "not probed"
+    for attempt in range(attempts):
+        ok, detail = probe_health(url)
+        if ok:
+            return True, detail
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    return False, detail
+
+
+def _activate(name, defn, *, artifact, generation, base, state, scope,
+              units, action, actor):
+    """Shared tail of deploy/rollback: unit write, daemon-reload,
+    restart, health check. Raises ActivationError on any failure."""
+    if defn["class"] != "systemd":
+        raise ActivationError(
+            f"real activation for class {defn['class']!r} is not implemented "
+            "in this slice (systemd only; launchd remains a rendering stub)"
+        )
+    write_text(os.path.join(units, unit_name(name)),
+               render_unit(name, defn, base))
+    _run_step(systemctl_argv(scope, "daemon-reload"), "daemon-reload")
+    _run_step(systemctl_argv(scope, "restart", unit_name(name)),
+              f"restart of {unit_name(name)}")
+    if defn["healthCheck"] is not None:
+        ok, detail = wait_health(defn["healthCheck"])
+        if not ok:
+            raise ActivationError(f"health check failed: {detail}")
+
+
+def _flip_back(name, defn, *, previous, base, scope, units):
+    """Restore the previous generation after a failed activation and
+    restart on it; with no previous generation, stop the unit. Never
+    raises: a flip-back failure is an outcome to record, not a crash
+    that loses the failure entry (found by the slice-3 laptop E2E:
+    a broken unit restart-loops into systemd's start limit, so the
+    flip-back restart needs a reset-failed first)."""
+    if previous is None:
+        run_cmd(systemctl_argv(scope, "stop", unit_name(name)))
+        link = profile_link(name, base)
+        if os.path.islink(link):
+            os.unlink(link)
+        return "stopped (no previous generation)"
+    try:
+        repoint_profile(name, previous["artifact"], previous["generation"],
+                        base)
+        run_cmd(systemctl_argv(scope, "reset-failed", unit_name(name)))
+        _run_step(systemctl_argv(scope, "restart", unit_name(name)),
+                  f"restart of {unit_name(name)} on flip-back")
+    except ActivationError as exc:
+        return (f"flip-back to generation {previous['generation']} "
+                f"INCOMPLETE: {exc}")
+    return f"flipped back to generation {previous['generation']}"
+
+
+def execute_deploy(name, defn, entries, *, base=None, state=None,
+                   scope="system", units=None, actor=None):
+    """Real (non-dry-run) deploy, in plan_deploy's order. Returns
+    (exit_code, lines). On failure the profile is flipped back to the
+    previously current generation and a non-folding failure entry is
+    appended to the generation log (action deploy_failed, so
+    current_previous never mistakes it for an activation)."""
+    actor = actor or getpass.getuser()
+    units = units if units is not None else unit_dir(scope=scope)
+    current, _prev = current_previous(entries)
+    generation = next_generation_id(entries)
+    artifact = defn["package"]
+    lines = []
+    try:
+        install_generation(name, artifact, generation, base)
+        lines.append(f"installed generation {generation} into the profile "
+                     f"{profile_link(name, base)}")
+        _activate(name, defn, artifact=artifact, generation=generation,
+                  base=base, state=state, scope=scope, units=units,
+                  action="deploy", actor=actor)
+    except ActivationError as exc:
+        outcome = _flip_back(name, defn, previous=current, base=base,
+                             scope=scope, units=units)
+        record_generation(name, artifact=artifact, source_rev=_source_rev(),
+                          actor=actor, action="deploy_failed",
+                          generation=generation,
+                          result=f"failed: {exc}; {outcome}",
+                          explicit_state=state)
+        lines.append(f"deploy {name}: FAILED: {exc}; {outcome}")
+        return 1, lines
+    entry = record_generation(name, artifact=artifact,
+                              source_rev=_source_rev(), actor=actor,
+                              action="deploy", generation=generation,
+                              result="activated", explicit_state=state)
+    lines.append(f"deploy {name}: generation {entry['generation']} activated "
+                 f"(artifact {artifact})")
+    return 0, lines
+
+
+def execute_rollback(name, defn, entries, *, base=None, state=None,
+                     scope="system", units=None, actor=None):
+    """Real rollback: repoint at the previous distinct generation and
+    restart on it (design §4.1/§4.6 — never a rebuild). On health
+    failure, flip back to the generation that was current."""
+    actor = actor or getpass.getuser()
+    units = units if units is not None else unit_dir(scope=scope)
+    current, previous = current_previous(entries)
+    if current is None or previous is None:
+        _steps, error = plan_rollback(name, defn, entries, base)
+        return 1, [f"deploy: {error}"]
+    lines = []
+    try:
+        repoint_profile(name, previous["artifact"], previous["generation"],
+                        base)
+        _activate(name, defn, artifact=previous["artifact"],
+                  generation=previous["generation"], base=base, state=state,
+                  scope=scope, units=units, action="rollback", actor=actor)
+    except ActivationError as exc:
+        outcome = _flip_back(name, defn, previous=current, base=base,
+                             scope=scope, units=units)
+        record_generation(name, artifact=previous["artifact"],
+                          source_rev=_source_rev(), actor=actor,
+                          action="rollback_failed",
+                          generation=previous["generation"],
+                          result=f"failed: {exc}; {outcome}",
+                          explicit_state=state)
+        lines.append(f"deploy {name} rollback: FAILED: {exc}; {outcome}")
+        return 1, lines
+    record_generation(name, artifact=previous["artifact"],
+                      source_rev=_source_rev(), actor=actor,
+                      action="rollback", generation=previous["generation"],
+                      result="rolled-back", explicit_state=state)
+    lines.append(f"deploy {name}: rolled back to generation "
+                 f"{previous['generation']} (artifact {previous['artifact']})")
+    return 0, lines
+
+
+def _source_rev():
+    return os.environ.get("DEPLOY_SOURCE_REV") or "working-tree"
+
+
+
 # --- Command dispatch ------------------------------------------------------
 
 NOT_IMPLEMENTED = (
-    "real activation (nix profile install + service restart + health-check "
-    "flip-back) is the next slice of issue #5766; slice 2 ships rendering, "
-    "--dry-run plans, the generation log, and status/rollback logic — "
+    "real activation for this class is not implemented in this slice; "
+    "slice 3 implements real systemd activation (profile install + unit "
+    "write + daemon-reload + restart + health-check flip-back) — "
     "no changes were made"
 )
 
@@ -585,7 +839,8 @@ def main(argv):
         flag = next(
             (
                 f
-                for f in ("--registry", "--state-dir", "--profile-base")
+                for f in ("--registry", "--state-dir", "--profile-base",
+                          "--unit-dir", "--scope")
                 if arg == f or arg.startswith(f + "=")
             ),
             None,
@@ -605,11 +860,19 @@ def main(argv):
         registry_path = flag_values["--registry"]
     explicit_state = flag_values.get("--state-dir")
     explicit_base = flag_values.get("--profile-base")
+    explicit_units = flag_values.get("--unit-dir")
+    scope = flag_values.get("--scope") or os.environ.get("DEPLOY_SCOPE") \
+        or "system"
+    if scope not in ("system", "user"):
+        print(f"deploy: --scope must be system or user, got {scope!r}",
+              file=sys.stderr)
+        return 2
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
     usage = (
-        "usage: deploy [--registry PATH] [--state-dir PATH] list | "
-        "<target> [rollback|status] [--dry-run]"
+        "usage: deploy [--registry PATH] [--state-dir PATH] "
+        "[--profile-base PATH] [--unit-dir PATH] [--scope system|user] "
+        "list | <target> [rollback|status] [--dry-run]"
     )
     if not args:
         print(__doc__.splitlines()[0], file=sys.stderr)
@@ -670,8 +933,16 @@ def main(argv):
             )
             return 2
         if not dry_run:
-            print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
-            return 2
+            if defn["class"] != "systemd":
+                print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
+                return 2
+            code, lines = execute_deploy(
+                name, defn, entries, base=explicit_base,
+                state=explicit_state, scope=scope,
+                units=unit_dir(explicit_units, scope))
+            for line in lines:
+                print(line, file=sys.stderr if code else sys.stdout)
+            return code
         print(f"deploy {name} --dry-run: no changes made")
         for i, step in enumerate(steps, 1):
             print(f"  {i}. {step}")
@@ -682,8 +953,16 @@ def main(argv):
         print(f"deploy: {error}", file=sys.stderr)
         return 1
     if not dry_run:
-        print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
-        return 2
+        if defn["class"] != "systemd":
+            print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
+            return 2
+        code, lines = execute_rollback(
+            name, defn, entries, base=explicit_base,
+            state=explicit_state, scope=scope,
+            units=unit_dir(explicit_units, scope))
+        for line in lines:
+            print(line, file=sys.stderr if code else sys.stdout)
+        return code
     print(f"deploy {name} rollback --dry-run: no changes made")
     for i, step in enumerate(steps, 1):
         print(f"  {i}. {step}")

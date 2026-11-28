@@ -332,6 +332,34 @@ fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     provided.map(|v| v == expected).unwrap_or(false)
 }
 
+/// Pre-body gate for the broker transports (#6515, PR #6514 thread
+/// 4492609604). Oracle: an unauthorized or oversized request is
+/// refused from its headers alone, before a single body byte is
+/// read. Returns the refusal to send, or `None` to proceed to the
+/// body. The only unauthenticated route is the health probe,
+/// mirroring `handle_request`.
+fn pre_body_refusal(
+    method: &str,
+    target: &str,
+    provided_token: Option<&str>,
+    token: &str,
+    content_length: Option<u64>,
+) -> Option<(u16, Value)> {
+    let path = target.split('?').next().unwrap_or("");
+    if method == "GET" && path == "/health" {
+        return None;
+    }
+    if !token_matches(provided_token, token) {
+        return Some((401, json!({"error": "unauthorized"})));
+    }
+    if let Some(n) = content_length {
+        if n > crate::uds_http::MAX_BODY_BYTES as u64 {
+            return Some((413, json!({"error": "request body too large"})));
+        }
+    }
+    None
+}
+
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
 /// tiny_http requests to this function and the UDS loop adapts
 /// Unix-socket requests; routes and auth are identical on both
@@ -398,6 +426,7 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
+    use std::io::Read as _;
     let bind =
         std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
     let home = crate::home::from_env().unwrap_or_else(|error| {
@@ -427,14 +456,12 @@ pub fn run() -> i32 {
     // and a failed refresh keeps the old values).
     {
         let state = Arc::clone(&state);
-        std::thread::spawn(move || {
-            loop {
-                match refresh(&state) {
-                    Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
-                    Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
-                }
-                std::thread::sleep(Duration::from_secs(ttl_s));
+        std::thread::spawn(move || loop {
+            match refresh(&state) {
+                Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
+                Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
             }
+            std::thread::sleep(Duration::from_secs(ttl_s));
         });
     }
 
@@ -459,19 +486,42 @@ pub fn run() -> i32 {
                 &format!("listening on uds {}", socket_path.display()),
             );
             std::thread::spawn(move || {
-                crate::uds_http::serve(listener, move |req| {
-                    let (status, value) = handle_request(
-                        &st,
-                        &tok,
-                        &req.method,
-                        &req.target,
-                        req.header("X-Agent-Token"),
-                    );
-                    (
-                        status,
-                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                    )
-                });
+                let pre_tok = tok.clone();
+                crate::uds_http::serve_with_precheck(
+                    listener,
+                    move |head| {
+                        // #6515: same pre-body gate as the TCP loop.
+                        let content_length = head
+                            .header("Content-Length")
+                            .and_then(|v| v.parse::<u64>().ok());
+                        pre_body_refusal(
+                            &head.method,
+                            &head.target,
+                            head.header("X-Agent-Token"),
+                            &pre_tok,
+                            content_length,
+                        )
+                        .map(|(status, value)| {
+                            (
+                                status,
+                                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                            )
+                        })
+                    },
+                    move |req| {
+                        let (status, value) = handle_request(
+                            &st,
+                            &tok,
+                            &req.method,
+                            &req.target,
+                            req.header("X-Agent-Token"),
+                        );
+                        (
+                            status,
+                            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                        )
+                    },
+                );
             });
         }
         Ok(None) => crate::log::info(
@@ -497,11 +547,37 @@ pub fn run() -> i32 {
                 .iter()
                 .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
                 .map(|h| h.value.as_str().to_string());
+            // #6515: authenticate and size-check from the headers
+            // before draining any body byte (tiny_http 0.12 exposes
+            // no per-connection read timeout; see queue_broker).
+            let content_length = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
+                .and_then(|h| h.value.as_str().parse::<u64>().ok());
+            if let Some((status, value)) = pre_body_refusal(
+                req.method().as_str(),
+                &url,
+                provided.as_deref(),
+                &token,
+                content_length,
+            ) {
+                let _ = req.respond(json_response(status, value));
+                return;
+            }
             if req.method().as_str() == "POST" {
                 // POST /refresh's body is ignored by the handler;
-                // drain it as the pre-#6216 loop did.
-                let mut buf = String::new();
-                let _ = req.as_reader().read_to_string(&mut buf);
+                // drain it (capped, #6515) as the pre-#6216 loop did.
+                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
+                let mut buf = Vec::new();
+                let _ = req.as_reader().take(cap).read_to_end(&mut buf);
+                if buf.len() > crate::uds_http::MAX_BODY_BYTES {
+                    let _ = req.respond(json_response(
+                        413,
+                        json!({"error": "request body too large"}),
+                    ));
+                    return;
+                }
             }
             let (status, value) = handle_request(
                 &state,
@@ -541,7 +617,33 @@ fn url_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{State, fetch_through_with, parse_list_entries, resolve_list_id, url_decode};
+    use super::{
+        fetch_through_with, parse_list_entries, pre_body_refusal, resolve_list_id, url_decode,
+        State,
+    };
+
+    #[test]
+    fn pre_body_refusal_decides_from_headers_alone() {
+        // #6515 oracle (thread 4492609604): the gate's answer
+        // depends only on method/target/token/declared length —
+        // never on body bytes — so an unauthorized or oversized
+        // request is refused before its body is read.
+        let over = crate::uds_http::MAX_BODY_BYTES as u64 + 1;
+        assert_eq!(
+            pre_body_refusal("POST", "/refresh", None, "tok", Some(over)).map(|r| r.0),
+            Some(401)
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/refresh", Some("tok"), "tok", Some(over)).map(|r| r.0),
+            Some(413)
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/refresh", Some("tok"), "tok", Some(0)),
+            None
+        );
+        // The health probe stays unauthenticated, as in handle_request.
+        assert_eq!(pre_body_refusal("GET", "/health", None, "tok", None), None);
+    }
     use proptest::prelude::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -431,7 +431,14 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
+    Ok(finish_router(
+        state,
+        security,
+        world,
+        cookie_secure,
+        None,
+        groups_log,
+    ))
 }
 
 /// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
@@ -460,7 +467,14 @@ pub async fn web_router_with_local_events(
         local_events,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
+    Ok(finish_router(
+        state,
+        security,
+        world,
+        cookie_secure,
+        None,
+        groups_log,
+    ))
 }
 
 /// Build one router per listener security over a SINGLE shared

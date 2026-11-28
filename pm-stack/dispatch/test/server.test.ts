@@ -69,7 +69,7 @@ function sessionsRequest(token: string, body: Record<string, unknown>): Request 
 // (the exact orphan class #4917 tracks; baseline runs of this file
 // filed #4937/#4938). Issue-creation and failure-compensation behaviour
 // is covered hermetically by launch_failure.test.ts stubs.
-const base = { repo: "developing-today/code", prompt: "do the thing", issue: false };
+const base = { repo: "developing-today/code", prompt: "fix the pm-dispatch session request minimum spec gate", issue: false };
 
 describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   test("OIDC + foreign directory is rejected with 400 before any side effect", async () => {

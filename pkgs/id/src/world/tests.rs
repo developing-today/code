@@ -6668,9 +6668,16 @@ mod schedule_tests {
             WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
         core.ledger
             .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
-        let (_, token) = core
+        let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
+        // Production issuance goes through the actor, which journals the
+        // `Issued` entry as it mints (`record_issued`). Minting directly on
+        // the core must record the same entry: without it the journal uses
+        // the participant before it was issued -- a state no live path can
+        // write, and restore refuses it (#2894).
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.0.lock().unwrap().push(issued);
         let program = Scheduler {
             refuse_fires,
             ..Scheduler::default()

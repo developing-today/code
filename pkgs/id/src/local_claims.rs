@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::tag_claims::{LocalClaim, TagError, TagScope, check_text, MAX_NAME_BYTES, MAX_VALUE_BYTES};
+use crate::tag_claims::{
+    LocalClaim, MAX_NAME_BYTES, MAX_VALUE_BYTES, TagError, TagScope, check_text,
+};
 use crate::waiting::AuthorKey;
 
 /// The file local claims live in, under the event store's directory.
@@ -121,7 +123,9 @@ impl LocalClaims {
     pub fn matching(&self, name: &str, value: Option<&str>) -> Vec<LocalClaim> {
         self.claims
             .values()
-            .filter(|claim| claim.name == name && value.is_none_or(|want| claim.value.as_deref() == Some(want)))
+            .filter(|claim| {
+                claim.name == name && value.is_none_or(|want| claim.value.as_deref() == Some(want))
+            })
             .cloned()
             .collect()
     }
@@ -145,7 +149,9 @@ impl LocalClaims {
                 Some(text) => check_text("value", text, 0, MAX_VALUE_BYTES),
                 None => Ok(()),
             })
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?;
         let id = LocalClaim::id_for(author, &subject, name, value);
         let claim = LocalClaim {
             id,
@@ -168,7 +174,12 @@ impl LocalClaims {
     /// # Errors
     ///
     /// Fails if the file cannot be written.
-    pub fn clear(&mut self, author: &AuthorKey, subject: Hash, name: &str) -> std::io::Result<usize> {
+    pub fn clear(
+        &mut self,
+        author: &AuthorKey,
+        subject: Hash,
+        name: &str,
+    ) -> std::io::Result<usize> {
         let before = self.claims.len();
         self.claims.retain(|_, claim| {
             !(claim.subject == subject && claim.name == name && claim.author == *author)
@@ -330,7 +341,9 @@ mod tests {
         let dir = temp_dir("roundtrip");
         let id = {
             let mut store = LocalClaims::open(&dir).unwrap();
-            store.set(&author(1), subject(2), "city", Some("Oslo")).unwrap()
+            store
+                .set(&author(1), subject(2), "city", Some("Oslo"))
+                .unwrap()
         };
         let store = LocalClaims::open(&dir).unwrap();
         let claims = store.on_subject(&subject(2));

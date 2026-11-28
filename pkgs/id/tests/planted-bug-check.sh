@@ -24,6 +24,7 @@ REPO_ROOT="$(git -C "$ID_DIR" rev-parse --show-toplevel)"
 MUTATED_FILES=(
   "pkgs/id/crates/id-core/src/membership/layer.rs"
   "pkgs/id/crates/id-core/src/membership/frontier.rs"
+  "pkgs/id/src/groups/delegation.rs"
 )
 
 restore() {
@@ -44,6 +45,7 @@ cd "$ID_DIR"
 # engine; the frontier unit tests pin the mapping directly and the membership
 # suites exercise it through the layer.
 SUITES_voiding_authority="cargo test --test voiding_scenarios --test voiding_properties"
+SUITES_delegation_voiding="cargo test --test delegation_voiding_scenarios"
 SUITES_frontier_mapping="cargo test -p id-core --lib membership::frontier && cargo test --test membership_properties --test membership_scenarios"
 
 run_suites() {
@@ -52,7 +54,7 @@ run_suites() {
 }
 
 echo "== baseline: all suites must pass unmutated =="
-if ! run_suites "$SUITES_voiding_authority && $SUITES_frontier_mapping" /tmp/planted-bug-baseline.log; then
+if ! run_suites "$SUITES_voiding_authority && $SUITES_frontier_mapping && $SUITES_delegation_voiding" /tmp/planted-bug-baseline.log; then
   echo "planted-bug-check: BASELINE RED — suites fail without any mutation; see /tmp/planted-bug-baseline.log" >&2
   exit 2
 fi
@@ -84,12 +86,20 @@ check_mutation() {
 # these suites, because voiding_scenarios / voiding_properties exercise
 # authority voiding through the event store and contain no
 # delegation-grant coverage, so nothing in them reaches Engine::void.
-# The plant therefore lives here, in the exercised path; grant-voiding
-# scenarios reaching Engine::void remain a separate, still-open gap.
+# The plant therefore lives here, in the exercised path. Grant-voiding
+# scenarios reaching Engine::void were the separate gap #7071; they now
+# exist (delegation_voiding_scenarios) and carry their own plant below.
 check_mutation "voiding-authority" "$PATCH_DIR/voiding-authority.patch" "$SUITES_voiding_authority"
 # frontier-mapping: a group operation no longer contributes itself to the
 # auth frontier (the mapping test in CausalIndex::combine is inverted).
 check_mutation "frontier-mapping" "$PATCH_DIR/frontier-mapping.patch" "$SUITES_frontier_mapping"
+# delegation-voiding: the strong-removal gate at Engine::void in
+# src/groups/delegation.rs is inverted, so a grant concurrent with its
+# grantor's removal stands under strong remove and is voided under weak
+# remove — exactly backwards (design §6.2/§6.3). The delegation_voiding
+# scenarios judge a grant, its grantor's concurrent removal, and the
+# grantee's onward operation through the groups fold (#7071).
+check_mutation "delegation-voiding" "$PATCH_DIR/delegation-voiding.patch" "$SUITES_delegation_voiding"
 
 if [ "$failed" -ne 0 ]; then
   exit 1

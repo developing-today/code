@@ -99,8 +99,13 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: int, skips: List[Dict]) -> None:
-    """Append a fire log entry to fires.jsonl."""
+def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+    """Append a fire log entry to fires.jsonl.
+
+    cap_room is the measured available-slot count, or None when the
+    fire exited before the cap step ran (#7732): null means unknown,
+    never a placeholder 0, which would read as a saturated fleet.
+    """
     ensure_state_dir()
     
     fire_entry = {
@@ -263,28 +268,34 @@ def supervision_step(mode: str) -> List[Dict]:
                     # Session is gone or stuck - check if recovery is possible
                     # Check task attempts and lease
                     if task.get("attempts", 0) < task.get("max_attempts", 5):
-                        # Verify zero messages first
-                        try:
-                            messages_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}/messages"],
-                                capture_output=True,
-                                text=True
-                            )
+                        # Only an expired lease is recoverable: a live
+                        # lease is still owned by a worker that may be
+                        # executing, and recovery would double-launch
+                        # over it. An unreadable lease is not expired
+                        # (poll.py's rule: never act on a fact we lack).
+                        lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                        if lease_ms is None or lease_ms > int(time.time() * 1000):
+                            continue
 
-                            if messages_response.returncode == 0:
-                                messages = json.loads(messages_response.stdout or "[]")
-                                if isinstance(messages, dict) and "data" in messages:
-                                    messages = messages["data"]
-                                if isinstance(messages, list) and len(messages) == 0:
-                                    recovery_candidates.append({
-                                        "task_id": task["id"],
-                                        "session_id": session_id,
-                                        "reason": "zero_message"
-                                    })
-                        except Exception:
-                            # Could not read messages - treat as unknown state
-                            pass
+                        # Verify zero messages first. An unreadable
+                        # session is UNKNOWN, never empty: only a
+                        # confirmed [] may be deleted and rebound, or a
+                        # session that actually had messages gets
+                        # deleted and its task relaunched (#3026).
+                        messages = _get_messages(session_id)
+                        if messages is None:
+                            print(
+                                f"Supervision: message read for session "
+                                f"{session_id} was unknown; leaving task "
+                                f"{task['id']} bound"
+                            )
+                            continue
+                        if len(messages) == 0:
+                            recovery_candidates.append({
+                                "task_id": task["id"],
+                                "session_id": session_id,
+                                "reason": "zero_message"
+                            })
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
     
@@ -386,20 +397,27 @@ def _post_prompt(session_id: str, prompt: str) -> bool:
 
 def _get_messages(session_id: str) -> Optional[List]:
     """The session's message list, or None when it cannot be read
-    (transport failure, non-JSON body, error object): an unreadable
-    session is an UNKNOWN delivery state, never an empty one."""
+    (transport failure, non-2xx status, non-JSON body, error object,
+    or any body without a list of messages): an unreadable session
+    is an UNKNOWN delivery state, never an empty one.
+
+    The v2 endpoint is /message, not /messages: on the standing
+    server the latter 404s with an empty body, which without -f used
+    to parse as [] and turn every unknown read into "zero messages"
+    (#3026). -f makes that non-2xx a failure and strict parsing keeps
+    an empty or error body from masquerading as a confirmed list."""
     try:
         result = subprocess.run(
-            ["curl", "-s", "-m", "5", *_auth_header_args(),
-             f"{OPENCODE_URL}/api/session/{session_id}/messages"],
+            ["curl", "-s", "-f", "-m", "5", *_auth_header_args(),
+             f"{OPENCODE_URL}/api/session/{session_id}/message"],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
             return None
-        data = json.loads(result.stdout or "[]")
-        if isinstance(data, dict) and "data" in data:
-            data = data["data"]
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            data = data.get("data")
         return data if isinstance(data, list) else None
     except Exception:
         return None
@@ -422,6 +440,62 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
     if len(messages) > 0:
         return True
     return _post_prompt(session_id, prompt)
+
+
+CLAIMANT_WORKER = "opencode-claimant"
+
+
+def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
+    """Collect up to `want` parked recorded handoffs from `queue`
+    WITHOUT naming a task id (#8097 Rule 1): each
+    `repo-queue claim --handoff` lets the BROKER pick the next
+    parked handoff (its ordinary pick order), claimed as the
+    claimant, so the launch flow below has a live claim to bind
+    against. Returns {task_id: claimed row}.
+
+    The handing-off lane parks the task as its handoff sink, so
+    without collection the task is never in the claimed state the
+    launch flow binds against — it waited out the park timer, was
+    re-claimed by the next shift wave, handed off, and parked again
+    (#7907/#6533). Collection used to name the task
+    (`claim --task <id>`); that by-id claim is now the special-case
+    verb (one-off revivals), and this default path does not depend
+    on it — the broker's handoff pick only ever returns a parked
+    recorded opencode handoff (unbound yield progress), never a
+    live claim or a genuine wait park.
+
+    The claim declares the claimant's family, --platform
+    openchamber (#8097 Rule 2): a parked handoff whose item
+    carries the `muse` selector is not the opencode claimant's
+    to collect.
+    """
+    collected: Dict[int, Dict] = {}
+    for _ in range(max(want, 0)):
+        try:
+            result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "claim",
+                    "--queue", queue,
+                    "--worker", CLAIMANT_WORKER,
+                    "--platform", "openchamber",
+                    "--handoff",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except Exception:
+            break
+        # cmd_claim prints the claimed row itself ({"task": null}
+        # when nothing was claimed).
+        row = data if isinstance(data, dict) else None
+        claimed_id = row.get("id") if isinstance(row, dict) else None
+        if claimed_id is None:
+            break
+        collected[claimed_id] = row
+    return collected
 
 
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
@@ -479,6 +553,22 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             and c.get("stage") in ("handed_off", "launch_failed")
         ]
         
+        # Parked handoff sink (#8097 Rule 1): collect this fire's
+        # parked candidates' claims up front, grouped by queue,
+        # without naming any task id — one broker-picked handoff
+        # claim per discovered parked candidate. A parked
+        # candidate whose id is not in `collected` when its turn
+        # comes was not collected (its pick lost a race or the
+        # broker had nothing claimable) and is skipped below —
+        # the binding is never improvised.
+        parked_by_queue: Dict[str, int] = {}
+        for c in unbound_opencode:
+            if c.get("status") == "parked":
+                parked_by_queue[c["queue"]] = parked_by_queue.get(c["queue"], 0) + 1
+        collected: Dict[int, Dict] = {}
+        for queue_name, want in parked_by_queue.items():
+            collected.update(_collect_parked_handoffs(queue_name, want))
+
         for candidate in unbound_opencode:
             if cap_room <= 0:
                 skips.append({
@@ -491,7 +581,25 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             worker_id = candidate.get("worker_id", "unknown")
             issue = candidate.get("issue", "")
             packet = candidate.get("packet", {})
-            
+
+            # Parked handoff sink: the candidate was handed off and
+            # then parked by its claiming lane, so no live claim
+            # existed to bind against until the collection above
+            # claimed it (as the claimant; the launched session
+            # then works under the claimant's worker identity). A
+            # candidate the collection did not claim is skipped —
+            # the binding is never improvised.
+            if candidate.get("status") == "parked":
+                if task_id not in collected:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": "parked_claim_failed"
+                    })
+                    continue
+                candidate["status"] = "claimed"
+                candidate["worker_id"] = CLAIMANT_WORKER
+                worker_id = CLAIMANT_WORKER
+
             # Step 4a: Re-verify task state
             try:
                 poll_data = run_poll()
@@ -651,7 +759,7 @@ def main():
     
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], 0, [{"reason": "no_candidates"}])
+        log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
         return 0
     
     # Step 3: Cap

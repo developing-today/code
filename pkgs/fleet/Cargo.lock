@@ -565,6 +565,7 @@ version = "0.1.0"
 dependencies = [
  "fleet-config",
  "fleet-secrets",
+ "libc",
  "proptest",
  "serde",
  "serde_json",

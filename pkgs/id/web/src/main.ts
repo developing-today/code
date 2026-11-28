@@ -605,10 +605,7 @@ function initPeersAutoRefresh(): void {
 function refreshSettingsClientId(): void {
   const clientIdEl = document.getElementById("client-id-value");
   if (clientIdEl) {
-    clientIdEl.textContent = clientIdForDisplay(
-      currentIdentity?.clientId,
-      getStoredIdentity()?.clientId,
-    );
+    clientIdEl.textContent = clientIdForDisplay(currentIdentity?.clientId, getStoredIdentity()?.clientId);
   }
 }
 

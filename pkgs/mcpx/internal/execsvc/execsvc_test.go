@@ -35,6 +35,84 @@ func service(t *testing.T, st *artifacts.Store) *execsvc.Service {
 	return &execsvc.Service{Store: st, Limits: lim, Local: true}
 }
 
+func TestScriptCheckPoliciesAreCarriedInExecOptions(t *testing.T) {
+	want := execsvc.Options{TypeCheckOnError: "warn", TypeCheckOnUnsupported: "switch"}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got execsvc.Options
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TypeCheckOnError != want.TypeCheckOnError || got.TypeCheckOnUnsupported != want.TypeCheckOnUnsupported {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+	for _, field := range []string{`"checkOnError":"warn"`, `"checkOnUnsupported":"switch"`} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("wire options %s do not include %s", data, field)
+		}
+	}
+}
+
+// TestCheckWarnDiagnosticReachesSuccessResult is the Codex finding on
+// PR #6111: with checkOnError=warn a non-fatal check diagnostic must
+// reach a remote caller's result and frames even when the script runs
+// successfully. The diagnostic went only to the stderr tail buffer,
+// which this service exposes only on a non-zero exit, so a warn-policy
+// run was indistinguishable from `run`. A Node runtime with
+// typecheck=types produces the diagnostic deterministically (Node
+// strips types rather than checking them), so the delivery path is
+// exercised without a checker fixture.
+func TestCheckWarnDiagnosticReachesSuccessResult(t *testing.T) {
+	if _, err := runner.Resolve("node", "", runner.Setup{}); err != nil {
+		t.Skip("no node runtime:", err)
+	}
+	svc := service(t, store(t))
+	var frames []execsvc.Frame
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		Source:       `console.log("ok");`,
+		ClientSource: minimalClient,
+		Permissions:  "all",
+		// The policies travel on the runner options RunWith receives
+		// (the service's Run builds them from execsvc.Options); a
+		// direct RunWith caller supplies them here.
+		Runtime:                "node",
+		TypeCheck:              "types",
+		TypeCheckOnError:       "warn",
+		TypeCheckOnUnsupported: "warn",
+	}, execsvc.Options{},
+		func(f execsvc.Frame) error {
+			frames = append(frames, f)
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("run: %v (%+v)", err, res)
+	}
+	if res.Error != "" || res.ExitCode != 0 {
+		t.Fatalf("a warn policy must not fail the run: %+v", res)
+	}
+	const wantMsg = "only available under Deno"
+	foundLog := false
+	for _, l := range res.Logs {
+		if l.Level == "warn" && strings.Contains(l.Message, wantMsg) {
+			foundLog = true
+		}
+	}
+	if !foundLog {
+		t.Fatalf("the result's logs do not carry the check warning: %+v", res.Logs)
+	}
+	foundFrame := false
+	for _, f := range frames {
+		if f.Type == execsvc.FrameLog && f.Level == "warn" && strings.Contains(f.Message, wantMsg) {
+			foundFrame = true
+		}
+	}
+	if !foundFrame {
+		t.Fatalf("the streamed frames do not carry the check warning: %+v", frames)
+	}
+}
+
 // The runtime is a real one. Skipping rather than failing keeps the suite
 // honest on a machine that has none: these tests are about the service, and
 // a missing deno is not a bug in it.

@@ -9,7 +9,7 @@
 
 ## Sibling state re-check
 
-GitHub state checked **2026-11-10 06:54 UTC**:
+GitHub state re-checked **2026-11-10 12:04 UTC**:
 
 | Issue | State | Decision record |
 | --- | --- | --- |

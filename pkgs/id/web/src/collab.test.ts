@@ -403,8 +403,15 @@ describe("large text insertion collaboration (#4119)", () => {
     const sentSteps = allFrames.filter((frame) => frame[0] === 1).flatMap((frame) => frame[2] as unknown[]);
     expect(stepFrameData.every((data) => (data as Uint8Array).byteLength <= 1024 * 1024)).toBe(true);
     expect(sentSteps.length).toBeGreaterThan(1);
-    expect(sentSteps.map((step) => (step as { slice: { content: Array<{ text?: string }> } }).slice.content
-      .map((node) => node.text ?? "").join("")).join("")).toBe(text);
+    expect(
+      sentSteps
+        .map((step) =>
+          (step as { slice: { content: Array<{ text?: string }> } }).slice.content
+            .map((node) => node.text ?? "")
+            .join(""),
+        )
+        .join(""),
+    ).toBe(text);
     expect(confirmed).toBe(sentSteps.length);
     expect(getSendableSteps(view)).toBeNull();
     expect(getVersion(view.state)).toBe(confirmed);

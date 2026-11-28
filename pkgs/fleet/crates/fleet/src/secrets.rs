@@ -138,11 +138,18 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
         eprintln!("usage: fleet secrets list");
         return EXIT_USAGE;
     }
-    let source = BrokerSource {
-        broker_socket: config.broker_socket(),
-        token_file: config.secrets_token_file(),
+    // #6218: on the laptop the broker's own socket answers
+    // directly (no session broker exists there); elsewhere the
+    // session-broker source reads the same route.
+    let names_result = match fleet_secrets::DirectBrokerSource::from_config(config) {
+        Some(direct) => direct.list_names(),
+        None => BrokerSource {
+            broker_socket: config.broker_socket(),
+            token_file: config.secrets_token_file(),
+        }
+        .list_names(),
     };
-    match source.list_names() {
+    match names_result {
         Ok(names) => {
             let mut out = std::io::stdout().lock();
             for name in &names {

@@ -3419,6 +3419,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
 }
 
 /// Collect list item children of a list node.
+#[allow(dead_code)]
 fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
     node.children()
         .map(|child| convert_node(child, &[]))
@@ -4629,9 +4630,8 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     if kinds.is_empty() {
         return output.to_string();
     }
-    let is_separator_line = |line: &str| {
-        line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->"
-    };
+    let is_separator_line =
+        |line: &str| line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->";
     let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
     let lines: Vec<&str> = output.lines().collect();
     // Codex review, PR #3258: a separator-looking line inside a fenced
@@ -5250,6 +5250,46 @@ fn is_whitespace_only_text_json(node: &Value) -> bool {
             .all(|c| c == ' ' || c == '\t')
 }
 
+/// Whether a hard break has no rendered content after it before the
+/// block ends. Whitespace-only text and further breaks do not make a
+/// trailing break interior content. This is the placement boundary for
+/// #1388: CommonMark cannot spell a break after the last content of a
+/// block, so normalize it away before building the comrak AST.
+fn hard_break_is_trailing(content: &[Value], idx: usize) -> bool {
+    content[idx + 1..]
+        .iter()
+        .all(|sibling| is_hard_break_json(sibling) || is_whitespace_only_text_json(sibling))
+}
+
+/// Apply the save-side hard-break placement policy for a block's inline
+/// children (#1388, transferring the #1492 placements): a hard break at
+/// block end is dropped explicitly (the renderer silently drops it); a
+/// heading is single-line CommonMark content, so an interior break
+/// degrades to a space instead of becoming an unspellable backslash-newline.
+/// Other interior paragraph breaks retain their existing LineBreak form.
+fn normalize_hard_break_placement(node_type: &str, content: &[Value]) -> Vec<Value> {
+    if !matches!(node_type, "heading" | "paragraph") {
+        return content.to_vec();
+    }
+
+    let mut normalized = Vec::with_capacity(content.len());
+    for (idx, child) in content.iter().enumerate() {
+        if !is_hard_break_json(child) {
+            normalized.push(child.clone());
+            continue;
+        }
+        if hard_break_is_trailing(content, idx) {
+            continue;
+        }
+        if node_type == "heading" {
+            normalized.push(json!({"type": "text", "text": " "}));
+        } else {
+            normalized.push(child.clone());
+        }
+    }
+    normalized
+}
+
 /// Whether scanning `siblings` (in render order) reaches a line edge —
 /// the start/end of the block or a `hard_break` — before any content
 /// that renders something (#1420).
@@ -5680,9 +5720,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         // ordered_list is NOT merged (it carries restart numbering) and
         // task_list is a distinct PM node type, so neither is affected.
         let mut prev_bullet_list: Option<&AstNode<'a>> = None;
-        for (idx, child_json) in content.iter().enumerate() {
+        let normalized_content = normalize_hard_break_placement(node_type, content);
+        for (idx, child_json) in normalized_content.iter().enumerate() {
             let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
-            let normalized = normalize_inline_child_json(content, idx);
+            let normalized = normalize_inline_child_json(&normalized_content, idx);
             let child = json_to_ast(arena, &normalized)?;
             if is_bullet_list && let Some(list_node) = prev_bullet_list {
                 let items: Vec<&AstNode<'a>> = child.children().collect();
@@ -7050,7 +7091,10 @@ mod tests {
                 first.contains("<!-- end list -->"),
                 "separator preserved for restart pair {original:?}: {first:?}"
             );
-            assert_eq!(first, second, "restart shape is a fixpoint for {original:?}");
+            assert_eq!(
+                first, second,
+                "restart shape is a fixpoint for {original:?}"
+            );
             assert_eq!(
                 markdown_to_prosemirror(&first),
                 markdown_to_prosemirror(original),
@@ -7059,7 +7103,10 @@ mod tests {
             let doc = markdown_to_prosemirror(&first);
             let content = doc["content"].as_array().unwrap();
             assert_eq!(content.len(), 2, "two lists for {original:?}");
-            assert_eq!(content[1]["attrs"]["order"], 1, "second list restarts at 1 for {original:?}");
+            assert_eq!(
+                content[1]["attrs"]["order"], 1,
+                "second list restarts at 1 for {original:?}"
+            );
         }
     }
 
@@ -7087,7 +7134,10 @@ mod tests {
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content.len(), 2, "two lists");
         assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
-        assert_eq!(content[1]["attrs"]["tight"], false, "second list stays loose");
+        assert_eq!(
+            content[1]["attrs"]["tight"], false,
+            "second list stays loose"
+        );
     }
 
     #[test]
@@ -7125,7 +7175,11 @@ mod tests {
         let second = prosemirror_to_markdown(&reparsed).unwrap();
         assert_eq!(first, second, "coalesced-boundary shape is a fixpoint");
         let content = reparsed["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
         assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
     }
 
@@ -7158,7 +7212,11 @@ mod tests {
         let second = prosemirror_to_markdown(&reparsed).unwrap();
         assert_eq!(first, second, "legacy-tight pair is a fixpoint");
         let content = reparsed["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
         assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
     }
 
@@ -7325,10 +7383,7 @@ mod tests {
                 ]}
             ]
         });
-        let out = strip_end_list_separators(
-            &doc,
-            "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n",
-        );
+        let out = strip_end_list_separators(&doc, "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n");
         assert_eq!(
             out, "- [ ] a\n- \n- b\n",
             "no blank kept between same-family runs: {out:?}"
@@ -7396,7 +7451,11 @@ mod tests {
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content.len(), 2, "two lists survive reparse: {content:?}");
         assert_eq!(content[1]["type"], "ordered_list");
-        assert_eq!(content[1]["content"].as_array().unwrap().len(), 2, "both ordered items survive");
+        assert_eq!(
+            content[1]["content"].as_array().unwrap().len(),
+            2,
+            "both ordered items survive"
+        );
     }
 
     #[test]
@@ -7432,7 +7491,11 @@ mod tests {
         });
         let mut kinds = Vec::new();
         collect_boundary_kinds(&doc, &mut kinds);
-        assert_eq!(kinds.len(), 1, "only the top-level boundary is collected: {kinds:?}");
+        assert_eq!(
+            kinds.len(),
+            1,
+            "only the top-level boundary is collected: {kinds:?}"
+        );
         let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
         assert!(!out.contains("end list"), "real separator dropped: {out:?}");
     }
@@ -7461,7 +7524,10 @@ mod tests {
             let doc = markdown_to_prosemirror(&first);
             let content = doc["content"].as_array().unwrap();
             assert_eq!(content.len(), 2, "two lists for {original:?}");
-            assert_eq!(content[1]["type"], "ordered_list", "second list stays ordered for {original:?}");
+            assert_eq!(
+                content[1]["type"], "ordered_list",
+                "second list stays ordered for {original:?}"
+            );
         }
     }
 
@@ -11842,6 +11908,158 @@ Some text
         let second =
             prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
         assert_eq!(md, second, "hard_break cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_heading_mid_hard_break_degrades_to_space() {
+        // #1388: a hard_break inside a heading cannot be spelled in
+        // CommonMark — the save emitted a backslash-newline inside the
+        // ATX heading, re-parse split it into heading + paragraph with
+        // a literal backslash, and the backslash doubled on the next
+        // save. Mid/start breaks degrade to a single space (headings
+        // are single-line content, mirroring the #1017 cell policy).
+        let doc = json!({"type": "doc", "content": [{"type": "heading", "attrs": {"level": 1}, "content": [
+            {"type": "text", "text": "Title"},
+            {"type": "hard_break"},
+            {"type": "text", "text": "more here"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "# Title more here\n", "break became a space: {md:?}");
+        let reopened = markdown_to_prosemirror(&md);
+        let blocks = reopened["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "still one block: {reopened:?}");
+        assert_eq!(
+            blocks[0]["type"], "heading",
+            "still a heading: {reopened:?}"
+        );
+        assert_eq!(
+            prosemirror_to_markdown(&reopened).expect("reconverts"),
+            md,
+            "heading output is a fixpoint"
+        );
+    }
+
+    #[test]
+    fn test_setext_heading_hard_break_roundtrips() {
+        // #1388: the creator probe — a setext heading whose lines are
+        // joined by a backslash break (and the two-trailing-spaces
+        // variant) parses to heading [text, hard_break, text] and must
+        // save back to one clean heading, not split with a backslash.
+        for source in ["Title\\\nmore here\n=====\n", "Title  \nmore here\n=====\n"] {
+            let doc = markdown_to_prosemirror(source);
+            let blocks = doc["content"].as_array().unwrap();
+            assert_eq!(
+                blocks.len(),
+                1,
+                "parses to one block: {source:?} -> {doc:?}"
+            );
+            assert_eq!(blocks[0]["type"], "heading", "{source:?} -> {doc:?}");
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert_eq!(
+                md, "# Title more here\n",
+                "no split, no backslash: {source:?} -> {md:?}"
+            );
+            let reopened = markdown_to_prosemirror(&md);
+            assert_eq!(
+                prosemirror_to_markdown(&reopened).expect("reconverts"),
+                md,
+                "setext heading output is a fixpoint: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_heading_edge_hard_breaks_normalize() {
+        // #1388: a heading-start break degrades to a space (erased by
+        // the #1420 line-edge trim, so no leading gap survives) and a
+        // heading-trailing break is dropped — both save clean and are
+        // fixpoints.
+        for (name, content) in [
+            (
+                "start",
+                vec![
+                    json!({"type": "hard_break"}),
+                    json!({"type": "text", "text": "Title"}),
+                ],
+            ),
+            (
+                "trailing",
+                vec![
+                    json!({"type": "text", "text": "Title"}),
+                    json!({"type": "hard_break"}),
+                ],
+            ),
+        ] {
+            let doc = json!({"type": "doc", "content": [
+                {"type": "heading", "attrs": {"level": 2}, "content": content}
+            ]});
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert_eq!(md, "## Title\n", "{name} break normalized: {md:?}");
+            let reopened = markdown_to_prosemirror(&md);
+            assert_eq!(
+                prosemirror_to_markdown(&reopened).expect("reconverts"),
+                md,
+                "{name} heading output is a fixpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn test_paragraph_trailing_hard_break_dropped_explicitly() {
+        // #1388 with the #1492 placements transferred in: a trailing
+        // hard_break at block end (paragraph, blockquote paragraph,
+        // list-item paragraph) used to vanish silently in the
+        // renderer; the save now drops it explicitly so the first
+        // saved file is already the fixpoint.
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "foo"},
+                {"type": "hard_break"}
+            ]},
+            {"type": "blockquote", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "quoted"},
+                    {"type": "hard_break"}
+                ]}
+            ]},
+            {"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "item"},
+                        {"type": "hard_break"}
+                    ]}
+                ]}
+            ]}
+        ]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(
+            md, "foo\n\n> quoted\n\n- item\n",
+            "trailing breaks dropped: {md:?}"
+        );
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(
+            prosemirror_to_markdown(&reopened).expect("reconverts"),
+            md,
+            "trailing-break output is a fixpoint"
+        );
+    }
+
+    #[test]
+    fn test_break_only_paragraph_saves_as_empty_paragraph() {
+        // #1388 with the #1492 placement transferred in: a paragraph
+        // whose only content is a hard_break used to be deleted
+        // outright on save. Like a whitespace-only paragraph (#1420),
+        // it now saves as an empty paragraph.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "hard_break"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "", "break-only paragraph saves empty: {md:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&md),
+            json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            "reopens as an empty paragraph"
+        );
     }
 
     #[test]

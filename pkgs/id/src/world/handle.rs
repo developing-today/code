@@ -128,6 +128,7 @@ impl WorldHandle {
             overdue_at_open,
             acting: None,
             acting_session: None,
+            device_manifest: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
@@ -665,6 +666,31 @@ impl WorldHandle {
             .context("world actor dropped revocation response")
     }
 
+    /// Revoke a participant on the authority of a joined moderator's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself and derives the audit actor from it. Returns
+    /// `Err` when the capability is invalid, expired, revoked, or lacks
+    /// `MODERATOR`, and when the revoke's journal append fails (the
+    /// in-memory revocation still stands in that case).
+    pub async fn revoke_authorized(
+        &self,
+        token: JoinCapability,
+        participant_id: u64,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RevokeAuthorized {
+                token,
+                participant_id,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped revocation response")?
+    }
+
     /// Submit a bounded chat message.
     pub async fn chat(&self, token: JoinCapability, text: impl Into<String>) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
@@ -901,6 +927,36 @@ impl WorldHandle {
     ) -> Result<WorldEvent> {
         self.install_program_with_trust(module_hash, seed, provenance, installed_by, None, program)
             .await
+    }
+
+    /// Install a program on the authority of a joined builder's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself at the mutation boundary and derives the audit
+    /// actor (`BuilderInstalled { by }`) from it.
+    pub async fn install_program_authorized(
+        &self,
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::InstallProgramAuthorized {
+                token,
+                module_hash,
+                seed,
+                provenance,
+                trust: None,
+                program,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped install response")?
     }
 
     /// As [`Self::install_program_by`], also recording the module trust

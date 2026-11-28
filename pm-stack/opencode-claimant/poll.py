@@ -5,14 +5,19 @@ Prints one JSON object:
   {
     "queues": {<queue>: {"claimed": n, "candidates": [...],
                "stuck_bound": [...]}, ...},
-    "candidates": [ {id, queue, priority, worker_id, lane_id,
+    "candidates": [ {id, queue, status, priority, worker_id, lane_id,
                      lease_until, lane, stage, session_id, issue,
                      issue_number, packet, attempts, max_attempts,
                      title, dedupe_key} ... ],
-                                              # claimed, progress.lane ==
+                                              # progress.lane ==
                                               # "opencode", stage
                                               # handed_off/launch_failed,
-                                              # no session_id
+                                              # no session_id; status
+                                              # "claimed", or "parked"
+                                              # for a handed-off task
+                                              # the handing-off lane
+                                              # parked as its sink
+                                              # (is_handoff_parked)
     "stuck_bound": [ {id, queue, ..., session_id, session_updated} ... ],
                                               # bound tasks whose session
                                               # looks never-prompted and
@@ -329,9 +334,9 @@ def _broker_post(path, body):
     return data
 
 
-def fetch_claimed_rows(queue):
-    """Claimed rows for one queue from the broker's rich /list. The
-    repo-queue binary's list verb prints a human table, and
+def _fetch_rows(queue, status):
+    """Rows of one status for one queue from the broker's rich /list.
+    The repo-queue binary's list verb prints a human table, and
     json-parsing it read every queue as empty — the claimant was
     blind from the #5362 cutover until this route was restored
     (#7325/#7375). Returns [] with a warning on any failure: a queue
@@ -341,7 +346,7 @@ def fetch_claimed_rows(queue):
     try:
         data = _broker_post("/list", {
             "queue": queue,
-            "status": "claimed",
+            "status": status,
             "rich": True,
             "limit": LIST_LIMIT,
         })
@@ -356,12 +361,39 @@ def fetch_claimed_rows(queue):
     for row in data:
         if not isinstance(row, dict):
             continue
-        # Only claimed rows are claimant business; when the row carries
-        # a status, anything else is skipped.
-        if row.get("status") not in (None, "claimed"):
+        # Only rows of the requested status are claimant business;
+        # when the row carries a status, anything else is skipped.
+        if row.get("status") not in (None, status):
             continue
         rows.append(normalize_row(row))
     return rows
+
+
+def fetch_claimed_rows(queue):
+    """Claimed rows for one queue (supervision + claimed candidates)."""
+    return _fetch_rows(queue, "claimed")
+
+
+def fetch_parked_rows(queue):
+    """Parked rows for one queue (handoff-sink candidates)."""
+    return _fetch_rows(queue, "parked")
+
+
+def is_handoff_parked(row):
+    """A parked row is a claimant candidate iff it is a recorded
+    opencode handoff that was parked as the handing-off lane's sink:
+    the same yield contract as a claimed candidate (is_candidate —
+    lane opencode, recorded handed_off/launch_failed yield, no
+    session bound, non-UUID claiming lane), read off a parked row.
+    The lane's park is not a wait: verb_park stamps the default
+    +20-minute timer and clears the claim, so a handed-off task sits
+    parked, invisible to claimed-only discovery, until a later shift
+    wave re-claims it and parks it again (#7907/#6533 looped for
+    days this way). A genuine wait park never satisfies the yield
+    contract: its stage is the park/gate itself, not a handoff."""
+    if row.get("status") not in (None, "parked"):
+        return False
+    return is_candidate(row)
 
 
 def normalize_row(row):
@@ -408,6 +440,7 @@ def _candidate_entry(row, queue):
     return {
         "id": row.get("id"),
         "queue": queue,
+        "status": row.get("status") or "claimed",
         "priority": row.get("priority"),
         "worker_id": row.get("worker_id"),
         "lane_id": row.get("lane_id"),
@@ -452,6 +485,11 @@ def get_candidates(rows):
     return [r for r in rows if is_candidate(r)]
 
 
+def get_parked_candidates(rows):
+    """Unbound opencode-lane candidates from parked handoff rows."""
+    return [r for r in rows if is_handoff_parked(r)]
+
+
 def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
     """Bound tasks whose sessions look never-prompted and dead."""
     stuck = []
@@ -494,12 +532,17 @@ def main():
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
         cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
+        parked_rows = fetch_parked_rows(q)
+        cands.extend(
+            _candidate_entry(r, q) for r in get_parked_candidates(parked_rows)
+        )
         stuck = [
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         out["queues"][q] = {
             "claimed": len(rows),
+            "parked": len(parked_rows),
             "candidates": cands,
             "stuck_bound": stuck,
         }

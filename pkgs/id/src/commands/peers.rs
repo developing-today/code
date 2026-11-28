@@ -60,7 +60,9 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
 use crate::peer_announcement::SignedPeerAnnouncement;
-use crate::protocol::{MetaRequest, MetaResponse};
+use crate::protocol::{
+    AbuseCountersRow, AbusePolicyView, MetaRequest, MetaResponse,
+};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
 
@@ -97,6 +99,9 @@ pub struct PeersOptions {
     pub no_relay: bool,
     /// Disable mDNS local peer discovery.
     pub no_mdns: bool,
+    /// Show the local serve instance's per-peer abuse counters instead of
+    /// listing peers (local serve only).
+    pub abuse: bool,
 }
 
 /// Runs the peers discovery command.
@@ -128,6 +133,18 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         );
     }
 
+    if options.abuse {
+        if options.gossip {
+            bail!("--abuse cannot be combined with --gossip: abuse counters come from the local serve instance only");
+        }
+        if node.is_some() {
+            bail!("--abuse cannot be combined with a remote node ID: abuse counters come from the local serve instance only");
+        }
+        let (rows, policy) = query_local_abuse_counters().await?;
+        print!("{}", format_abuse_report(&rows, policy.as_ref()));
+        return Ok(());
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     // Determine mode
@@ -154,9 +171,12 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
             }
         };
 
-        for peer in &rpc_peers {
-            all_peers.insert(peer.node_id, peer.clone());
-        }
+        merge_capped(
+            &mut all_peers,
+            rpc_peers.iter().cloned(),
+            options.max_peers,
+            "RPC results",
+        );
 
         // Depth crawling via RPC
         if options.depth != 0 && !rpc_peers.is_empty() {
@@ -169,18 +189,17 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_mdns,
             )
             .await?;
-            for peer in crawled {
-                all_peers.insert(peer.node_id, peer);
-            }
+            merge_capped(&mut all_peers, crawled, options.max_peers, "crawl results");
         }
     }
 
     // Try gossip if needed
     if use_gossip && (all_peers.is_empty() || options.gossip) {
-        let gossip_peers = discover_via_gossip(&options).await;
+        let retained: HashSet<EndpointId> = all_peers.keys().copied().collect();
+        let gossip_peers = discover_via_gossip(&options, &retained).await;
         match gossip_peers {
             Ok(peers) => {
-                merge_gossip_peers(&mut all_peers, peers);
+                merge_capped(&mut all_peers, peers, options.max_peers, "gossip results");
             }
             Err(e) => {
                 if options.gossip {
@@ -207,23 +226,6 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
     Ok(())
 }
 
-/// Merge gossip results without letting an older announcement replace a
-/// fresher result already collected from RPC. Equal timestamps keep the
-/// existing arrival-order behavior: gossip, collected later, wins the tie.
-fn merge_gossip_peers(
-    all_peers: &mut HashMap<EndpointId, PeerAnnouncement>,
-    gossip_peers: impl IntoIterator<Item = PeerAnnouncement>,
-) {
-    for peer in gossip_peers {
-        if all_peers
-            .get(&peer.node_id)
-            .is_none_or(|existing| peer.timestamp_secs >= existing.timestamp_secs)
-        {
-            all_peers.insert(peer.node_id, peer);
-        }
-    }
-}
-
 /// One peer as the four tab-separated fields of the `id peers` row:
 /// `<node_id>\t<name>\t<blob_count>\t<timestamp>`.
 ///
@@ -240,6 +242,78 @@ pub(crate) fn format_peer_row(peer: &PeerAnnouncement) -> String {
         "{}\t{}\t{}\t{}",
         peer.node_id, name, peer.blob_count, peer.timestamp_secs
     )
+}
+
+/// Outcome of offering one peer to a capped collection (#1765).
+#[derive(Debug, PartialEq, Eq)]
+enum PeerOffer {
+    /// New unique node ID, inserted; consumes one cap slot.
+    Added,
+    /// Known node ID: the stored announcement is refreshed in place;
+    /// updates do not consume a cap slot.
+    Updated,
+    /// New node ID refused because the collection is already at the cap.
+    Capped,
+}
+
+/// Offers `peer` to `peers`, enforcing the global `--max-peers` hard cap
+/// on unique node IDs (#1765). The cap is consulted at every insertion
+/// site — seeds, RPC responses, crawl merges, gossip collection, and the
+/// combined-mode merge in [`cmd_peers`] — so no single oversized
+/// response or announcement stream can grow a retained collection past
+/// it. A cap of 0 refuses every new peer.
+///
+/// A duplicate never consumes a cap slot, and it only replaces the
+/// stored record when it is at least as fresh: `ListPeers` serves each
+/// server's independent discovery snapshot, so an older crawl snapshot
+/// must not roll back a newer RPC record. Equal timestamps keep the
+/// existing arrival-order behavior (the later record wins), matching
+/// [`merge_capped`].
+fn offer_peer(
+    peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    peer: PeerAnnouncement,
+    max_peers: usize,
+) -> PeerOffer {
+    if let Some(existing) = peers.get(&peer.node_id) {
+        if peer.timestamp_secs >= existing.timestamp_secs {
+            peers.insert(peer.node_id, peer);
+        }
+        return PeerOffer::Updated;
+    }
+    if peers.len() >= max_peers {
+        return PeerOffer::Capped;
+    }
+    peers.insert(peer.node_id, peer);
+    PeerOffer::Added
+}
+
+/// Merges `incoming` into `peers` under the `--max-peers` cap (#1765),
+/// warning once when anything was refused.
+///
+/// Unlike a plain `break` on the first refusal, this keeps scanning
+/// after the cap is hit: a refused peer is a *new* node id, but a later
+/// entry may be an *update* to a peer already retained, and dropping it
+/// would make the output depend on `HashMap` iteration order. The
+/// collection still never grows past `max_peers`.
+fn merge_capped(
+    peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    incoming: impl IntoIterator<Item = PeerAnnouncement>,
+    max_peers: usize,
+    source: &str,
+) {
+    let mut capped = false;
+    for peer in incoming {
+        if offer_peer(peers, peer, max_peers) == PeerOffer::Capped {
+            capped = true;
+        }
+    }
+    if capped {
+        tracing::warn!(
+            "peers: max-peers cap ({}) reached in {}; truncating",
+            max_peers,
+            source
+        );
+    }
 }
 
 /// Queries the local serve instance for its peer list via RPC.
@@ -269,7 +343,90 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
     result
 }
 
-/// Queries a specific remote node for its peer list.
+/// Queries the local serve instance for its per-peer abuse counters and the
+/// policy rates they were charged against.
+async fn query_local_abuse_counters() -> Result<(Vec<AbuseCountersRow>, Option<AbusePolicyView>)> {
+    let serve_info = get_serve_info()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no local serve running"))?;
+
+    let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+    let result = async {
+        let meta_conn = crate::connectivity::connect(&endpoint, endpoint_addr, META_ALPN).await?;
+        let (mut send, mut recv) = meta_conn.open_bi().await?;
+        let req = postcard::to_allocvec(&MetaRequest::AbuseCounters)?;
+        send.write_all(&req).await?;
+        send.finish()?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        meta_conn.close(0u32.into(), b"done");
+
+        match resp {
+            MetaResponse::AbuseCounters { rows, policy } => Ok((rows, policy)),
+            MetaResponse::Error { message } => Err(anyhow::anyhow!("{message}")),
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        }
+    }
+    .await;
+    endpoint.close().await;
+    result
+}
+
+/// Renders abuse counters as the `id peers --abuse` report.
+///
+/// The registry sorts rows deterministically by local node then remote
+/// endpoint, and rows are printed in the order received. Endpoint IDs are
+/// rendered the same way `id peers` renders a peer's `node_id` (lowercase
+/// hex). Each row is one line, tab-separated:
+///
+/// ```text
+/// <local>\t<remote>\tin\t<frames>\t<bytes>\tout\t<frames>\t<bytes>\tunattributed\t<frames>\t<bytes>
+/// ```
+///
+/// An empty registry prints exactly one line and still succeeds.
+pub(crate) fn format_abuse_report(
+    rows: &[AbuseCountersRow],
+    policy: Option<&AbusePolicyView>,
+) -> String {
+    let mut out = String::new();
+    if rows.is_empty() {
+        out.push_str("no abuse counters recorded\n");
+        return out;
+    }
+    out.push_str("per-peer abuse counters (frames/bytes admitted by the evaluator)\n");
+    for row in rows {
+        out.push_str(&format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}\n",
+            encode_endpoint(&row.local),
+            encode_endpoint(&row.remote),
+            row.inbound_frames,
+            row.inbound_bytes,
+            row.outbound_frames,
+            row.outbound_bytes,
+            row.unattributed_frames,
+            row.unattributed_bytes,
+        ));
+    }
+    if let Some(policy) = policy {
+        out.push_str(&format!(
+            "policy: authorized frames {}/s burst {}, bytes {}/s burst {}\n",
+            policy.frames_per_sec, policy.frame_burst, policy.bytes_per_sec, policy.byte_burst,
+        ));
+    }
+    out
+}
+
+/// Lowercase hex, matching `EndpointId`'s `Display` as used by the peer rows.
+fn encode_endpoint(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 async fn query_remote_peers(
     node_str: &str,
     no_relay: bool,
@@ -329,10 +486,20 @@ async fn crawl_peers(
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
 
-    // Initialize with known peers
+    // Initialize with known peers, bounded by the cap: the frontier
+    // never holds more unique peers than the cap allows (#1765).
     for peer in initial_peers {
-        all_peers.insert(peer.node_id, peer.clone());
-        frontier.push(peer.node_id);
+        match offer_peer(&mut all_peers, peer.clone(), max_peers) {
+            PeerOffer::Added => frontier.push(peer.node_id),
+            PeerOffer::Updated => {}
+            PeerOffer::Capped => {
+                tracing::warn!(
+                    "peers: max-peers cap ({}) reached in crawl seeds; truncating",
+                    max_peers
+                );
+                break;
+            }
+        }
     }
 
     let mut current_depth = 0;
@@ -366,13 +533,28 @@ async fn crawl_peers(
                 .await
             {
                 Ok(Ok(peers)) => {
+                    let mut capped = false;
                     for peer in peers {
-                        if let std::collections::hash_map::Entry::Vacant(e) =
-                            all_peers.entry(peer.node_id)
-                        {
-                            next_frontier.push(peer.node_id);
-                            e.insert(peer);
+                        let node_id = peer.node_id;
+                        match offer_peer(&mut all_peers, peer, max_peers) {
+                            PeerOffer::Added => next_frontier.push(node_id),
+                            PeerOffer::Updated => {}
+                            PeerOffer::Capped => {
+                                // New node ids stop here, including at the
+                                // final depth (#1765) — but keep scanning:
+                                // later entries may update peers already
+                                // retained, and dropping them would make the
+                                // result depend on response order.
+                                capped = true;
+                            }
                         }
+                    }
+                    if capped {
+                        tracing::warn!(
+                            "peers: max-peers cap ({}) reached at depth {}; truncating response",
+                            max_peers,
+                            current_depth
+                        );
                     }
                 }
                 Ok(Err(e)) => {
@@ -396,7 +578,10 @@ async fn crawl_peers(
 /// Creates a temporary endpoint, joins the gossip topic via DHT
 /// auto-discovery, and collects announcements for a limited time.
 /// Uses [`resolve_config`] to merge defaults with CLI flags.
-async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncement>> {
+async fn discover_via_gossip(
+    options: &PeersOptions,
+    retained_elsewhere: &HashSet<EndpointId>,
+) -> Result<Vec<PeerAnnouncement>> {
     use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
     use iroh_gossip::net::Gossip;
 
@@ -472,7 +657,12 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                admit_gossip_announcement(&peers, announcement);
+                if !admit_gossip_announcement_capped(&peers, announcement, options.max_peers, retained_elsewhere) {
+                    tracing::warn!(
+                        "peers: max-peers cap ({}) reached in gossip collection; ignoring further announcements",
+                        options.max_peers
+                    );
+                }
             }
         }
     })
@@ -493,6 +683,41 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
 /// ordering checks used by the serve-side peer table.
 fn admit_gossip_announcement(peers: &PeerDiscovery, announcement: PeerAnnouncement) {
     peers.update(announcement);
+}
+
+/// Admit a gossip announcement without letting the temporary discovery
+/// table exceed `--max-peers`. Existing peers may still be refreshed when
+/// the collection is full; `PeerDiscovery::update` applies timestamp
+/// freshness and ordering rules.
+fn admit_gossip_announcement_capped(
+    peers: &PeerDiscovery,
+    announcement: PeerAnnouncement,
+    max_peers: usize,
+    retained_elsewhere: &HashSet<EndpointId>,
+) -> bool {
+    let table = peers.peers();
+    let known = table
+        .iter()
+        .any(|peer| peer.announcement.node_id == announcement.node_id);
+    if known || retained_elsewhere.contains(&announcement.node_id) {
+        // An update to a peer already retained (in this table, or by an
+        // earlier source in combined mode) never consumes a cap slot and
+        // must reach the combined merge: capping it here discarded the
+        // update before merge_capped could see it (Codex P2 on #3750).
+        admit_gossip_announcement(peers, announcement);
+        return true;
+    }
+    // The cap bounds peers this collection itself retains; announcements
+    // carried only as updates to externally retained peers do not count.
+    let own = table
+        .iter()
+        .filter(|peer| !retained_elsewhere.contains(&peer.announcement.node_id))
+        .count();
+    if own >= max_peers {
+        return false;
+    }
+    admit_gossip_announcement(peers, announcement);
+    true
 }
 
 /// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
@@ -548,6 +773,14 @@ mod tests {
         }
     }
 
+    fn stamped(byte: u8, name: &str, timestamp_secs: u64) -> PeerAnnouncement {
+        PeerAnnouncement {
+            node_id: SecretKey::from_bytes(&[byte; 32]).public(),
+            name: Some(name.to_owned()),
+            blob_count: 7,
+            timestamp_secs,
+        }
+    }
     #[test]
     fn gossip_collection_uses_freshness_and_monotonic_ordering() {
         let discovery = PeerDiscovery::new();
@@ -614,7 +847,7 @@ mod tests {
             (rpc_fresher.node_id, rpc_fresher),
             (rpc_older.node_id, rpc_older),
         ]);
-        merge_gossip_peers(&mut all_peers, [gossip_older, gossip_fresher]);
+        merge_capped(&mut all_peers, [gossip_older, gossip_fresher], 10, "test");
 
         assert_eq!(
             all_peers[&announcement(34, None).node_id].name.as_deref(),
@@ -624,6 +857,67 @@ mod tests {
             all_peers[&announcement(35, None).node_id].name.as_deref(),
             Some("gossip fresher")
         );
+    }
+
+    #[test]
+    fn gossip_collection_is_capped_but_keeps_updates_to_retained_peers() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(36, "first", now.saturating_sub(2)),
+            1,
+            &HashSet::new(),
+        ));
+        assert!(!admit_gossip_announcement_capped(
+            &discovery,
+            stamped(37, "over-cap", now.saturating_sub(1)),
+            1,
+            &HashSet::new(),
+        ));
+        // A duplicate remains eligible even at the cap, and the discovery
+        // table's timestamp policy keeps its fresher update.
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(36, "updated", now),
+            1,
+            &HashSet::new(),
+        ));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name.as_deref(), Some("updated"));
+    }
+
+    #[test]
+    fn gossip_collection_keeps_updates_to_peers_retained_by_another_source() {
+        // Codex P2 on #3750: in combined mode the gossip table filled
+        // with a new peer and then refused a fresher announcement for a
+        // peer RPC had already retained, so the combined output kept the
+        // stale RPC record. The externally retained peer stays eligible
+        // regardless of the gossip cap.
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        let retained: HashSet<EndpointId> = [stamped(40, "rpc", now.saturating_sub(2)).node_id]
+            .into_iter()
+            .collect();
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(41, "fills-the-cap", now.saturating_sub(1)),
+            1,
+            &retained,
+        ));
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(40, "gossip-fresher", now),
+            1,
+            &retained,
+        ));
+        let peers = discovery.peers();
+        let kept = peers
+            .iter()
+            .find(|peer| peer.announcement.node_id == stamped(40, "x", now).node_id)
+            .expect("externally retained peer update admitted");
+        assert_eq!(kept.announcement.name.as_deref(), Some("gossip-fresher"));
     }
 
     fn valid_id_string(byte: u8) -> String {
@@ -774,6 +1068,7 @@ mod tests {
             replace_defaults: false,
             no_relay: false,
             no_mdns: false,
+            abuse: false,
         };
 
         // Default mode: both RPC and gossip
@@ -800,6 +1095,7 @@ mod tests {
             replace_defaults: false,
             no_relay: true,
             no_mdns: false,
+            abuse: false,
         };
 
         assert!(options.gossip);
@@ -847,5 +1143,203 @@ mod tests {
         let use_gossip = gossip || !rpc;
         assert!(use_rpc);
         assert!(use_gossip);
+    }
+
+    #[test]
+    fn test_offer_peer_over_cap_response_is_truncated() {
+        // One oversized response (#1765): only the first `cap` unique
+        // peers are retained, the rest are refused as Capped.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        let mut capped = 0;
+        for byte in 1..=5u8 {
+            if offer_peer(&mut peers, announcement(byte, None), 3) == PeerOffer::Capped {
+                capped += 1;
+            }
+        }
+        assert_eq!(peers.len(), 3);
+        assert_eq!(capped, 2);
+    }
+
+    #[test]
+    fn test_offer_peer_zero_cap_refuses_every_new_peer() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, None), 0),
+            PeerOffer::Capped
+        );
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn test_offer_peer_duplicate_update_at_cap_consumes_no_slot() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, Some("old")), 1),
+            PeerOffer::Added
+        );
+        // At the cap, a duplicate refreshes in place instead of being refused.
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, Some("new")), 1),
+            PeerOffer::Updated
+        );
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers.values().next().unwrap().name.as_deref(), Some("new"));
+        // ...while a genuinely new peer is still refused.
+        assert_eq!(
+            offer_peer(&mut peers, announcement(2, None), 1),
+            PeerOffer::Capped
+        );
+    }
+
+    #[test]
+    fn test_offer_peer_older_duplicate_does_not_roll_back_fresher_record() {
+        // Codex P2 on #3750: a crawl snapshot older than the RPC record
+        // must not overwrite it.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, stamped(1, "fresh", 100), 10),
+            PeerOffer::Added
+        );
+        assert_eq!(
+            offer_peer(&mut peers, stamped(1, "stale", 90), 10),
+            PeerOffer::Updated
+        );
+        let kept = peers.values().next().unwrap();
+        assert_eq!(kept.name.as_deref(), Some("fresh"));
+        assert_eq!(kept.timestamp_secs, 100);
+    }
+
+    #[test]
+    fn test_offer_peer_equal_timestamp_keeps_arrival_order() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        offer_peer(&mut peers, stamped(1, "first", 100), 10);
+        offer_peer(&mut peers, stamped(1, "second", 100), 10);
+        assert_eq!(
+            peers.values().next().unwrap().name.as_deref(),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn test_merge_capped_still_applies_updates_after_a_refusal() {
+        // Codex P2 on #3750: breaking on the first refused peer dropped
+        // later updates to retained peers, making output depend on
+        // iteration order.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        peers.insert(stamped(1, "a-v1", 100).node_id, stamped(1, "a-v1", 100));
+        merge_capped(
+            &mut peers,
+            vec![
+                stamped(9, "new", 100),  // refused: over cap
+                stamped(1, "a-v2", 200), // update to retained peer
+            ],
+            1,
+            "test",
+        );
+        assert_eq!(peers.len(), 1, "cap still holds");
+        assert_eq!(peers.values().next().unwrap().name.as_deref(), Some("a-v2"));
+    }
+
+    #[tokio::test]
+    async fn test_crawl_seeds_are_bounded_by_cap() {
+        // Depth 0 performs no network queries; the returned set is the
+        // seed set, which the cap must bound (#1765).
+        let seeds: Vec<PeerAnnouncement> = (1..=5u8).map(|b| announcement(b, None)).collect();
+        let crawled = crawl_peers(&seeds, 0, 3, 1, true, true)
+            .await
+            .expect("crawl succeeds");
+        assert_eq!(crawled.len(), 3);
+        let uncapped = crawl_peers(&seeds, 0, 1000, 1, true, true)
+            .await
+            .expect("crawl succeeds");
+        assert_eq!(uncapped.len(), 5);
+        let zero = crawl_peers(&seeds, 0, 0, 1, true, true)
+            .await
+            .expect("crawl succeeds");
+        assert!(zero.is_empty());
+    }
+
+    fn abuse_row(local: u8, remote: u8, seed: u64) -> AbuseCountersRow {
+        AbuseCountersRow {
+            local: [local; 32],
+            remote: [remote; 32],
+            inbound_frames: seed,
+            inbound_bytes: seed * 10,
+            outbound_frames: seed * 100,
+            outbound_bytes: seed * 1_000,
+            unattributed_frames: seed * 10_000,
+            unattributed_bytes: seed * 100_000,
+        }
+    }
+
+    fn policy_view() -> AbusePolicyView {
+        AbusePolicyView {
+            frames_per_sec: 100,
+            frame_burst: 180,
+            bytes_per_sec: 1_048_576,
+            byte_burst: 2_097_152,
+        }
+    }
+
+    #[test]
+    fn abuse_report_renders_rows_in_registry_order() {
+        let local = 1;
+        let a = abuse_row(local, 2, 1);
+        let b = abuse_row(local, 3, 2);
+        let report = format_abuse_report(&[a, b], None);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines[0],
+            "per-peer abuse counters (frames/bytes admitted by the evaluator)"
+        );
+        let hex = |byte: u8| encode_endpoint(&[byte; 32]);
+        let row_a = format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}",
+            hex(1),
+            hex(2),
+            1,
+            10,
+            100,
+            1_000,
+            10_000,
+            100_000
+        );
+        let row_b = format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}",
+            hex(1),
+            hex(3),
+            2,
+            20,
+            200,
+            2_000,
+            20_000,
+            200_000
+        );
+        assert_eq!(lines[1], row_a);
+        assert_eq!(lines[2], row_b);
+        assert_eq!(lines.len(), 3, "no policy line when policy is None");
+    }
+
+    #[test]
+    fn abuse_report_empty_registry_prints_one_line() {
+        let report = format_abuse_report(&[], None);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines, ["no abuse counters recorded"]);
+    }
+
+    #[test]
+    fn abuse_report_includes_policy_when_present() {
+        let report = format_abuse_report(&[abuse_row(1, 2, 1)], Some(&policy_view()));
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines.last().copied(),
+            Some("policy: authorized frames 100/s burst 180, bytes 1048576/s burst 2097152")
+        );
+    }
+
+    #[test]
+    fn abuse_report_omits_policy_when_absent() {
+        let report = format_abuse_report(&[abuse_row(1, 2, 1)], None);
+        assert!(!report.contains("policy:"));
     }
 }
