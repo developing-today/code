@@ -5,7 +5,8 @@
 // The page draws from three documents the server keeps ready (core,
 // questions, ops), so moving between sections never waits on a fetch.
 const API = "/console/api/";
-const $ = (id) => document.getElementById(id);
+// Without a page (the tests import the small functions) nothing is found.
+const $ = (id) => (typeof document === "undefined" ? null : document.getElementById(id));
 const view = $("view");
 const tabsEl = $("tabs");
 const toastEl = $("toast");
@@ -40,16 +41,17 @@ function icon(d) {
   return s;
 }
 
-/** "12 min", "3 h", "2 d" since an ISO time (times without a zone are UTC). */
+/** "just now", "12 min ago", "3 h ago", "2 d ago" since an ISO time
+ * (times without a zone are UTC). */
 export function ago(iso, now = Date.now()) {
   if (!iso) return "";
   const t = Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
   if (Number.isNaN(t)) return "";
   const s = Math.max(0, (now - t) / 1000);
   if (s < 90) return "just now";
-  if (s < 5400) return `${Math.round(s / 60)} min`;
-  if (s < 129600) return `${Math.round(s / 3600)} h`;
-  return `${Math.round(s / 86400)} d`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
 }
 
 /** The queue's priority bands, in words. */
@@ -152,6 +154,8 @@ async function loadDoc(name) {
     throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
   }
   if (res.headers.get("x-as-of")) asOf[name] = Number(res.headers.get("x-as-of"));
+  // Served from the edge: when the laptop behind it last reported.
+  if (res.headers.get("x-host-seen")) hostSeen = Number(res.headers.get("x-host-seen")) || null;
   if (res.status === 304) return false;
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) signedOut = true;
@@ -159,17 +163,43 @@ async function loadDoc(name) {
   }
   docs[name] = await res.json();
   etags[name] = res.headers.get("etag");
+  if (name === "questions") withoutAnswered(docs[name]);
   return true;
 }
+
+/** Questions answered on this device that the list may still show for a
+ * while: the answer is on its way, or held until the laptop is back. */
+const answeredHere = new Set();
+const questionKey = (q) => `${q.set}|${q.ledger}|${q.qid}`;
+
+function withoutAnswered(doc) {
+  const q = doc?.questions;
+  if (!q?.open) return;
+  const present = new Set(q.open.map(questionKey));
+  // Gone from the list: the answer arrived, and there is nothing to hide.
+  for (const key of answeredHere) if (!present.has(key)) answeredHere.delete(key);
+  if (answeredHere.size === 0) return;
+  q.open = q.open.filter((x) => !answeredHere.has(questionKey(x)));
+  q.total = q.open.length;
+}
+
+/** When the laptop behind the edge last reported, or null when the app
+ * is not served from an edge. */
+let hostSeen = null;
+/** How far behind the laptop may be before the app says so. */
+const HOST_QUIET_MS = 3 * 60_000;
+const HELD_NOTE = "Held: the laptop cannot be reached. It will be sent when it is back.";
 
 /** Run one action, say how it went, and draw what changed. */
 async function act(kind, args, done, button) {
   if (button) button.disabled = true;
   try {
-    const { result } = await api("act", { kind, args });
-    toast(typeof done === "function" ? done(result) : done);
+    const { result, held } = await api("act", { kind, args });
+    // Held is not done: the caller is told nothing happened yet, and the
+    // owner is told where it is waiting.
+    toast(held ? HELD_NOTE : typeof done === "function" ? done(result) : done);
     await refresh(true);
-    return result;
+    return held ? null : result;
   } catch (error) {
     toast(error.message, true);
     if (button) button.disabled = false;
@@ -181,7 +211,7 @@ async function act(kind, args, done, button) {
 
 function taskCard(t, extra) {
   const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
-  const when = t.claimed ? `claimed ${ago(t.claimed)} ago` : `queued ${ago(t.created)} ago`;
+  const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
       "div",
@@ -201,6 +231,28 @@ function taskCard(t, extra) {
 
 function notices(doc) {
   const out = [];
+  // Served from the edge with the laptop out of reach: say how old this
+  // is, and that working on is fine.
+  if (doc === docs.core && hostSeen && Date.now() - hostSeen > HOST_QUIET_MS) {
+    out.push(
+      h(
+        "div",
+        { class: "card flag" },
+        h("h3", {}, "The laptop is out of reach"),
+        h(
+          "p",
+          { class: "meta" },
+          `It last reported ${ago(new Date(hostSeen).toISOString())}; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.`,
+        ),
+      ),
+    );
+  }
+  if (doc === docs.core && doc?.edge?.held > 0) {
+    const n = doc.edge.held;
+    out.push(
+      h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting for the laptop. See “What you did” below.`)),
+    );
+  }
   for (const [name, s] of Object.entries(doc?.health || {})) {
     if (!s.ok && s.error) {
       out.push(
@@ -240,7 +292,7 @@ function viewNow() {
           h(
             "p",
             { class: "meta" },
-            [m.agent, m.model, m.where, m.last ? `active ${ago(m.last)} ago` : "", m.tools ? `${m.tools} tool calls running` : ""]
+            [m.agent, m.model, m.where, m.last ? `active ${ago(m.last)}` : "", m.tools ? `${m.tools} tool calls running` : ""]
               .filter(Boolean)
               .join(" · "),
           ),
@@ -265,7 +317,7 @@ function viewNow() {
           h(
             "p",
             { class: "meta" },
-            `${ago(a.at)} ago · ${a.kind} · `,
+            `${ago(a.at)} · ${a.kind} · `,
             h("span", { class: a.status === "failed" ? "bad" : "" }, a.status + (a.note ? `: ${a.note}` : "")),
           ),
         ),
@@ -398,8 +450,12 @@ function flushPending() {
 
 async function sendAnswer(kind, args, key) {
   try {
-    const { result } = await api("act", { kind, args });
+    const { result, held } = await api("act", { kind, args });
     if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
+    else {
+      answeredHere.add(key);
+      if (held) toast(HELD_NOTE);
+    }
     picks.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
@@ -585,7 +641,7 @@ function needCard(i, kind) {
     i.action ? h("h3", {}, i.action) : h("h3", {}, i.title),
     i.action ? h("p", { class: "meta" }, i.title) : null,
     i.why ? h("p", { class: "meta" }, i.why) : null,
-    i.updated ? h("p", { class: "meta" }, `updated ${ago(i.updated)} ago`) : null,
+    i.updated ? h("p", { class: "meta" }, `updated ${ago(i.updated)}`) : null,
     i.ref && /#\d+$/.test(i.ref)
       ? h(
           "div",
@@ -658,7 +714,17 @@ const STATUS = {
 };
 let draft = "";
 
-function viewAsk() {
+function viewAsk(sub) {
+  // Words handed over by the Android app (shared or selected text, or
+  // dictation) arrive after the "#", which never leaves the phone.
+  if (sub?.startsWith("say=")) {
+    try {
+      draft = decodeURIComponent(sub.slice(4));
+    } catch {
+      // not valid text: leave the box as it was
+    }
+    history.replaceState(null, "", "#ask");
+  }
   const box = h("textarea", {
     rows: 3,
     placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
@@ -723,9 +789,9 @@ function viewAsk() {
       ? asks.map((a) => {
           const [label, tone] = STATUS[a.status] || [a.status, ""];
           return card(
-            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)} ago`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)}`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
             h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
-            ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)} ago`), r.text)),
+            ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)}`), r.text)),
             h(
               "div",
               { class: "row end" },
@@ -767,6 +833,8 @@ function viewMore() {
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
+      tile("more/phone", "Phones", "the Android app and its home-screen widget"),
+      tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -787,6 +855,58 @@ const NOTICE = {
   questions: "New questions for you",
   trouble: "A unit failed",
 };
+
+/** What the browser says it runs on: "Linux; Android 10; K", "Windows NT 10.0; Win64; x64". */
+export function deviceLabel(agent = navigator.userAgent) {
+  const m = /\(([^)]*)\)/.exec(agent);
+  return (m ? m[1] : agent).trim().slice(0, 60);
+}
+
+/** A short mark for a push address: how this device tells whether the
+ * sender of notifications still has it, without the address going
+ * anywhere. The same as endpointMark in src/push.ts. */
+export async function endpointMark(endpoint) {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint)));
+  return b64url(hash).slice(0, 16);
+}
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** What this device's notification subscription needs, given what the
+ * sender says of itself: "keep" it, hand it over "again" (the sender
+ * has lost it), or "renew" it (it was made for a key the sender does not
+ * use, as when the app moved from the laptop to the edge). `madeFor` is
+ * the key it was made for, or "" where the browser does not say. */
+export function subscriptionState(madeFor, mark, status) {
+  if (!status || !status.key) return "keep";
+  if (madeFor && madeFor !== status.key) return "renew";
+  return (status.known || []).includes(mark) ? "keep" : "again";
+}
+
+/** Notifications that are on for this device stay on: nothing is asked,
+ * because the owner already said yes on this device. A device where
+ * they are off is left alone. */
+async function keepSubscribed() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  const reg = await navigator.serviceWorker.getRegistration("/console/");
+  let sub = reg ? await reg.pushManager.getSubscription() : null;
+  if (!sub) return;
+  const status = await api("push");
+  const key = sub.options?.applicationServerKey;
+  const state = subscriptionState(key ? b64url(new Uint8Array(key)) : "", await endpointMark(sub.endpoint), status);
+  if (state === "keep") return;
+  if (state === "renew") {
+    await sub.unsubscribe();
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
+  }
+  await api("act", { kind: "push.on", args: { subscription: sub.toJSON(), label: deviceLabel() } });
+}
 
 function keyBytes(b64) {
   const text = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
@@ -810,7 +930,7 @@ async function viewNotify() {
       const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
       await navigator.serviceWorker.ready;
       const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
-      await act("push.on", { subscription: s.toJSON(), label: navigator.userAgent.replace(/^.*\((.*?)\).*$/, "$1").slice(0, 60) }, "Notifications are on for this device");
+      await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device");
     } catch (error) {
       toast(error.message, true);
       e.target.disabled = false;
@@ -846,6 +966,185 @@ async function viewNotify() {
       ),
     ),
   ];
+}
+
+// ---- phones ------------------------------------------------------------
+
+/** A request from the Android app on this phone to be linked, until it is answered. */
+let linkRequest = null;
+/** How many phones were linked when the request was approved, or null before that. */
+let linkApprovedAt = null;
+
+/** The address that tells the Android app to collect its token. It carries nothing. */
+function collectUrl() {
+  const back = encodeURIComponent(`${location.origin}/console/#more/phone`);
+  return `intent://finish#Intent;scheme=pmconsole;package=${me.androidPackage || "today.developing.pmconsole"};S.browser_fallback_url=${back};end`;
+}
+
+/** Sign-in: what is on, and the one part only the owner can do to put
+ * Google first. Google lets nobody but a signed-in person make the
+ * client its sign-in runs on; everything after that is done here. */
+async function viewSignin() {
+  let s;
+  try {
+    s = await api("signin");
+  } catch (error) {
+    return [empty(`The sign-in settings could not be read just now: ${error.message}`)];
+  }
+  const copy = (text) =>
+    h(
+      "button",
+      {
+        class: "small ghost",
+        onclick: () =>
+          navigator.clipboard.writeText(text).then(
+            () => toast("Copied"),
+            () => toast("Could not copy. Select the text and copy it.", true),
+          ),
+      },
+      "Copy",
+    );
+  const value = (text) => h("div", { class: "row" }, h("code", { class: "wrap" }, text), copy(text));
+  const id = h("input", { type: "text", placeholder: "Client ID", autocomplete: "off", autocapitalize: "none", spellcheck: false });
+  const secret = h("input", { type: "password", placeholder: "Client secret", autocomplete: "off" });
+  const send = async (e) => {
+    const done = await act("sso.google", { clientId: id.value.trim(), clientSecret: secret.value.trim() }, "Google sign-in is on", e.target);
+    secret.value = "";
+    if (done) draw();
+    else e.target.disabled = false;
+  };
+  return [
+    card(
+      h("h3", {}, s.google ? "Google sign-in is on" : "Google sign-in is not on yet"),
+      h(
+        "p",
+        { class: "meta" },
+        s.google
+          ? "The sign-in page offers Google. The code sent by email stays as the fallback."
+          : s.pin
+            ? "For now the sign-in page asks for a code sent by email."
+            : "No sign-in method is on.",
+      ),
+    ),
+    h("h2", {}, s.google ? "Use a different Google client" : "Turn it on"),
+    card(
+      h("p", { class: "meta" }, "Google lets only a signed-in person make the client its sign-in runs on, so this part is yours. A few minutes, once."),
+      h(
+        "ol",
+        { class: "steps" },
+        h("li", {}, "Open ", ext("https://console.cloud.google.com/auth/clients", "Google Cloud, Clients"), ". If it asks, set the app up first: any name, audience External."),
+        h("li", {}, "Create client. Application type: Web application."),
+        h("li", {}, "Authorized JavaScript origins, add:", value(s.origin)),
+        h("li", {}, "Authorized redirect URIs, add:", value(s.redirect)),
+        h("li", {}, "Create, then paste the two values it shows:"),
+      ),
+      id,
+      secret,
+      h("div", { class: "row end" }, h("button", { onclick: send }, s.google ? "Use this client" : "Turn on Google sign-in")),
+      h("p", { class: "meta" }, "Both values go to Cloudflare, which runs the sign-in page, and are kept nowhere else."),
+    ),
+  ];
+}
+
+async function viewPhone(sub) {
+  if (sub?.startsWith("link=")) {
+    const request = sub.slice(5);
+    linkRequest = /^[A-Za-z0-9_-]{43}$/.test(request) ? request : null;
+    linkApprovedAt = null;
+    history.replaceState(null, "", "#more/phone");
+  }
+  const devices = await api("devices");
+  // The phone has collected its token: the request is finished.
+  if (linkApprovedAt !== null && devices.length > linkApprovedAt) {
+    linkRequest = null;
+    linkApprovedAt = null;
+  }
+  const approve = async (e) => {
+    const done = await act("device.approve", { challenge: linkRequest }, "Approved", e.target);
+    if (!done) return;
+    linkApprovedAt = devices.length;
+    draw();
+    // Hand back to the app, which collects its token and fills the widget.
+    location.href = collectUrl();
+  };
+  const out = [];
+  if (linkRequest && linkApprovedAt === null) {
+    out.push(
+      card(
+        h("h3", {}, "Link this phone?"),
+        h(
+          "p",
+          { class: "meta" },
+          "The app's home-screen widget asked to be linked. It will be able to read three counts (in progress, queued, needs you) and the titles at the top of each list, and nothing else. It cannot change anything, and you can remove it here at any time.",
+        ),
+        h("p", { class: "why" }, "Approve only if you just tapped the PM widget on this phone. If this appeared after following a link from somewhere else, choose Not now."),
+        h(
+          "div",
+          { class: "row end" },
+          h(
+            "button",
+            {
+              class: "small ghost",
+              onclick: () => {
+                linkRequest = null;
+                draw();
+              },
+            },
+            "Not now",
+          ),
+          h("button", { onclick: approve }, "Link this phone"),
+        ),
+      ),
+    );
+  } else if (linkRequest) {
+    out.push(
+      card(
+        h("h3", {}, "Approved"),
+        h("p", { class: "meta" }, "The widget fills in a moment. If it does not, tap below, or tap the widget."),
+        h("div", { class: "row end" }, h("a", { class: "button", href: collectUrl() }, "Finish on this phone")),
+      ),
+    );
+  }
+  out.push(
+    h("h2", {}, `Linked phones (${devices.length})`),
+    ...(devices.length
+      ? devices.map((d) =>
+          card(
+            h("h3", {}, d.name),
+            h("p", { class: "meta" }, `Linked ${ago(d.createdAt)} · ${d.seenAt ? `last read ${ago(d.seenAt)}` : "has not read yet"}`),
+            h(
+              "div",
+              { class: "row end" },
+              h(
+                "button",
+                {
+                  class: "small ghost",
+                  onclick: async (e) => {
+                    const sure = await ask({ title: "Remove this phone?", text: `${d.name} will stop showing the counts on its home screen.`, okLabel: "Remove", danger: true });
+                    if (sure !== null) act("device.remove", { id: d.id }, "Removed", e.target);
+                  },
+                },
+                "Remove",
+              ),
+            ),
+          ),
+        )
+      : [empty("No phone is linked. On a phone with the app, add the PM widget to the home screen and tap it.")]),
+    h("h2", {}, "The Android app"),
+    card(
+      h(
+        "ul",
+        { class: "plain" },
+        h("li", {}, h("b", {}, "Home-screen widget. "), "In progress, queued next and needs you, with the task being worked on. Each number opens its screen."),
+        h("li", {}, h("b", {}, "Say it. "), "Long-press the icon and choose Dictate, or add the “Ask the fleet” tile to quick settings: speak, check the words, send."),
+        h("li", {}, h("b", {}, "Share or select. "), "Share text from any app to PM Console, or select text anywhere and choose “Ask the fleet”: it lands in the Ask box."),
+        h("li", {}, h("b", {}, "Shortcuts. "), "Long-press the icon for Ask, Needs me and Now."),
+        h("li", {}, h("b", {}, "Notifications. "), "Turn them on under Notifications; they arrive as the app's own."),
+      ),
+      me.androidApp ? h("div", { class: "row end" }, h("a", { class: "button", href: "/console/pm-console.apk" }, "Download the app")) : null,
+    ),
+  );
+  return out;
 }
 
 const QUEUE_STATES = ["blocked", "queued", "claimed", "parked"];
@@ -924,7 +1223,7 @@ function viewPrs() {
     const detail = h("div", {});
     return card(
       h("h3", {}, ext(p.url, `#${p.number}`), ` ${p.title}`),
-      h("p", { class: "meta" }, `${p.draft ? "draft · " : ""}${p.author} · ${p.branch} · opened ${ago(p.created)} ago`),
+      h("p", { class: "meta" }, `${p.draft ? "draft · " : ""}${p.author} · ${p.branch} · opened ${ago(p.created)}`),
       detail,
       h(
         "div",
@@ -1015,11 +1314,11 @@ async function viewAgents() {
     compose,
     h("h2", {}, `Agents (${agents.length})`),
     ...agents.map((a) =>
-      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} ago · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
+      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
     ),
     h("h2", {}, "Recent messages"),
     ...(recent.length
-      ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} ago · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
+      ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
       : [empty("No messages.")]),
   ];
 }
@@ -1098,6 +1397,8 @@ const VIEWS = {
   "more/agents": ["Agents", viewAgents, "ops"],
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
+  "more/phone": ["Phones", viewPhone],
+  "more/signin": ["Sign-in", viewSignin],
 };
 let route = "now";
 let drawSeq = 0;
@@ -1105,6 +1406,8 @@ let drawSeq = 0;
 function parse(hash) {
   const r = hash.replace(/^#/, "");
   if (VIEWS[r]) return [r, undefined];
+  // The Android app asking for its phone to be linked: #more/link=<request>.
+  if (r.startsWith("more/link=")) return ["more/phone", r.slice(5)];
   const [top, sub] = r.split("/");
   return VIEWS[top] ? [top, sub] : ["now", undefined];
 }
@@ -1135,8 +1438,11 @@ function drawFresh() {
   const t = asOf.core;
   const age = t ? (Date.now() - t) / 1000 : null;
   freshEl.className = `fresh${signedOut ? " down" : age !== null && age > 180 ? " stale" : ""}`;
-  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())} ago`;
+  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())}`;
 }
+
+/** How many quick looks have been taken since the state was last fresh. */
+let catchUp = 0;
 
 /** Draw the current section from what is already loaded. Only the latest
  * call may draw, so a slow section never lands on top of a newer one. */
@@ -1170,6 +1476,15 @@ async function refresh(force) {
   try {
     changed = await loadDoc("core");
     if (extra) changed = (await loadDoc(extra)) || changed;
+    // An old copy means the laptop has just been told someone is
+    // looking: look again shortly, a few times, instead of waiting out
+    // the full interval.
+    const old = asOf.core && Date.now() - asOf.core > 60_000;
+    if (!old) catchUp = 0;
+    else if (catchUp < 4) {
+      catchUp++;
+      setTimeout(() => document.visibilityState === "visible" && refresh(false), 4_000);
+    }
   } catch (error) {
     if (!docs.core) view.replaceChildren(card(h("h3", {}, "Could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Reload"))));
   }
@@ -1191,7 +1506,11 @@ if (typeof document !== "undefined" && view) {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPending();
-    else refresh(false);
+    else {
+      refresh(false);
+      // Back from the Android app after linking: show the phone it added.
+      if (route === "more/phone") draw();
+    }
   });
   addEventListener("pagehide", flushPending);
   setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);
@@ -1203,6 +1522,9 @@ if (typeof document !== "undefined" && view) {
     .catch(() => {});
   // The worker shows notifications and opens the right screen when one is tapped.
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
+  // And a device that has notifications on keeps getting them when the
+  // sender changed or lost track of it.
+  keepSubscribed().catch(() => {});
   draw();
   refresh(true);
 }

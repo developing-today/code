@@ -5,8 +5,7 @@
 // Every write is something the fleet already understands: an answer to a
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
-import { readFile } from "node:fs/promises";
-import { OpError, type Ops, PRIORITY_SCALE, type Row } from "./ops.ts";
+import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
@@ -27,6 +26,9 @@ const SET_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const REF = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$/;
 const LEANS = ["none", "skeptical", "approve"] as const;
 const SUBMIT_BATCH = 200;
+/** Replies shown in a prompt's thread, and how many pages back are read to find them. */
+const REPLIES_SHOWN = 6;
+const REPLY_PAGES = 3;
 
 function clip(value: unknown, max: number): string {
   const s = typeof value === "string" ? value : "";
@@ -129,7 +131,10 @@ export class Work {
 
   constructor(
     private ops: Ops,
-    private read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+    // The decisions file lives on the laptop: the import is lazy so the
+    // edge Worker, which never reads it, can import this module.
+    private read: (path: string) => Promise<string> = async (path) =>
+      (await import("node:fs/promises")).readFile(path, "utf8"),
     private clock: () => Date = () => new Date(),
   ) {}
 
@@ -454,17 +459,21 @@ export class Work {
       if (i.comments > 0 && thread?.updated !== i.updated_at) {
         // The newest comments are on the last page. Bots that only link the
         // issue elsewhere (the board sync) are not the fleet answering.
-        const page = Math.max(1, Math.ceil(i.comments / 100));
-        const comments = (
-          (await this.ops.gh([`repos/${this.repo}/issues/${i.number}/comments?per_page=100&page=${page}`])) as {
-            body: string | null;
-            created_at: string;
-            user?: { type?: string } | null;
-          }[]
-        ).filter((c) => c.user?.type !== "Bot");
+        // Read back from the last page until the replies shown are in
+        // hand: a page boundary, or a tail of bot comments, must not hide
+        // the answer.
+        type Comment = { body: string | null; created_at: string; user?: { type?: string } | null };
+        const last = Math.max(1, Math.ceil(i.comments / 100));
+        let comments: Comment[] = [];
+        for (let page = last; page >= 1 && last - page < REPLY_PAGES && comments.length < REPLIES_SHOWN; page--) {
+          const got = (await this.ops.gh([
+            `repos/${this.repo}/issues/${i.number}/comments?per_page=100&page=${page}`,
+          ])) as Comment[];
+          comments = [...got.filter((c) => c.user?.type !== "Bot"), ...comments];
+        }
         thread = {
           updated: i.updated_at,
-          replies: comments.slice(-6).map((c) => ({
+          replies: comments.slice(-REPLIES_SHOWN).map((c) => ({
             you: (c.body ?? "").includes(OWNER_REPLY_MARK),
             at: c.created_at.slice(0, 19),
             text: clip((c.body ?? "").replace(OWNER_REPLY_MARK, "").trim(), 1500),
@@ -518,8 +527,14 @@ export class Work {
     this.labelReady = true;
   }
 
-  /** Turn the owner's words into an issue and a top-band task, in one pass. */
-  async ask(args: Record<string, unknown>) {
+  /** Turn the owner's words into an issue and a top-band task, in one pass.
+   * `enqueue` is a stand-in point: the edge files the issue itself and
+   * holds the enqueue for the laptop's return instead of running the
+   * fleet binary, which is not there. */
+  async ask(
+    args: Record<string, unknown>,
+    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+  ) {
     const text = words(args.text, "text", 8000);
     await this.ensureLabel();
     const first = text.split("\n")[0].trim();
@@ -528,7 +543,7 @@ export class Work {
       body: `${text}\n\n---\n${ASK_NOTE}\n${OWNER_PROMPT_MARK}`,
       labels: [this.ops.cfg.promptLabel, "expedite"],
     })) as { number: number; html_url: string };
-    const queued = await this.ops.enqueue(
+    const queued = await enqueue(
       promptPacket(this.repo, this.ops.cfg.queue, made.number, text, this.clock().toISOString()),
     );
     return {
@@ -541,8 +556,13 @@ export class Work {
     };
   }
 
-  /** The owner answers back on one of his prompts; the fleet is woken for it. */
-  async askReply(args: Record<string, unknown>) {
+  /** The owner answers back on one of his prompts; the fleet is woken for it.
+   * `enqueue` is a stand-in point, as in ask(): the edge posts the reply
+   * itself and holds the enqueue for the laptop's return. */
+  async askReply(
+    args: Record<string, unknown>,
+    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+  ) {
     const issue = Number(args.issue);
     if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
     const text = words(args.text, "text", 8000);
@@ -559,7 +579,7 @@ export class Work {
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
-    const queued = await this.ops.enqueue(
+    const queued = await enqueue(
       promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()),
     );
     return { issue, queued: queued.code === 0 };

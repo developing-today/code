@@ -29,10 +29,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
-    JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
-    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
+    BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
+    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
+    SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
+    record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -42,6 +43,22 @@ use atlas_proto::{
 };
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+
+/// The disclosure context a service request runs under
+/// (#12404, #9096 design section 4): a stated context resolves
+/// fail-closed — an unknown value means `public-surface` — and
+/// an unstated one takes this surface's stated default. The
+/// service's callers are authenticated fleet surfaces (the job
+/// API requires a client credential), so the default is
+/// `fleet-internal`; a caller preparing output for any other
+/// destination states that destination's context, and sinks
+/// beyond this service apply their own.
+fn request_context(req: &SearchRequest) -> DisclosureContext {
+    match req.context.as_deref() {
+        Some(name) => DisclosureContext::for_outbound(Some(name)),
+        None => DisclosureContext::FleetInternal,
+    }
+}
 
 // -------------------------------------------------------------- time ----
 
@@ -697,6 +714,7 @@ where
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
             parameters: request.parameters.clone(),
+            context: request_context(request),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -745,7 +763,13 @@ where
             .and_then(CoreSensitivity::from_name)
             .map(|s| s <= core_sensitivity(ceiling))
             .unwrap_or(false);
-        if !allowed {
+        // Excluded content (#12404): `excluded_personal_life`
+        // is ineligible in every disclosure context. The label
+        // is not a ladder value, so the check above already
+        // refuses it; this states the rule explicitly so it
+        // survives any change to the label mapping.
+        let excluded = chunk_classification(detail.eff_sensitivity.as_deref()).is_excluded();
+        if !allowed || excluded {
             return Err(not_found());
         }
         run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
@@ -951,11 +975,13 @@ where
 //   (query, mode, k, pool, group_by_session, expand, with_message,
 //    model, embedder, trunc, vector_backend,
 //    kind[], topic[], project[], client[], since, until,
-//    effective_ceiling)
+//    effective_ceiling, disclosure_context)
 //
 // Exact-key sharing only: the effective ceiling is IN the key, so
 // a lower-ceiling request can never be served from a
-// higher-ceiling entry; filters are in the key, so a filtered
+// higher-ceiling entry; the disclosure context is in the key for
+// the same reason (#12404) — a payload filtered for one
+// destination surface is never served to another; filters are in the key, so a filtered
 // request is never answered by subsetting an unfiltered ranking
 // (or vice versa). An identical submit while a matching
 // computation is queued/running COALESCES onto it (no second
@@ -997,6 +1023,11 @@ struct CacheKey {
     since: Option<String>,
     until: Option<String>,
     effective_ceiling: ProtoSensitivity,
+    /// The resolved disclosure context (#12404): cached and
+    /// coalesced payloads are context-filtered, so the context
+    /// is part of the effective request exactly like the
+    /// ceiling.
+    context: DisclosureContext,
 }
 
 impl CacheKey {
@@ -1042,6 +1073,7 @@ impl CacheKey {
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
             effective_ceiling,
+            context: request_context(req),
         }
     }
 }
@@ -3668,10 +3700,16 @@ mod tests {
         let (handle, calls) = start(RuntimeLimits::default(), None);
         let addr = handle.addr;
 
+        // Both jobs state the local-owner disclosure context
+        // (#12404): the canary is secret-bearing, and under the
+        // service's fleet-internal default context it is now
+        // withheld from every caller — only the owner's local
+        // surface may receive it. The variable under test here
+        // stays the effective ceiling.
         let low = submit(
             addr,
             PERSONAL_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         let low_id = low.body["job_id"].as_str().unwrap().to_string();
         let low_tok = low.body["job_token"].as_str().unwrap().to_string();
@@ -3683,7 +3721,7 @@ mod tests {
         let high = submit(
             addr,
             SECRET_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         assert_eq!(high.body["effective_ceiling"], "secret-bearing");
         let high_id = high.body["job_id"].as_str().unwrap().to_string();
@@ -3715,6 +3753,64 @@ mod tests {
         assert!(
             result_ids(&high_page.body).contains(&3),
             "higher-ceiling job sees its own canary"
+        );
+    }
+
+    #[test]
+    fn dedupe_never_crosses_disclosure_contexts() {
+        // #12404: the caller's ceiling is identical and maximal
+        // for both jobs; only the destination context differs.
+        // The context is part of the cache key, so the public
+        // job executes separately and its stored payload is the
+        // context-filtered one — the owner's unfiltered-by-
+        // context ranking must never be served into it.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+
+        let owner = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
+        );
+        let owner_id = owner.body["job_id"].as_str().unwrap().to_string();
+        let owner_tok = owner.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &owner_id, &owner_tok);
+        let calls_after_owner = calls.lock().unwrap().len();
+
+        let public = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "public-surface"}),
+        );
+        let public_id = public.body["job_id"].as_str().unwrap().to_string();
+        let public_tok = public.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &public_id, &public_tok);
+        assert!(
+            calls.lock().unwrap().len() > calls_after_owner,
+            "different disclosure context must execute separately"
+        );
+
+        let public_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{public_id}/results"),
+            Some(&public_tok),
+            None,
+        );
+        assert!(
+            !result_ids(&public_page.body).contains(&3),
+            "canary must not cross to the public context"
+        );
+        let owner_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{owner_id}/results"),
+            Some(&owner_tok),
+            None,
+        );
+        assert!(
+            result_ids(&owner_page.body).contains(&3),
+            "owner-context job sees its own canary"
         );
     }
 

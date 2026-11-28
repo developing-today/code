@@ -898,6 +898,9 @@ let
               self = result // {
                 outPath = "${inputs.self}/pkgs/id";
               };
+              # Root NixOS runtime output; the ID flake's named test
+              # checks remain available and run through id-check CI.
+              checkRuntimePackages = false;
             }
           );
         in
@@ -1728,7 +1731,7 @@ let
 
   # The mcpx daemon modules (code#4801): the canonical module files
   # live in pkgs/mcpx/modules; these outputs wrap them with this
-  # flake's own mcpx build as the package default. The opencode fork
+  # flake's own mcpx build. The opencode fork
   # re-exports the same files defaulted to its build, and
   # openchamber passes them through — the option set never forks.
   make-mcpx-modules =
@@ -1738,7 +1741,13 @@ let
         { lib, pkgs, ... }:
         {
           imports = [ module ];
-          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+          services.mcpx.package = lib.mkDefault (
+            pkgs.callPackage ../pkgs/mcpx/package.nix {
+              # Keep the runtime module lean; the standalone package output
+              # still runs this Go check phase.
+              doCheck = false;
+            }
+          );
         };
     in
     {

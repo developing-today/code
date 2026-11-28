@@ -8,7 +8,13 @@ export const REPORT_TEMPLATE_VERSION = "c7-rollup-v1";
 export const REPORT_TEMPLATES: Readonly<Record<ReportPeriodKind, readonly string[]>> = {
   daily: ["What changed", "Pivots and why", "Permanent remediations", "Activity"],
   weekly: ["Handled last week", "Biggest changes", "Planned next week", "Forward-day sketches", "Classified activity"],
-  monthly: ["Roadmap and features", "Struggles and process improvements", "Cost and capability changes", "Surprises and learnings", "Ideas and designs"],
+  monthly: [
+    "Roadmap and features",
+    "Struggles and process improvements",
+    "Cost and capability changes",
+    "Surprises and learnings",
+    "Ideas and designs",
+  ],
   quarterly: ["Major items", "Roadmap and features", "Cost and traffic patterns", "Surprises and learnings"],
   annual: ["Plans and SaaS", "Dollar and PR efficiency", "Major changes and mistakes", "Surprises", "Next-year ideas"],
 };
@@ -65,13 +71,16 @@ function preferComposedChildren(records: ReportRecord[], kind: ReportPeriodKind)
   });
 }
 
-function lowerGrainRecords(period: ReportPeriod, records: ReportRecord[]): { record: ReportRecord; reachBack: boolean }[] {
-  const daily = period.kind === "daily"
-    ? records.filter((record) => record.period.kind === "daily" && record.templateVersion !== REPORT_TEMPLATE_VERSION)
-    : preferComposedChildren(records, "daily");
-  if (period.kind === "daily") return daily
-    .filter((record) => inPeriod(record, period))
-    .map((record) => ({ record, reachBack: false }));
+function lowerGrainRecords(
+  period: ReportPeriod,
+  records: ReportRecord[],
+): { record: ReportRecord; reachBack: boolean }[] {
+  const daily =
+    period.kind === "daily"
+      ? records.filter((record) => record.period.kind === "daily" && record.templateVersion !== REPORT_TEMPLATE_VERSION)
+      : preferComposedChildren(records, "daily");
+  if (period.kind === "daily")
+    return daily.filter((record) => inPeriod(record, period)).map((record) => ({ record, reachBack: false }));
 
   const current = daily.filter((record) => inPeriod(record, period)).map((record) => ({ record, reachBack: false }));
   // Weekly reports carry the prior week's Friday as explicit context. It is
@@ -98,8 +107,10 @@ function lowerGrainRecords(period: ReportPeriod, records: ReportRecord[]): { rec
 }
 
 function stableSourceRows(period: ReportPeriod, records: ReportRecord[]) {
-  return lowerGrainRecords(period, records).sort((left, right) =>
-    left.record.period.periodStart.localeCompare(right.record.period.periodStart) || left.record.id.localeCompare(right.record.id),
+  return lowerGrainRecords(period, records).sort(
+    (left, right) =>
+      left.record.period.periodStart.localeCompare(right.record.period.periodStart) ||
+      left.record.id.localeCompare(right.record.id),
   );
 }
 
@@ -107,15 +118,25 @@ function stableSourceRows(period: ReportPeriod, records: ReportRecord[]) {
  * Compose one explicit period from durable lower-grain records. Source-time
  * ordering and IDs, rather than arrival order, are the determinism oracle.
  */
-export function composeReport(period: ReportPeriod, records: ReportRecord[], options: ComposeReportOptions): ComposedReport {
+export function composeReport(
+  period: ReportPeriod,
+  records: ReportRecord[],
+  options: ComposeReportOptions,
+): ComposedReport {
   if (!Number.isFinite(Date.parse(options.asOf)) || new Date(options.asOf).toISOString() !== options.asOf) {
     throw new Error("asOf must be a canonical ISO-8601 timestamp");
   }
-  if (Date.parse(options.asOf) < Date.parse(period.periodStart) || Date.parse(options.asOf) >= Date.parse(period.periodEnd)) {
+  if (
+    Date.parse(options.asOf) < Date.parse(period.periodStart) ||
+    Date.parse(options.asOf) >= Date.parse(period.periodEnd)
+  ) {
     throw new Error("asOf must fall within the report period");
   }
 
-  const rows = stableSourceRows(period, records.filter((record) => Date.parse(record.asOf) <= Date.parse(options.asOf)));
+  const rows = stableSourceRows(
+    period,
+    records.filter((record) => Date.parse(record.asOf) <= Date.parse(options.asOf)),
+  );
   if (!rows.length) throw new Error("cannot compose a report without canonical source records");
   const orderedBlocks: ReportRecordBlock[] = [];
   const bubblingCandidates: ReportRecordBlock[] = [];
@@ -124,9 +145,9 @@ export function composeReport(period: ReportPeriod, records: ReportRecord[], opt
   const targetGrain = grainOrder.indexOf(period.kind);
   for (const { record, reachBack } of rows) {
     const composedInput = record.templateVersion === REPORT_TEMPLATE_VERSION;
-    const sourceBlocks = [...new Map(
-      [...record.blocks, ...(record.bubblingCandidates ?? [])].map((block) => [block.id, block]),
-    ).values()];
+    const sourceBlocks = [
+      ...new Map([...record.blocks, ...(record.bubblingCandidates ?? [])].map((block) => [block.id, block])).values(),
+    ];
     for (const block of sourceBlocks) {
       // Templates and summaries describe their source report, not source
       // activity. Rebuild them at the target grain instead of rolling them up.
@@ -157,7 +178,12 @@ export function composeReport(period: ReportPeriod, records: ReportRecord[], opt
   orderedBlocks.sort((left, right) => left.relatedAt.localeCompare(right.relatedAt) || left.id.localeCompare(right.id));
 
   const activity: ClassifiedActivity = {
-    implemented: [], cancelled: [], duplicate: [], inProgress: [], blocked: [], queued: [],
+    implemented: [],
+    cancelled: [],
+    duplicate: [],
+    inProgress: [],
+    blocked: [],
+    queued: [],
   };
   const latestClassification = new Map<string, { relatedAt: string; id: string; key: keyof ClassifiedActivity }>();
   for (const block of orderedBlocks) {
@@ -165,14 +191,18 @@ export function composeReport(period: ReportPeriod, records: ReportRecord[], opt
     const key = classificationKeys[block.classification];
     for (const member of block.links ?? []) {
       const previous = latestClassification.get(member);
-      if (!previous || block.relatedAt.localeCompare(previous.relatedAt) > 0 ||
-        (block.relatedAt === previous.relatedAt && block.id.localeCompare(previous.id) > 0)) {
+      if (
+        !previous ||
+        block.relatedAt.localeCompare(previous.relatedAt) > 0 ||
+        (block.relatedAt === previous.relatedAt && block.id.localeCompare(previous.id) > 0)
+      ) {
         latestClassification.set(member, { relatedAt: block.relatedAt, id: block.id, key });
       }
     }
   }
   for (const [member, latest] of latestClassification) activity[latest.key].push(member);
-  for (const key of Object.keys(activity) as (keyof ClassifiedActivity)[]) activity[key] = [...new Set(activity[key])].sort();
+  for (const key of Object.keys(activity) as (keyof ClassifiedActivity)[])
+    activity[key] = [...new Set(activity[key])].sort();
 
   const summaryBlocks: ReportRecordBlock[] = (Object.keys(activity) as (keyof ClassifiedActivity)[])
     .filter((key) => activity[key].length > 0)
@@ -183,11 +213,20 @@ export function composeReport(period: ReportPeriod, records: ReportRecord[], opt
       links: activity[key],
       importance: defaultImportance(period.kind),
     }));
-  const sources = [...new Map(rows.flatMap(({ record }) => record.sources)
-    .filter((source) => Date.parse(source.observedAt) <= Date.parse(options.asOf))
-    .map((source) => [source.id, source])).values()]
-    .sort((left, right) => left.observedAt.localeCompare(right.observedAt) || left.id.localeCompare(right.id));
-  const sourceCursor = options.sourceCursor ?? `${rows.map(({ record }) => record.id).sort().join(",")};asOf:${options.asOf}`;
+  const sources = [
+    ...new Map(
+      rows
+        .flatMap(({ record }) => record.sources)
+        .filter((source) => Date.parse(source.observedAt) <= Date.parse(options.asOf))
+        .map((source) => [source.id, source]),
+    ).values(),
+  ].sort((left, right) => left.observedAt.localeCompare(right.observedAt) || left.id.localeCompare(right.id));
+  const sourceCursor =
+    options.sourceCursor ??
+    `${rows
+      .map(({ record }) => record.id)
+      .sort()
+      .join(",")};asOf:${options.asOf}`;
   if (!sourceCursor.trim()) throw new Error("cannot compose a report without canonical source records");
   const templateBlocks: ReportRecordBlock[] = REPORT_TEMPLATES[period.kind].map((title, index) => ({
     id: `template:section:${String(index + 1).padStart(2, "0")}`,
@@ -220,7 +259,11 @@ export async function generateReportFromStoredRecords(
     if (Date.parse(record.asOf) > Date.parse(options.asOf)) continue;
     const key = `${record.period.id}\n${record.templateVersion}`;
     const previous = latestAsOf.get(key);
-    if (!previous || record.asOf > previous.asOf || (record.asOf === previous.asOf && record.generatedAt > previous.generatedAt)) {
+    if (
+      !previous ||
+      record.asOf > previous.asOf ||
+      (record.asOf === previous.asOf && record.generatedAt > previous.generatedAt)
+    ) {
       latestAsOf.set(key, record);
     }
   }
