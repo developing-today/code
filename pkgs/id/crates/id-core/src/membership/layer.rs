@@ -402,7 +402,7 @@ impl Membership {
         let filtered =
             self.state.inner.ignore.contains(id) && !self.state.inner.mutual_removes.contains(id);
         if filtered {
-            return false;
+            return true;
         }
         let Some(op) = self.state.inner.operations.get(id) else {
             return false;

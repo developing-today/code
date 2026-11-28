@@ -128,7 +128,7 @@ impl CausalIndex {
                 .nodes
                 .get(parent)
                 .ok_or(FrontierError::UnknownEvent(*parent))?;
-            if node.graph_group == Some(group) {
+            if node.graph_group != Some(group) {
                 candidates.push(*parent);
             } else {
                 let frontier = self
