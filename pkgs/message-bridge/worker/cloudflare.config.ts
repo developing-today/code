@@ -25,6 +25,10 @@ export default defineConfig({
       PUBLIC_URL: bindings.text("https://bridge.security.cab"),
       WORKERS_DEV_URL: bindings.text("https://message-bridge.developing-today.workers.dev"),
       CONSOLE_URL: bindings.text("https://pm.security.cab/console/#more/messages"),
+      // The /version stamp (#15793): the commit being deployed, read
+      // at build time; the Actions deploy sets GITHUB_SHA (deploy.mjs
+      // derives its version tag from the same value).
+      VERSION: bindings.text(process.env.GITHUB_SHA ?? "unknown"),
       CF_VERSION_METADATA: bindings.versionMetadata(),
     },
   },

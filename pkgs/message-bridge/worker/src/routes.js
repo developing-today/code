@@ -120,6 +120,8 @@
 //   GET  /<class>/<name>              public wake signal (notes.js): one
 //                                     bare UUID, same shape registered
 //                                     or not, decoy-rotated per path
+//   GET  /version                     {ok, service, version}: the deployed
+//                                     commit (#15793), no data, no auth
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -140,6 +142,7 @@ import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
 import { handleNotes, handleSignal } from "./notes.js";
 import { notesOwnerFeed, pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { latestBackup, readBackup, runBackup } from "./backup.js";
+import { versionAnswer } from "./version.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 
@@ -381,6 +384,10 @@ export function deliveredFor(env, store, waitUntil) {
  */
 export async function route(request, env, getStore, waitUntil = (p) => p) {
   const url = new URL(request.url);
+  if (url.pathname === "/version") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(versionAnswer(env));
+  }
   if (url.pathname === "/healthz") {
     const configured = tokenConfigured(env);
     return json({

@@ -20,7 +20,11 @@
     "WORKERS_DEV_URL": "https://message-bridge.developing-today.workers.dev",
     // Where the owner link (/p/<token>) redirects: the PM console's
     // Messages surface, the bridge's only website since #14378.
-    "CONSOLE_URL": "https://pm.security.cab/console/#more/messages"
+    "CONSOLE_URL": "https://pm.security.cab/console/#more/messages",
+    // The /version stamp (#15793): cloudflare.config.ts stamps the
+    // deployed commit at build time; this default keeps an unstamped
+    // local deploy honest.
+    "VERSION": "unknown"
   },
   // Secrets (uploaded by deploy.mjs from Bitwarden, never in this file):
   //   ACCESS_TOKEN   the owner's path token: /mcp (Claude), /p and /api
