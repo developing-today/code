@@ -1575,6 +1575,28 @@ fn valid_max_attempts(value: &Value) -> bool {
         .is_some_and(|n| (1..=MAX_ATTEMPTS_CEILING).contains(&n))
 }
 
+/// #9178 §1 (FDR-0001): the durable resume hint rule, shared by
+/// enqueue validation and the later-update verb (`resume-set`):
+/// null means no hint (a clear on update); a present value must be
+/// a non-empty string, stored trimmed, so a stored hint is always
+/// meaningful and NULL always means absent. `field` names the
+/// caller in the error message. No `ses_` format check: existence
+/// is checked against the server, where the id lives.
+pub(crate) fn resolve_resume_hint(value: &Value, field: &str) -> Result<Option<String>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Err(format!("{field}: must be a non-empty string when present"))
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        _ => Err(format!("{field}: must be a non-empty string when present")),
+    }
+}
+
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -1594,11 +1616,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     // so a stored hint is always meaningful and NULL always means
     // absent. No `ses_` format check here: the claim-wire slice
     // checks existence against the server, where the id lives.
-    if let Some(value) = obj.get("resume_session_id").filter(|v| !v.is_null()) {
-        if !value.as_str().is_some_and(|s| !s.trim().is_empty()) {
-            errors.push(
-                "packet.resume_session_id: must be a non-empty string when present".to_string(),
-            );
+    if let Some(value) = obj.get("resume_session_id") {
+        if let Err(e) = resolve_resume_hint(value, "packet.resume_session_id") {
+            errors.push(e);
         }
     }
     let Some(payload) = obj.get("payload").filter(|p| p.is_object()) else {

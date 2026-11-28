@@ -1394,6 +1394,7 @@ pub(crate) fn history_transition(
         "failed" => (None, Some("failed")),
         "reprioritized" => (None, None),
         "meta_updated" => (None, None),
+        "resume_hint_updated" => (None, None),
         "linked" | "unlinked" => (None, None),
         _ => return None,
     })
