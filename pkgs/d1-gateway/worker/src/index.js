@@ -7,6 +7,8 @@
 //   GET  /db/<name>/v3            404, so @libsql/client stays on v2
 //                                 (v3 cursors are not served)
 //   GET  /health                  status, deployed version, databases
+//   GET  /version                 the deployed commit, from the VERSION
+//                                 var its deploy stamps (#15793)
 //
 // <name> picks the D1 binding DB_<NAME> (dashes become underscores).
 // Auth: "Authorization: Bearer <token>" whose SHA-256 hex is listed

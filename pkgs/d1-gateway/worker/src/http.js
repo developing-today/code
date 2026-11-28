@@ -7,6 +7,8 @@
 //   GET  /db/<name>/v3            404, so @libsql/client stays on v2
 //                                 (v3 cursors are not served)
 //   GET  /health                  status, deployed version, databases
+//   GET  /version                 the deployed commit, from the VERSION
+//                                 var its deploy stamps (#15793)
 //
 // <name> picks the D1 binding DB_<NAME> (dashes become underscores).
 // Auth: "Authorization: Bearer <token>" whose SHA-256 hex is listed
@@ -76,8 +78,21 @@ export async function runPipeline(env, db, body) {
   return pipeline(binding, body, logger(db));
 }
 
+// The /version answer (#15793 criterion 1): the commit this Worker was
+// deployed from, as stamped in the VERSION var by deploy.sh. It names
+// no database and reads no binding, so it answers ahead of the token
+// gate; "unknown" when no deploy stamped it, which the edge probe
+// records honestly rather than guessing.
+export function versionAnswer(env) {
+  return { ok: true, service: "d1-gateway", version: env.VERSION ?? "unknown" };
+}
+
 export async function handle(request, env) {
   const url = new URL(request.url);
+  if (url.pathname === "/version") {
+    if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+    return json(versionAnswer(env));
+  }
   if (url.pathname === "/health" || url.pathname === "/") {
     return json({
       ok: true,
