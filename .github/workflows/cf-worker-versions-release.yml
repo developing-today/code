@@ -230,8 +230,9 @@ jobs:
             # #15793: stamp the deployed commit as the VERSION var for
             # the Workers whose /version route reads it (per-Worker
             # slices; fleet-git-rehost landed first, cf-container-hello
-            # second, cold-store-rehydrator third, lab-ops-hub fourth).
-            if [ "$WORKER" = "fleet-git-rehost" ] || [ "$WORKER" = "cf-container-hello" ] || [ "$WORKER" = "cold-store-rehydrator" ] || [ "$WORKER" = "lab-ops-hub" ]; then
+            # second, cold-store-rehydrator third, lab-ops-hub fourth,
+            # fleet-hosted fifth).
+            if [ "$WORKER" = "fleet-git-rehost" ] || [ "$WORKER" = "cf-container-hello" ] || [ "$WORKER" = "cold-store-rehydrator" ] || [ "$WORKER" = "lab-ops-hub" ] || [ "$WORKER" = "fleet-hosted" ]; then
               upload_args+=(--var "VERSION:${GITHUB_SHA}")
             fi
             $WRANGLER versions upload "${upload_args[@]}" | tee "$upload_log"
