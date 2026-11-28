@@ -229,8 +229,8 @@ jobs:
             upload_args=(--tag "gha-${GITHUB_SHA:0:12}" --message "GHA deploy $GITHUB_SHA (#14941)")
             # #15793: stamp the deployed commit as the VERSION var for
             # the Workers whose /version route reads it (per-Worker
-            # slices; fleet-git-rehost landed first).
-            if [ "$WORKER" = "fleet-git-rehost" ]; then
+            # slices; fleet-git-rehost landed first, cf-container-hello second).
+            if [ "$WORKER" = "fleet-git-rehost" ] || [ "$WORKER" = "cf-container-hello" ]; then
               upload_args+=(--var "VERSION:${GITHUB_SHA}")
             fi
             $WRANGLER versions upload "${upload_args[@]}" | tee "$upload_log"
